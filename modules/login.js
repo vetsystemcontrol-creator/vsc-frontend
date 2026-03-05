@@ -14,6 +14,46 @@
     el.className = "status " + (kind||"");
   }
 
+
+  // Anti-loop guard: se houver redirecionamento em ping-pong (login ↔ dashboard),
+  // assume sessão "fantasma" e força limpeza para quebrar o ciclo.
+  const BOUNCE_KEY = "vsc_auth_bounce";
+  function getBounce(){
+    try{ return JSON.parse(sessionStorage.getItem(BOUNCE_KEY) || "{}") || {}; }catch(_){ return {}; }
+  }
+  function setBounce(obj){
+    try{ sessionStorage.setItem(BOUNCE_KEY, JSON.stringify(obj||{})); }catch(_){}
+  }
+  function resetBounce(){
+    try{ sessionStorage.removeItem(BOUNCE_KEY); }catch(_){}
+  }
+  async function breakLoopIfNeeded(){
+    const b = getBounce();
+    const now = Date.now();
+    // janela de 10s para detectar ping-pong
+    if(b.ts && (now - b.ts) < 10000 && (b.n||0) >= 2){
+      // 2 ou mais bounces em 10s -> limpa sessão
+      try{
+        if(window.VSC_AUTH?.logout) await window.VSC_AUTH.logout();
+        else if(window.VSC_AUTH?.clearSession) await window.VSC_AUTH.clearSession();
+      }catch(_){}
+      resetBounce();
+      setStatus("Sessão inválida detectada. Faça login novamente.", "warn");
+      return true;
+    }
+    return false;
+  }
+  function markBounce(target){
+    const b = getBounce();
+    const now = Date.now();
+    if(!b.ts || (now - b.ts) > 10000){
+      setBounce({ts: now, n: 1, target: target||""});
+      return;
+    }
+    setBounce({ts: b.ts, n: (b.n||0)+1, target: target||""});
+  }
+
+
   function getNextUrl(){
     try{
       const u = new URL(location.href);
@@ -50,11 +90,16 @@
       }catch(_){}
 
 
+      // Se detectarmos ping-pong recente, limpamos e permanecemos na tela de login
+      if(await breakLoopIfNeeded()) return;
+
       // Se já está logado, vai direto
       const cur = await window.VSC_AUTH.getCurrentUser();
       if(cur){
         const nxt = getNextUrl();
-        location.replace(nxt || "dashboard.html");
+        const target = (nxt || "dashboard.html");
+        markBounce(target);
+        location.replace(target);
         return;
       }
 
@@ -161,6 +206,7 @@ async function doLogin(){
       const r = await window.VSC_AUTH.login(user, pass);
       if(r && r.ok){
         setStatus("Login OK. Redirecionando...", "ok");
+        resetBounce();
         const nxt = getNextUrl();
         location.replace(nxt || "dashboard.html");
         return;
