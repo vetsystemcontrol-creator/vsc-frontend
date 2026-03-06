@@ -72,6 +72,7 @@
 
     if(!window.VSC_AUTH){
       setStatus("ERRO: VSC_AUTH não carregou. Verifique scripts.", "error");
+      showPage();
       return;
     }
 
@@ -207,6 +208,8 @@ async function doLogin(){
     const pass = (qs("#password")?.value || "");
     if(!user || !pass){
       setStatus("Informe usuário e senha.", "warn");
+      try{ window.__VSC_LOGIN_PREHIDE_DONE = true; }catch(_){}
+      showPage();
       return;
     }
 
@@ -236,4 +239,5 @@ async function doLogin(){
   }
 
   window.addEventListener("DOMContentLoaded", ()=>{ bind(); init(); });
+  window.addEventListener("pageshow", ()=>{ try{ if(!window.__VSC_LOGIN_PREHIDE_DONE) showPage(); }catch(_){} });
 })();

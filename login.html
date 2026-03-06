@@ -30,6 +30,14 @@
   </style><script src="/modules/vsc_db.js" charset="utf-8" defer></script>
   <script src="/modules/auth.js" charset="utf-8" defer></script>
   <script src="/modules/login.js" charset="utf-8" defer></script>
+  <script>
+    (function(){
+      try{
+        document.documentElement.style.visibility = "hidden";
+        window.__VSC_LOGIN_PREHIDE = true;
+      }catch(_){ }
+    })();
+  </script>
 </head>
 <body>
   <div class="wrap">

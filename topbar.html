@@ -81,19 +81,89 @@
 
     /* Right (Logo A cliente) */
     .vsc-topbar__right{
-      min-width:360px;
-      flex:0 0 360px;
+      min-width:460px;
+      flex:0 0 460px;
       display:flex;
       align-items:center;
       justify-content:flex-end;
+      gap:12px;
     }
     .vsc-topbar__right img{
       height:72px;
       margin:1px 0;
       width:auto;
-      max-width:340px;
+      max-width:220px;
       object-fit:contain;
       display:none; /* liga somente se existir */
+    }
+
+    .vsc-userbox{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      padding:6px 8px 6px 12px;
+      border:1px solid rgba(0,0,0,.08);
+      border-radius:999px;
+      background:#fff;
+      box-shadow:0 1px 2px rgba(0,0,0,.04);
+      min-width:0;
+      max-width:320px;
+      flex:0 1 auto;
+    }
+    .vsc-userbox__meta{
+      display:flex;
+      flex-direction:column;
+      min-width:0;
+      line-height:1.1;
+    }
+    .vsc-userbox__label{
+      font-size:10px;
+      font-weight:800;
+      letter-spacing:.04em;
+      text-transform:uppercase;
+      color:#6b7280;
+    }
+    .vsc-userbox__name{
+      font-size:12px;
+      font-weight:900;
+      color:#111827;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      max-width:150px;
+    }
+    .vsc-userbox__role{
+      font-size:11px;
+      font-weight:700;
+      color:#1f7a4a;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      max-width:150px;
+    }
+    .vsc-logout-btn{
+      appearance:none;
+      border:1px solid rgba(17,24,39,.12);
+      background:#fff;
+      color:#111827;
+      font-weight:900;
+      font-size:12px;
+      padding:10px 12px;
+      border-radius:999px;
+      cursor:pointer;
+      line-height:1;
+      white-space:nowrap;
+      transition:background .15s ease,border-color .15s ease,transform .15s ease;
+    }
+    .vsc-logout-btn:hover{
+      background:#f9fafb;
+      border-color:rgba(17,24,39,.22);
+    }
+    .vsc-logout-btn:active{ transform:translateY(1px); }
+    .vsc-logout-btn:disabled{
+      opacity:.55;
+      cursor:not-allowed;
+      transform:none;
     }
 
     /* Sync widget (premium, compacto) */
@@ -154,10 +224,14 @@
     @media (max-width: 640px){
       .vsc-topbar{ padding:0 12px; gap:10px; }
       .vsc-topbar__brand{ min-width:190px; flex:0 0 190px; }
-      .vsc-topbar__right{ min-width:140px; flex:0 0 140px; }
-      .vsc-sync{ margin-right:8px; gap:8px; }
+      .vsc-topbar__right{ min-width:210px; flex:0 0 210px; gap:8px; }
+      .vsc-sync{ margin-right:0; gap:8px; }
       .vsc-sync__label{ display:none; }
       .vsc-sync__btn{ padding:10px 10px; }
+      .vsc-userbox{ padding:6px 8px; }
+      .vsc-userbox__label, .vsc-userbox__role{ display:none; }
+      .vsc-userbox__name{ max-width:86px; }
+      .vsc-logout-btn{ padding:10px; }
     }
 
   </style>
@@ -192,6 +266,15 @@
           <span class="vsc-sync__dot" id="vscNetDot" aria-hidden="true"></span>
           <span class="vsc-sync__pending" id="vscSyncPending">0</span>
         </div>
+      </div>
+
+      <div class="vsc-userbox" id="vscUserBox" aria-live="polite">
+        <div class="vsc-userbox__meta">
+          <span class="vsc-userbox__label">Sessão ativa</span>
+          <span class="vsc-userbox__name" id="vscCurrentUserName">Usuário</span>
+          <span class="vsc-userbox__role" id="vscCurrentUserRole">Perfil</span>
+        </div>
+        <button class="vsc-logout-btn" id="vscLogoutBtn" type="button" title="Encerrar sessão com segurança">Sair</button>
       </div>
 
       <!-- Logo A (cliente) -->
@@ -285,10 +368,110 @@
         }catch(e){}
       }
 
+      function getAuthApi(){
+        try{ if(window.VSC_AUTH) return window.VSC_AUTH; }catch(e){}
+        try{ if(window.parent && window.parent !== window && window.parent.VSC_AUTH) return window.parent.VSC_AUTH; }catch(e){}
+        try{ if(window.top && window.top !== window && window.top.VSC_AUTH) return window.top.VSC_AUTH; }catch(e){}
+        return null;
+      }
+
+      function userDisplayName(user){
+        if(!user) return "Não autenticado";
+        var prof = user.professional || {};
+        var parts = [prof.nome, prof.nome_completo, user.username, user.id];
+        for(var i=0;i<parts.length;i++){
+          var v = parts[i];
+          if(typeof v === "string" && v.trim()) return v.trim();
+        }
+        return "Usuário ativo";
+      }
+
+      function userRoleName(user){
+        if(!user) return "Sem sessão";
+        var role = (user.role || "").trim();
+        return role || "Perfil não identificado";
+      }
+
+      async function renderSessionInfo(){
+        var nameEl = document.getElementById("vscCurrentUserName");
+        var roleEl = document.getElementById("vscCurrentUserRole");
+        var btn = document.getElementById("vscLogoutBtn");
+        if(!nameEl || !roleEl || !btn) return;
+
+        var auth = getAuthApi();
+        if(!auth || typeof auth.getCurrentUser !== "function") {
+          nameEl.textContent = "Sessão indisponível";
+          roleEl.textContent = "Auth não carregado";
+          btn.disabled = true;
+          return;
+        }
+
+        try{
+          if(typeof auth.bootstrap === "function") await auth.bootstrap();
+        }catch(e){}
+
+        try{
+          var user = await auth.getCurrentUser();
+          nameEl.textContent = userDisplayName(user);
+          roleEl.textContent = userRoleName(user);
+          btn.disabled = !user;
+        }catch(e){
+          nameEl.textContent = "Sessão indisponível";
+          roleEl.textContent = "Falha ao ler usuário";
+          btn.disabled = true;
+        }
+      }
+
+      async function handleLogout(){
+        var btn = document.getElementById("vscLogoutBtn");
+        if(!btn || btn.disabled) return;
+
+        var ok = true;
+        try{ ok = window.confirm("Deseja encerrar sua sessão com segurança?"); }catch(e){}
+        if(!ok) return;
+
+        var auth = getAuthApi();
+        if(!auth || typeof auth.logout !== "function"){
+          try{ alert("Não foi possível localizar o módulo de autenticação para sair."); }catch(e){}
+          return;
+        }
+
+        var prev = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "Saindo...";
+
+        try{
+          await auth.logout();
+        }catch(e){
+          console.error("[VSC_TOPBAR] logout falhou", e);
+        } finally {
+          try{
+            var target = "/login.html?logout=1";
+            if(window.top && window.top !== window){
+              window.top.location.replace(target);
+            }else{
+              window.location.replace(target);
+            }
+          }catch(e){
+            window.location.href = "/login.html?logout=1";
+          }
+        }
+      }
+
+      function wireLogout(){
+        var btn = document.getElementById("vscLogoutBtn");
+        if(!btn) return;
+        btn.addEventListener("click", function(){
+          handleLogout();
+        });
+      }
+
       document.addEventListener("DOMContentLoaded", function(){
         setActive();
         applyLogoA();
         wireNavToTop(); // VSC: navegar no TOP quando em iframe
+        wireLogout();
+        renderSessionInfo();
       });
 
       // Atualiza branding quando outra tela salvar no localStorage (ex.: empresa.html)
@@ -297,6 +480,9 @@
           if(!ev) return;
           if(ev.key === "vsc_empresa_v1" || ev.key === "vsc_empresa" || ev.key === "vsc_branding"){
             applyLogoA();
+          }
+          if(ev.key === "vsc_session_id"){
+            renderSessionInfo();
           }
         }catch(e){}
       });
