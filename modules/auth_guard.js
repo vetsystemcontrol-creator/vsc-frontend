@@ -1,35 +1,35 @@
-/* ============================================================
-   VSC_AUTH_GUARD — Confiabilidade Máxima (SGQT 12.6)
-   Objetivo:
-   - Bloquear acesso ao dashboard sem sessão válida
-   - Evitar loop infinito (login <-> dashboard)
-   - Evitar tela branca (prehide)
-   Compatibilidade:
-   - auth.js expondo: window.VSC_AUTH (bootstrap/getCurrentUser)
-   - opcional: window.__VSC_AUTH_READY (Promise) ou evento "VSC_AUTH_READY"
-   ============================================================ */
+/*
+  ============================================================
+  SGQT-Version: 12.7
+  Module-Version: 12.7.3
+  Change-Request: CR-2026-AUTHGUARD-003
+  Date: 2026-03-06T08:50:00-03:00
+  Author: VSC Engineering (proposta)
+  ============================================================
 
-// SGQT-Version: 12.6
-// Module-Version: 1.0.1
-// Change-Request: CR-2026-002
-// Date: 2026-03-04T09:00:00-03:00
-// Author: VSC (AI proposal)
+  VSC_AUTH_GUARD — Correção estrutural (web/Cloudflare)
 
+  Problemas corrigidos:
+  - Guard anterior podia preservar o prehide do dashboard, causando tela branca
+    mesmo com sessão válida e app inicializado.
+  - Era necessário garantir reveal() em páginas públicas, timeout, iframe,
+    sessão válida e falhas controladas.
+
+  Estratégia:
+  - Ignorar guard em iframe (topbar)
+  - Não interferir em páginas públicas
+  - Aguardar AUTH com timeout controlado
+  - Redirecionar para /login somente sem sessão válida
+  - Sempre revelar a UI quando a navegação puder prosseguir
+  ============================================================ */
 (() => {
   "use strict";
 
-  const BUILD = "SGQT12.6|auth_guard.js|MAX-RELIABILITY|2026-03-04";
-
-  // Chave usada pelo auth.js / app para indicar sessão local
-  const LS_SESSION_ID = "vsc_session_id";
-
-  // Rotas canônicas (Cloudflare Pages com pretty URLs + fallback .html)
-  const LOGIN_PATH = "/login.html";
-  const DASH_PATH  = "/dashboard.html";
+  const BUILD = "SGQT12.7|auth_guard.js|PREHIDE-FIX|2026-03-06";
+  const LOGIN_PATH = "/login";
   const LOGIN_FILE = "/login.html";
+  const DASH_PATH  = "/dashboard";
   const DASH_FILE  = "/dashboard.html";
-
-  // Anti-loop: impede redirecionar repetidamente em milissegundos
   const SS_GUARD_LOCK = "vsc_auth_guard_lock";
   const LOCK_MS = 1500;
 
@@ -78,29 +78,6 @@
     return base + "?next=" + encodeURIComponent(next);
   }
 
-  function readNextParam() {
-    try {
-      const u = new URL(location.href);
-      const raw = u.searchParams.get("next");
-      if (!raw) return null;
-
-      // Decodifica apenas uma vez (evita double-decode)
-      let decoded = raw;
-      try { decoded = decodeURIComponent(raw); } catch (_) {}
-
-      // Aceita somente same-origin (ou relativo). Bloqueia apontar para /login.
-      const nextUrl = new URL(decoded, location.origin);
-      if (nextUrl.origin !== location.origin) return null;
-
-      const np = String(nextUrl.pathname || "").toLowerCase();
-      if ((np === "/login" || np === "/login.html") || np.endsWith("/login/") || np.endsWith("/login.html")) return null;
-
-      return nextUrl.href;
-    } catch (_) {
-      return null;
-    }
-  }
-
   function waitFor(conditionFn, timeoutMs) {
     const timeout = Number(timeoutMs || 12000);
     const step = 50;
@@ -120,7 +97,6 @@
   }
 
   async function waitForAuthReady() {
-    // Preferência: Promise global criada pelo auth.js
     try {
       if (window.__VSC_AUTH_READY && typeof window.__VSC_AUTH_READY.then === "function") {
         await Promise.race([
@@ -131,7 +107,6 @@
       }
     } catch (_) {}
 
-    // Fallback: evento
     let signaled = false;
     const onReady = () => { signaled = true; };
 
@@ -147,7 +122,7 @@
 
   async function ensureBootstrap() {
     if (!window.VSC_AUTH) return false;
-    if (typeof window.VSC_AUTH.bootstrap !== "function") return true; // builds antigos
+    if (typeof window.VSC_AUTH.bootstrap !== "function") return true;
     await Promise.race([
       window.VSC_AUTH.bootstrap(),
       new Promise((_, rej) => setTimeout(() => rej(new Error("bootstrap timeout")), 20000)),
@@ -167,22 +142,20 @@
     }
   }
 
-  function hasSessionId() {
-    try { return !!localStorage.getItem(LS_SESSION_ID); } catch (_) { return false; }
-  }
-
   async function runGuard() {
+    if (window.self !== window.top) {
+      reveal();
+      return;
+    }
+
     const onLogin = isLoginPage();
     const onDash  = isDashboardPage();
 
-    // REGRA SEGURA: nunca executar guard na página /login.
-    // Evita loop (login <-> dashboard) quando há vsc_session_id local mas sessão expirou.
     if (onLogin) {
       reveal();
       return;
     }
 
-    // Se não é login nem dashboard, não interfere.
     if (!onLogin && !onDash) {
       reveal();
       return;
@@ -194,17 +167,9 @@
       return;
     }
 
-    // Fail-closed rápido: dashboard sem session_id => login
-    if (onDash && !hasSessionId()) {
-      console.warn("[VSC_AUTH_GUARD] Sem sessão (LS vazio). Indo para login.");
-      safeReplace(canonicalLoginUrl());
-      return;
-    }
-
     const ready = await waitForAuthReady();
     if (!ready) {
       console.error("[VSC_AUTH_GUARD] AUTH não ficou pronto (timeout).", { build: BUILD });
-      // Fail-open visual (não trava UI); autenticação real deve ser garantida pelo backend/rotas
       reveal();
       return;
     }
@@ -214,7 +179,6 @@
     } catch (e) {
       console.error("[VSC_AUTH_GUARD] bootstrap falhou:", e);
       if (onDash) {
-        console.warn("[VSC_AUTH_GUARD] Fail-closed no dashboard: indo para login.");
         safeReplace(canonicalLoginUrl());
         return;
       }
@@ -223,27 +187,22 @@
     }
 
     const user = await getCurrentUserSafe();
-
-    if (onDash && !user) {
-      console.warn("[VSC_AUTH_GUARD] Não autenticado. Indo para login.");
-      safeReplace(canonicalLoginUrl());
+    if (user) {
+      reveal();
       return;
     }
 
-    if (onLogin && user) {
-      const next = readNextParam();
-      console.warn("[VSC_AUTH_GUARD] Já autenticado. Indo para destino.");
-      safeReplace(next || (DASH_PATH || DASH_FILE));
+    if (onDash) {
+      console.warn("[VSC_AUTH_GUARD] Sem sessão válida. Indo para login.");
+      safeReplace(canonicalLoginUrl());
       return;
     }
 
     reveal();
   }
 
-  // Executa o guard cedo, mas depois que o DOM existir para revelar.
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => { runGuard(); }, { once: true });
-  } else {
-    runGuard();
-  }
+  runGuard().catch((e) => {
+    console.error("[VSC_AUTH_GUARD] erro fatal:", e, { build: BUILD });
+    reveal();
+  });
 })();
