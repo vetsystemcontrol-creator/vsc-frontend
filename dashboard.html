@@ -10,7 +10,7 @@
   <script>
   (function(){
     try{
-      var LOGIN_PAGE = "login.html";
+      var LOGIN_PAGE = "/login";
       document.documentElement.style.visibility = "hidden";
       var sid = null;
       try{ sid = localStorage.getItem("vsc_session_id"); }catch(_){}
@@ -593,7 +593,7 @@
 </head>
 
 <body class="page-dashboard">
-  <iframe id="vscTopbarFrame" src="topbar.html?v=final" title="Navegação"></iframe>
+  <iframe id="vscTopbarFrame" src="/topbar?v=final" title="Navegação"></iframe>
 
   <main class="page">
 
@@ -644,7 +644,7 @@
       <div class="card">
         <div class="card__head">
           <div class="card__title">Atendimentos Recentes</div>
-          <a href="atendimentos.html" class="card__badge" style="text-decoration:none;">Ver todos →</a>
+          <a href="/atendimentos" class="card__badge" style="text-decoration:none;">Ver todos →</a>
         </div>
         <div class="card__body">
           <table class="atd-table">
@@ -712,7 +712,7 @@
       <div class="card">
         <div class="card__head">
           <div class="card__title">Contas a Receber</div>
-          <a href="contasareceber.html" class="card__badge" style="text-decoration:none;">Abrir →</a>
+          <a href="/contasareceber" class="card__badge" style="text-decoration:none;">Abrir →</a>
         </div>
         <div class="card__body">
           <div class="stat-row">
@@ -771,72 +771,72 @@
     <!-- ─── Atalhos rápidos ──────────────────────────────────────── -->
     <div class="section-title">Acesso Rápido</div>
     <div class="atalhos-grid">
-      <a class="atalho" href="atendimentos.html">
+      <a class="atalho" href="/atendimentos">
         <div class="atalho__ico">🩺</div>
         <div class="atalho__label">Atendimentos</div>
       </a>
-      <a class="atalho" href="clientes.html">
+      <a class="atalho" href="/clientes">
         <div class="atalho__ico">👤</div>
         <div class="atalho__label">Clientes</div>
       </a>
-      <a class="atalho" href="animais.html">
+      <a class="atalho" href="/animais">
         <div class="atalho__ico">🐴</div>
         <div class="atalho__label">Animais</div>
       </a>
-      <a class="atalho" href="contasareceber.html">
+      <a class="atalho" href="/contasareceber">
         <div class="atalho__ico">💰</div>
         <div class="atalho__label">Contas a Receber</div>
       </a>
-            <a class="atalho" href="contasapagar.html">
+            <a class="atalho" href="/contasapagar">
         <div class="atalho__ico">💸</div>
         <div class="atalho__label">Contas a Pagar</div>
       </a>
-      <a class="atalho" href="fornecedores.html">
+      <a class="atalho" href="/fornecedores">
         <div class="atalho__ico">🏪</div>
         <div class="atalho__label">Fornecedores</div>
       </a>
-      <a class="atalho" href="relatorios_financeiro.html">
+      <a class="atalho" href="/relatorios_financeiro">
         <div class="atalho__ico">📈</div>
         <div class="atalho__label">Relatórios Financeiros</div>
       </a>
-<a class="atalho" href="produtos.html">
+<a class="atalho" href="/produtos">
         <div class="atalho__ico">📦</div>
         <div class="atalho__label">Produtos</div>
       </a>
       
-      <a class="atalho" href="pedidos.html">
+      <a class="atalho" href="/pedidos">
         <div class="atalho__ico">📦📝</div>
         <div class="atalho__label">Pedidos</div>
       </a>
-<a class="atalho" href="servicos.html">
+<a class="atalho" href="/servicos">
         <div class="atalho__ico">🛠️</div>
         <div class="atalho__label">Serviços</div>
       </a>
-      <a class="atalho" href="exames.html">
+      <a class="atalho" href="/exames">
         <div class="atalho__ico">🧪</div>
         <div class="atalho__label">Exames</div>
       </a>
-      <a class="atalho" href="relatorios.html">
+      <a class="atalho" href="/relatorios">
         <div class="atalho__ico">📊</div>
         <div class="atalho__label">Relatórios</div>
       </a>
-      <a class="atalho" href="importacaoxml.html">
+      <a class="atalho" href="/importacaoxml">
         <div class="atalho__ico">🧩</div>
         <div class="atalho__label">Importação XML</div>
       </a>
-      <a class="atalho" href="empresa.html">
+      <a class="atalho" href="/empresa">
         <div class="atalho__ico">🏢</div>
         <div class="atalho__label">Empresa</div>
       </a>
-      <a class="atalho" href="configuracoes.html">
+      <a class="atalho" href="/configuracoes">
         <div class="atalho__ico">⚙️</div>
         <div class="atalho__label">Configurações</div>
       </a>
-      <a class="atalho" href="configuracoes_usuarios.html">
+      <a class="atalho" href="/configuracoes_usuarios">
         <div class="atalho__ico">👥</div>
         <div class="atalho__label">Configurações de Usuários</div>
       </a>
-      <a class="atalho" href="atualizacoes.html">
+      <a class="atalho" href="/atualizacoes">
         <div class="atalho__ico">⬆️</div>
         <div class="atalho__label">Atualizações</div>
       </a>
@@ -1035,7 +1035,7 @@
         const cli = a.cliente_label || a._cliente_nome || "—";
         return `<tr>
           <td class="atd-num">${num}</td>
-          <td><a class="atd-link" href="atendimentos.html">${cli}</a></td>
+          <td><a class="atd-link" href="/atendimentos">${cli}</a></td>
           <td style="color:var(--muted);font-size:12px;">${dt}</td>
           <td>${statusPill(a.status)}</td>
         </tr>`;
@@ -1895,7 +1895,7 @@
 
         const n = j?.ok && Array.isArray(j.packages) ? j.packages.length : 0;
 
-        const link = document.querySelector('a.atalho[href="atualizacoes.html"]');
+        const link = document.querySelector('a.atalho[href="/atualizacoes"]');
         if (!link) { _checked = true; return; }
 
         let badge = link.querySelector(".vsc-badge");
@@ -1925,7 +1925,7 @@
     }
 
     function bind() {
-      const link = document.querySelector('a.atalho[href="atualizacoes.html"]');
+      const link = document.querySelector('a.atalho[href="/atualizacoes"]');
       if (!link) return;
 
       // Primeira interação dispara verificação única

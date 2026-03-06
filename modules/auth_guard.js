@@ -24,8 +24,8 @@
   const LS_SESSION_ID = "vsc_session_id";
 
   // Rotas canônicas (Cloudflare Pages com pretty URLs + fallback .html)
-  const LOGIN_PATH = "/login";
-  const DASH_PATH  = "/dashboard";
+  const LOGIN_PATH = "/login.html";
+  const DASH_PATH  = "/dashboard.html";
   const LOGIN_FILE = "/login.html";
   const DASH_FILE  = "/dashboard.html";
 
@@ -39,12 +39,12 @@
 
   function isLoginPage() {
     const p = path().toLowerCase();
-    return p === "/login" || p.endsWith("/login/") || p.endsWith("/login.html");
+    return p === "/login" || p === "/login.html" || p.endsWith("/login/") || p.endsWith("/login.html");
   }
 
   function isDashboardPage() {
     const p = path().toLowerCase();
-    return p === "/dashboard" || p.endsWith("/dashboard/") || p.endsWith("/dashboard.html");
+    return p === "/dashboard" || p === "/dashboard.html" || p.endsWith("/dashboard/") || p.endsWith("/dashboard.html");
   }
 
   function reveal() {
@@ -93,7 +93,7 @@
       if (nextUrl.origin !== location.origin) return null;
 
       const np = String(nextUrl.pathname || "").toLowerCase();
-      if (np === "/login" || np.endsWith("/login/") || np.endsWith("/login.html")) return null;
+      if ((np === "/login" || np === "/login.html") || np.endsWith("/login/") || np.endsWith("/login.html")) return null;
 
       return nextUrl.href;
     } catch (_) {

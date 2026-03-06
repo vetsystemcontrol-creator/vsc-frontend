@@ -627,6 +627,33 @@ async function ensureBootstrapUsers(){
 
     let total = await countUsers();
     if(total > 0){
+      // Se o store USERS tem registros mas nenhum usuário "logável" (username ativo),
+      // tratamos como DB efetivamente vazio/corrompido e forçamos bootstrap do master.
+      // Isso evita tela de login sem opções ("Selecione...") por registros fantasma/legado.
+      try{
+        const dbx = await openDB();
+        try{
+          const hasLoginable = await new Promise((resolve) => {
+            const txx = dbx.transaction([S_USERS], "readonly");
+            const stx = txx.objectStore(S_USERS);
+            const rq2 = stx.openCursor();
+            rq2.onerror = () => resolve(false);
+            rq2.onsuccess = () => {
+              const cur2 = rq2.result;
+              if(!cur2) return resolve(false);
+              const v2 = cur2.value || {};
+              const un2 = String(v2.username||"").trim();
+              const stt2 = String(v2.status||"ACTIVE").toUpperCase();
+              if(un2 && stt2 === "ACTIVE") return resolve(true);
+              cur2.continue();
+            };
+          });
+          if(!hasLoginable){
+            total = 0; // força o caminho de bootstrap abaixo
+          }
+        } finally { try{ dbx.close(); }catch(_){} }
+      }catch(_){ /* best-effort */ }
+
       // Sanear usuário fantasma: versões antigas criavam 'admin' automaticamente.
       // Se já existem usuários reais (além de master/admin), desativamos 'admin' bootstrap.
       try{

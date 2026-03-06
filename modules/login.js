@@ -97,7 +97,7 @@
       const cur = await window.VSC_AUTH.getCurrentUser();
       if(cur){
         const nxt = getNextUrl();
-        const target = (nxt || "dashboard.html");
+        const target = (nxt || "/dashboard");
         markBounce(target);
         location.replace(target);
         return;
@@ -127,6 +127,15 @@
         }
       }catch(_){ /* ok */ }
 
+
+
+      // Se não houver usuários no dropdown, orientar recuperação/bootstrapping
+      try{
+        if(sel && sel.options && sel.options.length <= 1){
+          setStatus("Nenhum usuário encontrado no banco local. Clique em ‘Recuperar acesso’ (local) ou limpe os dados do site e recarregue.", "warn");
+          return;
+        }
+      }catch(_){ }
       setStatus("Pronto. Informe usuário e senha.", "ok");
     }catch(e){
       console.error("[LOGIN] init error:", e);
@@ -208,7 +217,7 @@ async function doLogin(){
         setStatus("Login OK. Redirecionando...", "ok");
         resetBounce();
         const nxt = getNextUrl();
-        location.replace(nxt || "dashboard.html");
+        location.replace(nxt || "/dashboard");
         return;
       }
       setStatus((r && r.error) ? r.error : "Falha no login.", "error");

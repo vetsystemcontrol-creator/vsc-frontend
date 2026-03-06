@@ -1,39 +1,60 @@
-# VSC Frontend (Cloudflare Pages) — routing fix
-# Objetivo:
-# 1) Evitar "tela preta" quando o menu aponta para /clientes, /animais, etc.
-# 2) Reescrever (rewrite 200) /rota -> /rota.html, sem redirect externo.
-# 3) Preservar pastas estáticas (assets/modules/vendor) sem interferir.
+/assets/*        /assets/:splat        200
+/modules/*       /modules/:splat       200
+/vendor/*        /vendor/:splat        200
+/images/*        /images/:splat        200
+/css/*           /css/:splat           200
 
-# Root (ajuste se o seu entrypoint for index.html)
-/
-  /dashboard.html 200
+/               /login.html         200
+/login          /login.html            200
+/login/         /login.html            200
+/dashboard      /dashboard.html        200
+/dashboard/     /dashboard.html        200
+/ambiente       /ambiente.html         200
+/ambiente/      /ambiente.html         200
+/animais        /animais.html          200
+/animais/       /animais.html          200
+/atendimentos   /atendimentos.html     200
+/atendimentos/  /atendimentos.html     200
+/atualizacoes   /atualizacoes.html     200
+/atualizacoes/  /atualizacoes.html     200
+/billing_admin  /billing_admin.html    200
+/billing_admin/ /billing_admin.html    200
+/billing_blocked /billing_blocked.html  200
+/billing_blocked/ /billing_blocked.html  200
+/clientes       /clientes.html         200
+/clientes/      /clientes.html         200
+/configuracoes  /configuracoes.html    200
+/configuracoes/ /configuracoes.html    200
+/configuracoes_usuarios /configuracoes_usuarios.html 200
+/configuracoes_usuarios/ /configuracoes_usuarios.html 200
+/contasapagar   /contasapagar.html     200
+/contasapagar/  /contasapagar.html     200
+/contasareceber /contasareceber.html   200
+/contasareceber/ /contasareceber.html   200
+/empresa        /empresa.html          200
+/empresa/       /empresa.html          200
+/exames         /exames.html           200
+/exames/        /exames.html           200
+/fechamentos    /fechamentos.html      200
+/fechamentos/   /fechamentos.html      200
+/fiscal         /fiscal.html           200
+/fiscal/        /fiscal.html           200
+/fornecedores   /fornecedores.html     200
+/fornecedores/  /fornecedores.html     200
+/importacaodados /importacaodados.html  200
+/importacaodados/ /importacaodados.html  200
+/importacaoxml  /importacaoxml.html    200
+/importacaoxml/ /importacaoxml.html    200
+/pedidos        /pedidos.html          200
+/pedidos/       /pedidos.html          200
+/produtos       /produtos.html         200
+/produtos/      /produtos.html         200
+/relatorios     /relatorios.html       200
+/relatorios/    /relatorios.html       200
+/relatorios_financeiro /relatorios_financeiro.html 200
+/relatorios_financeiro/ /relatorios_financeiro.html 200
+/reproducao_equina /reproducao_equina.html 200
+/reproducao_equina/ /reproducao_equina.html 200
+/servicos       /servicos.html         200
+/servicos/      /servicos.html         200
 
-# Preserve static folders (não transformar em .html)
-assets/*
-  /assets/:splat 200
-modules/*
-  /modules/:splat 200
-vendor/*
-  /vendor/:splat 200
-
-# Se existir estas pastas no seu repo, descomente:
-# api/*
-#   /api/:splat 200
-# images/*
-#   /images/:splat 200
-# css/*
-#   /css/:splat 200
-# js/*
-#   /js/:splat 200
-
-# HTML routing (regra principal)
-# Ex.: /clientes -> /clientes.html
-# Ex.: /dashboard -> /dashboard.html
-# IMPORTANTE: essa linha deve ficar DEPOIS das exceções acima.
-/*
-  /:splat.html 200
-
-# Fallback SPA (somente se você tiver index.html e rotas que NÃO são .html)
-# Se o seu site não for SPA, pode remover esta linha.
-# /*
-#   /index.html 200
