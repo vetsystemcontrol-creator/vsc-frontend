@@ -72,13 +72,13 @@
     </div>
     <div class="vsc-topbar__navwrap">
       <nav class="vsc-topbar__nav" id="vscTopbarNav" aria-label="Navegação principal">
-        <a href="/dashboard.html" data-route="dashboard.html">Dashboard</a>
-        <a href="/clientes.html" data-route="clientes.html">Clientes</a>
-        <a href="/animais.html" data-route="animais.html">Animais</a>
-        <a href="/reproducao_equina.html" data-route="reproducao_equina.html">Reprodução</a>
-        <a href="/atendimentos.html" data-route="atendimentos.html">Atendimentos</a>
-        <a href="/produtos.html" data-route="produtos.html">Produtos</a>
-        <a href="/empresa.html" data-route="empresa.html">Empresa</a>
+        <a href="/dashboard" data-route="dashboard">Dashboard</a>
+        <a href="/clientes" data-route="clientes">Clientes</a>
+        <a href="/animais" data-route="animais">Animais</a>
+        <a href="/reproducao_equina" data-route="reproducao_equina">Reprodução</a>
+        <a href="/atendimentos" data-route="atendimentos">Atendimentos</a>
+        <a href="/produtos" data-route="produtos">Produtos</a>
+        <a href="/empresa" data-route="empresa">Empresa</a>
       </nav>
     </div>
     <div class="vsc-topbar__right">
@@ -116,7 +116,7 @@
 
       var EMPRESA_KEY = "vsc_empresa_v1";
       var LOGOUT_FLAG_KEY = "vsc_logout_in_progress";
-      var LOGIN_TARGET = "login.html?logout=1";
+      var LOGIN_TARGET = "/login?logout=1";
 
       function getTopWindow(){
         try{ if(window.top && window.top !== window) return window.top; }catch(_){ }
@@ -151,11 +151,11 @@
       function normalizeFile(pathname){
         var p = String(pathname || "").split("?")[0].split("#")[0];
         p = p.substring(p.lastIndexOf("/") + 1);
-        return p || "dashboard.html";
+        return p || "dashboard";
       }
 
       function setActiveFromCurrentContext(){
-        var route = "dashboard.html";
+        var route = "dashboard";
         try{ route = normalizeFile(window.__VSC_HOST_ROUTE || getTopWindow().location.pathname || ""); }catch(_){ route = normalizeFile(window.__VSC_HOST_ROUTE || location.pathname || ""); }
         var nav = document.getElementById("vscTopbarNav");
         if(!nav) return;

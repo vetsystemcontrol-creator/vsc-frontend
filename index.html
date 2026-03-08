@@ -12,21 +12,14 @@
     (function(){
       try{
         var sid = localStorage.getItem('vsc_session_id');
-        var target = sid ? '/dashboard.html' : '/login.html';
-        if (location.pathname !== target) {
-          location.replace(target);
-          return;
-        }
+        location.replace(sid ? '/dashboard' : '/login');
       }catch(_){
-        if (location.pathname !== '/login.html') {
-          location.replace('/login.html');
-          return;
-        }
+        location.replace('/login');
       }
     })();
   </script>
   <noscript>
-    <meta http-equiv="refresh" content="0; url=/login.html">
+    <meta http-equiv="refresh" content="0; url=/login">
   </noscript>
   <style>
     html,body{height:100%;margin:0;background:#f6faf8;color:#173424;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;}

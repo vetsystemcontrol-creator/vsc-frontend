@@ -1,27 +1,8 @@
-/topbar                    /topbar.html                    200
-/assets/*                  /assets/:splat                 200
-/modules/*                 /modules/:splat                200
-/vendor/*                  /vendor/:splat                 200
-/images/*                  /images/:splat                 200
-/css/*                     /css/:splat                    200
-/sw.js                     /sw.js                         200
-/manifest.webmanifest      /manifest.webmanifest          200
-
-/login                     /login.html                    200
-/login/                    /login.html                    200
-/dashboard                 /dashboard.html                200
-/dashboard/                /dashboard.html                200
-/clientes                  /clientes.html                 200
-/clientes/                 /clientes.html                 200
-/animais                   /animais.html                  200
-/animais/                  /animais.html                  200
-/reproducao                /reproducao_equina.html        200
-/reproducao/               /reproducao_equina.html        200
-/atendimentos              /atendimentos.html             200
-/atendimentos/             /atendimentos.html             200
-/produtos                  /produtos.html                 200
-/produtos/                 /produtos.html                 200
-/empresa                   /empresa.html                  200
-/empresa/                  /empresa.html                  200
-
-/                          /index.html                    200
+/assets/*                 /assets/:splat                200
+/modules/*                /modules/:splat               200
+/vendor/*                 /vendor/:splat                200
+/images/*                 /images/:splat                200
+/css/*                    /css/:splat                   200
+/reproducao               /reproducao/index.html       200
+/reproducao/              /reproducao/index.html       200
+/                         /login                        302
