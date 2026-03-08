@@ -1,8 +1,8 @@
-const CACHE = "vsc-static-v4";
+const CACHE = "vsc-static-v5";
 const CORE = [
-  "/index.html",
+  "/",
   "/login",
-  "/login.html",
+  "/dashboard",
   "/404.html",
   "/manifest.webmanifest"
 ];

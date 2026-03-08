@@ -1,7 +1,8 @@
 {
+  "id": "/",
   "name": "Vet System Control – Equine",
   "short_name": "VSC Equine",
-  "start_url": "/index.html",
+  "start_url": "/login",
   "scope": "/",
   "display": "standalone",
   "background_color": "#ffffff",

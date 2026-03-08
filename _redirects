@@ -1,7 +1,3 @@
-# Cloudflare Pages — _redirects
-# NOTA: NÃO incluir regras passthrough para /modules/*, /assets/*, /vendor/*
-# O Cloudflare Pages serve arquivos estáticos diretamente sem precisar de regras
-
 /topbar                   /topbar.html                  200
 /login                    /login/index.html             200
 /dashboard                /dashboard/index.html         200
@@ -30,4 +26,4 @@
 /relatorios               /relatorios/index.html        200
 /relatorios_financeiro    /relatorios_financeiro/index.html 200
 /servicos                 /servicos/index.html          200
-/                         /login                        302
+/                          /login                        302
