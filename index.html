@@ -12,9 +12,16 @@
     (function(){
       try{
         var sid = localStorage.getItem('vsc_session_id');
-        location.replace(sid ? '/dashboard.html' : '/login.html');
+        var target = sid ? '/dashboard.html' : '/login.html';
+        if (location.pathname !== target) {
+          location.replace(target);
+          return;
+        }
       }catch(_){
-        location.replace('/login.html');
+        if (location.pathname !== '/login.html') {
+          location.replace('/login.html');
+          return;
+        }
       }
     })();
   </script>
