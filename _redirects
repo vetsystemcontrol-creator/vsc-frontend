@@ -1,7 +1,3 @@
-/assets/*                 /assets/:splat                200
-/modules/*                /modules/:splat               200
-/vendor/*                 /vendor/:splat                200
-/images/*                 /images/:splat                200
-/css/*                    /css/:splat                   200
-
-/                          /login                        302
+/ /login 302
+/reproducao /reproducao_equina 302
+/topbar /topbar.html 302
