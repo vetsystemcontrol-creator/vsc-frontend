@@ -1,13 +1,17 @@
-/* 
+# Cloudflare Pages — _headers
+# NOTA: X-Frame-Options apenas em /*.html para não bloquear o iframe da topbar
+# X-Content-Type-Options: nosniff aplicado globalmente (correto)
+
+/*
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
-  X-Frame-Options: SAMEORIGIN
-  Content-Security-Policy: frame-ancestors 'self'
   Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=(), usb=()
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Resource-Policy: same-origin
 
 /*.html
+  X-Frame-Options: SAMEORIGIN
+  Content-Security-Policy: frame-ancestors 'self'
   Cache-Control: no-store, no-cache, must-revalidate, max-age=0
 
 /topbar.html
