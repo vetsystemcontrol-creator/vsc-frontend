@@ -1,6 +1,4 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "vet-system-control-equine-web",
-  "pages_build_output_dir": ".",
-  "compatibility_date": "2026-03-08"
+  "pages_build_output_dir": "."
 }
