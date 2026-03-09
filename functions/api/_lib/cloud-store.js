@@ -43,7 +43,8 @@ function getBinding(env) {
 }
 
 async function ensureD1Schema(db) {
-  await db.exec(`
+  // D1 does NOT support multi-statement exec() — run each statement individually
+  await db.prepare(`
     CREATE TABLE IF NOT EXISTS vsc_state_snapshots (
       tenant TEXT PRIMARY KEY,
       revision TEXT NOT NULL,
@@ -53,9 +54,11 @@ async function ensureD1Schema(db) {
       exported_at TEXT,
       source TEXT,
       snapshot_json TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_vsc_state_saved_at ON vsc_state_snapshots(saved_at);
-  `);
+    )
+  `).run();
+  await db.prepare(
+    `CREATE INDEX IF NOT EXISTS idx_vsc_state_saved_at ON vsc_state_snapshots(saved_at)`
+  ).run();
 }
 
 export async function getCapabilities(env) {

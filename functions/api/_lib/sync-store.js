@@ -133,8 +133,9 @@ function normalizeOperation(op = {}) {
 
 async function ensureSchema(db) {
   if (!isD1Like(db)) throw new Error('invalid_d1_binding');
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS sync_operations (
+  // D1 does NOT support multi-statement exec() — run each statement individually
+  const stmts = [
+    `CREATE TABLE IF NOT EXISTS sync_operations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       tenant TEXT NOT NULL,
       op_id TEXT NOT NULL,
@@ -151,17 +152,16 @@ async function ensureSchema(db) {
       base_revision INTEGER NOT NULL DEFAULT 0,
       entity_revision INTEGER NOT NULL DEFAULT 1,
       status TEXT NOT NULL DEFAULT 'ACKED'
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_operations_tenant_op_id
-      ON sync_operations (tenant, op_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_operations_tenant_dedupe_key
-      ON sync_operations (tenant, dedupe_key);
-    CREATE INDEX IF NOT EXISTS idx_sync_operations_tenant_store
-      ON sync_operations (tenant, store_name, entity_id);
-    CREATE INDEX IF NOT EXISTS idx_sync_operations_received_at
-      ON sync_operations (received_at);
-
-    CREATE TABLE IF NOT EXISTS canonical_records (
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_operations_tenant_op_id
+      ON sync_operations (tenant, op_id)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_operations_tenant_dedupe_key
+      ON sync_operations (tenant, dedupe_key)`,
+    `CREATE INDEX IF NOT EXISTS idx_sync_operations_tenant_store
+      ON sync_operations (tenant, store_name, entity_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_sync_operations_received_at
+      ON sync_operations (received_at)`,
+    `CREATE TABLE IF NOT EXISTS canonical_records (
       tenant TEXT NOT NULL,
       store_name TEXT NOT NULL,
       record_id TEXT NOT NULL,
@@ -173,19 +173,21 @@ async function ensureSchema(db) {
       device_id TEXT,
       entity_revision INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (tenant, store_name, record_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_canonical_records_tenant_store
-      ON canonical_records (tenant, store_name, updated_at);
-
-    CREATE TABLE IF NOT EXISTS canonical_state_meta (
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_canonical_records_tenant_store
+      ON canonical_records (tenant, store_name, updated_at)`,
+    `CREATE TABLE IF NOT EXISTS canonical_state_meta (
       tenant TEXT PRIMARY KEY,
       state_revision INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       last_op_id TEXT,
       last_store_name TEXT,
       last_record_id TEXT
-    );
-  `);
+    )`,
+  ];
+  for (const sql of stmts) {
+    await db.prepare(sql).run();
+  }
 }
 
 async function findDuplicate(db, tenant, op) {
