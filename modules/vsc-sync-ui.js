@@ -18,8 +18,8 @@
   function _findEls() {
     // Prefer ids (se existirem)
     const btn = $('#vscSyncBtn') || document.querySelector('[data-vsc-sync-btn]') || null;
-    const dot = $('#vscSyncDot') || document.querySelector('[data-vsc-sync-dot]') || null;
-    const count = $('#vscSyncCount') || document.querySelector('[data-vsc-sync-count]') || null;
+    const dot = $('#vscNetDot') || $('#vscSyncDot') || document.querySelector('[data-vsc-sync-dot]') || null;
+    const count = $('#vscSyncPending') || $('#vscSyncCount') || $('#vscMobilePending') || document.querySelector('[data-vsc-sync-count]') || null;
     const note = $('#vscSyncNote') || document.querySelector('[data-vsc-sync-note]') || null;
 
     // Fallback: tenta achar pelo texto do botão

@@ -387,12 +387,27 @@
       return _drainLoop({ force: true });
     },
 
+    // Compatibilidade retroativa: módulos legados ainda chamam relay.kick()
+    kick() {
+      return this.syncNow();
+    },
+
     status() {
+      const lastError = _lastError ? String(_lastError) : null;
       return {
         enabled: _enabled,
         running: _running,
-        lastError: _lastError ? String(_lastError) : null,
+        lastError,
+        last_error: lastError,
         lastCycleAt: _lastCycleAt,
+        last_run: _lastCycleAt,
+        last_sent: Number(_stats.acked || _stats.sent || 0) || 0,
+        pending: Number(_stats.pending || 0) || 0,
+        sent: Number(_stats.sent || 0) || 0,
+        acked: Number(_stats.acked || 0) || 0,
+        last_batch: Number(_stats.lastBatchSize || 0) || 0,
+        last_batch_size: Number(_stats.lastBatchSize || 0) || 0,
+        last_duration_ms: Number(_stats.lastDurationMs || 0) || 0,
         stats: { ..._stats },
       };
     },
