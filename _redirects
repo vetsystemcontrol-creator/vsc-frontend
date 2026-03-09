@@ -5,7 +5,7 @@
 /css/*      /css/:splat      200
 
 /topbar      /topbar.html     200
-/login*      /login/index.html      200
-/dashboard*  /dashboard/index.html  200
+/login       /login.html      200
+/dashboard   /dashboard.html  200
 
 /            /login           302
