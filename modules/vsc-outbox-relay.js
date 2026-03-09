@@ -32,6 +32,7 @@
   const DB_NAME      = (window.VSC_DB_NAME || 'vsc_db');
   const STORE_OUTBOX = 'sync_queue';
   const API_CAPABILITIES_URL = '/api/state?action=capabilities';
+  const REMOTE_BASE = 'https://app.vetsystemcontrol.com.br';
 
   // Ritmo: rápido com backlog, econômico quando ocioso
   const ACTIVE_TICK_MS = 250;   // quando há pendências
@@ -74,6 +75,43 @@
   // ──────────────────────────────────────────────────────────
   function _now() { return Date.now(); }
 
+
+  function _normalizeDigits(v) {
+    return String(v || '').replace(/\D+/g, '');
+  }
+
+  function _getTenantKey() {
+    try {
+      const empresa = JSON.parse(localStorage.getItem('vsc_empresa_v1') || localStorage.getItem('VSC_EMPRESA_V1') || 'null');
+      const cnpj = _normalizeDigits(empresa && (empresa.cnpj || empresa.CNPJ || empresa.documento || empresa.doc));
+      if (cnpj) return `tenant-${cnpj}`;
+      const nome = String((empresa && (empresa.razao || empresa.nome_fantasia || empresa.nome)) || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      if (nome) return `tenant-${nome}`;
+    } catch (_) {}
+    return 'tenant-default';
+  }
+
+  function _getUserLabel() {
+    try {
+      const user = JSON.parse(localStorage.getItem('vsc_user') || 'null');
+      return String((user && (user.username || user.nome || user.name || user.id)) || 'anonymous').slice(0, 120);
+    } catch (_) {
+      return 'anonymous';
+    }
+  }
+
+  function _apiBase() {
+    try {
+      const host = String(location.hostname || '').toLowerCase();
+      if (host === '127.0.0.1' || host === 'localhost' || String(location.protocol || '') === 'file:') return REMOTE_BASE;
+    } catch (_) {}
+    return '';
+  }
+
+  function _apiUrl(path) {
+    return `${_apiBase()}${path}`;
+  }
+
   function _getToken() {
     return (
       localStorage.getItem('vsc_local_token') ||
@@ -111,10 +149,6 @@
       const proto = String(location.protocol || '').toLowerCase();
       const host = String(location.hostname || '').toLowerCase();
       if (proto === 'file:') return true;
-      if (host === '127.0.0.1' || host === 'localhost') {
-        const forced = String(localStorage.getItem('vsc_allow_local_sync_api') || '').toLowerCase();
-        return forced !== '1' && forced !== 'true' && forced !== 'yes';
-      }
     } catch (_) {}
     return false;
   }
@@ -135,7 +169,7 @@
     }
 
     try {
-      const res = await fetch(API_CAPABILITIES_URL, {
+      const res = await fetch(_apiUrl(API_CAPABILITIES_URL), {
         method: 'GET',
         headers: { 'Accept': 'application/json' },
         cache: 'no-store',
@@ -265,11 +299,13 @@
   // ──────────────────────────────────────────────────────────
   async function _pushBatchSyncPush(batch) {
     const token = _getToken();
-    const res = await fetch('/api/sync/push', {
+    const res = await fetch(_apiUrl('/api/sync/push'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-VSC-Token': token,
+        'X-VSC-Tenant': _getTenantKey(),
+        'X-VSC-User': _getUserLabel(),
       },
       body: JSON.stringify({ operations: batch }),
     });
@@ -293,11 +329,13 @@
         payload: ev.payload,
         op_id: ev.op_id,
       };
-      const res = await fetch('/api/outbox', {
+      const res = await fetch(_apiUrl('/api/outbox'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-VSC-Token': token,
+        'X-VSC-Tenant': _getTenantKey(),
+        'X-VSC-User': _getUserLabel(),
         },
         body: JSON.stringify(body),
       });

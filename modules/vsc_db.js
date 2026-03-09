@@ -323,6 +323,7 @@ exames_master: [
             if(!v.id){ v.id = uuidv4(); changed = true; }
             if(!v.status){ v.status = "PENDING"; changed = true; }
             if(!v.entity){ v.entity = v.entity_type || v.type || "UNKNOWN"; changed = true; }
+            if(!v.store){ v.store = v.store_name || v.entity || v.entity_type || "UNKNOWN"; changed = true; }
             if(!v.action){ v.action = v.op || v.kind || "upsert"; changed = true; }
             if(!v.entity_id){ v.entity_id = v.ref_id || v.target_id || v.id; changed = true; }
             if(!v.created_at){ v.created_at = now; changed = true; }
@@ -849,12 +850,13 @@ req.onupgradeneeded = (e) => {
     });
   }
 
-  function makeOutboxEvent(entity, action, entity_id, payload){
+  function makeOutboxEvent(storeName, entity, action, entity_id, payload){
     const ts = nowISO();
     const meta = buildOutboxMetadata(entity, action, entity_id, payload);
     return {
       id: uuidv4(),
       status: "PENDING",
+      store: String(storeName || entity || "UNKNOWN"),
       entity,
       action,
       entity_id,
@@ -870,7 +872,7 @@ req.onupgradeneeded = (e) => {
   }
 
   async function outboxEnqueue(entity, action, entity_id, payload){
-    const evt = makeOutboxEvent(entity, action, entity_id, payload);
+    const evt = makeOutboxEvent(entity, entity, action, entity_id, payload);
     await tx([STORE_OUTBOX], "readwrite", (s) => {
       s[STORE_OUTBOX].add(evt);
     });
@@ -884,7 +886,7 @@ req.onupgradeneeded = (e) => {
     if (!entity) throw new Error("upsertWithOutbox: entity obrigatório");
     if (!entity_id) throw new Error("upsertWithOutbox: entity_id obrigatório");
 
-    const evt = makeOutboxEvent(entity, "upsert", entity_id, payload);
+    const evt = makeOutboxEvent(storeName, entity, "upsert", entity_id, payload);
 
     await tx([storeName, STORE_OUTBOX, STORE_SYS_META, STORE_BACKUP_EVENTS, STORE_BUSINESS_AUDIT], "readwrite", (s) => {
       const main = s[storeName];
