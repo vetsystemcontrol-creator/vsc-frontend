@@ -983,7 +983,7 @@
       <div class="vsc-modal__head">
         <div>
           <div id="vscBackupTitle" class="vsc-modal__title">Backup / Restaurar</div>
-          <div class="vsc-modal__sub">Modo híbrido local/online · <b>backup em arquivo .json pelo navegador</b></div>
+          <div class="vsc-modal__sub">Modo híbrido · <b>local: arquivo baixável</b> · <b>online: API quando disponível, com fallback seguro para arquivo</b></div>
         </div>
         <button class="vsc-modal__x" id="vscBackupClose" title="Fechar">✕</button>
       </div>
@@ -1863,39 +1863,24 @@
       return false;
     }
 
-    function supportsBrowserBackup() {
-      return !!window.VSC_DB?.downloadBackupFile;
+    function isApiUnavailableStatus(status) {
+      return status === 404 || status === 405 || status === 501;
     }
 
-    let _backupModePromise = null;
-    async function getBackupMode(forceRefresh) {
-      if (!forceRefresh && _backupModePromise) return _backupModePromise;
-      _backupModePromise = (async () => {
-        if (isLocalStaticMode()) return "browser";
-        if (!navigator.onLine && supportsBrowserBackup()) return "browser";
-        try {
-          const r = await fetch("/api/backup/list", {
-            method: "GET",
-            credentials: "same-origin",
-            cache: "no-store"
-          });
-          if (r.ok || r.status === 401 || r.status === 403) return "server";
-          if ([404, 405, 501].includes(r.status)) return supportsBrowserBackup() ? "browser" : "server";
-        } catch (_) {}
-        return supportsBrowserBackup() ? "browser" : "server";
-      })();
-      return _backupModePromise;
+    function isApiUnavailableError(error) {
+      const msg = String(error?.message || error || "");
+      return /(404|405|501)/.test(msg) || /method not allowed/i.test(msg) || /not found/i.test(msg);
     }
 
-    async function doBackupLocalFallback(reason) {
+    async function doBackupFileFallback(reason) {
       if (!window.VSC_DB?.downloadBackupFile) throw new Error("Backup em arquivo indisponível.");
       setProgress(10, "Gerando backup em arquivo...");
-      if (reason) log(reason);
-      log("Gerando backup em arquivo .json pelo navegador...");
+      if (reason) log(`API de backup indisponível (${reason}). Aplicando fallback seguro para arquivo.`);
+      else log("Gerando backup em arquivo...");
       const res = await window.VSC_DB.downloadBackupFile();
       log(`Backup concluído. Arquivo: ${res?.filename || "backup.json"}`);
       log(`Tamanho: ${fmtBytes(res?.bytes || 0)}`);
-      setProgress(100, "Backup concluído.");
+      setProgress(100, "Backup concluído em arquivo.");
       return res;
     }
 
@@ -1955,8 +1940,26 @@
 
     async function refreshList(){
       setProgress(0, "Listando...");
-      if ((await getBackupMode()) !== "server" && window.VSC_DB?.listInternalBackups) {
-        log("Modo navegador/local: listando metadados internos do IndexedDB.");
+      if (window.VSC_DB?.listInternalBackups) {
+        if (isLocalStaticMode()) log("Modo local/off-line: listando metadados internos do IndexedDB.");
+      }
+      if (!isLocalStaticMode()) {
+        log("GET /api/backup/list");
+        const r = await apiJSON("/api/backup/list", "GET");
+        if (r.ok) {
+          const arr = r.json?.backups || [];
+          log(`Backups remotos: ${arr.length}`);
+          arr.slice(0, 20).forEach(b => log(`- ${b.id} | ${b.finished_at || ""} | ${b.bytes || 0} bytes`));
+          renderBackups(arr);
+          setProgress(100, "Lista carregada.");
+          return arr;
+        }
+        if (!isApiUnavailableStatus(r.status)) {
+          throw new Error(r.json?.error || `falha list (${r.status || "sem status"})`);
+        }
+        log(`API de backup indisponível (${r.status}). Exibindo somente metadados locais do navegador.`);
+      }
+      if (window.VSC_DB?.listInternalBackups) {
         const arr0 = await window.VSC_DB.listInternalBackups();
         const arr = (Array.isArray(arr0) ? arr0 : []).map(b => ({
           id: b?.id || "",
@@ -1965,20 +1968,15 @@
           sha256: b?.sha256 || "",
           format: b?.format || "meta_only"
         }));
-        log(`Backups internos: ${arr.length}`);
+        log(`Backups locais: ${arr.length}`);
         arr.slice(0, 20).forEach(b => log(`- ${b.id} | ${b.finished_at || ""} | ${b.bytes || 0} bytes | ${b.format || ""}`));
         renderBackups(arr);
         setProgress(100, "Lista carregada.");
         return arr;
       }
-      log("GET /api/backup/list");
-      const r = await apiJSON("/api/backup/list", "GET");
-      const arr = r.json?.backups || [];
-      log(`Backups: ${arr.length}`);
-      arr.slice(0, 20).forEach(b => log(`- ${b.id} | ${b.finished_at || ""} | ${b.bytes || 0} bytes`));
-      renderBackups(arr);
-      setProgress(100, "Lista carregada.");
-      return arr;
+      renderBackups([]);
+      setProgress(100, "Sem backend de backup neste ambiente.");
+      return [];
     }
 
     if (btnList) {
@@ -1992,18 +1990,30 @@
     async function doVerify(id){
       if (!id) { log("Selecione um backup."); return; }
       setProgress(10, "Verificando...");
-      if ((await getBackupMode()) !== "server" && window.VSC_DB?.getInternalBackup) {
+      if (window.VSC_DB?.getInternalBackup && isLocalStaticMode()) {
         const meta = await window.VSC_DB.getInternalBackup(id);
-        if (!meta) { log("ERRO: backup interno não encontrado."); setProgress(0, "Falha."); return; }
+        if (!meta) { log("ERRO: backup local não encontrado."); setProgress(0, "Falha."); return; }
         log(`VERIFY OK ✓ bytes=${meta?.size_bytes||0} sha256=${meta?.sha256||""} formato=${meta?.format||"meta_only"}`);
         setProgress(100, "Verificado.");
         return;
       }
       log(`GET /api/backup/verify/${id}`);
       const r = await apiJSON(`/api/backup/verify/${encodeURIComponent(id)}`, "GET");
-      if (!r.ok || r.json?.ok !== true) { log("ERRO: " + (r.json?.error || "falha verify")); setProgress(0, "Falha."); return; }
-      log(`VERIFY OK ✓ bytes=${r.json?.bytes||0} sha256=${r.json?.sha256||""}`);
-      setProgress(100, "Verificado.");
+      if (r.ok && r.json?.ok === true) {
+        log(`VERIFY OK ✓ bytes=${r.json?.bytes||0} sha256=${r.json?.sha256||""}`);
+        setProgress(100, "Verificado.");
+        return;
+      }
+      if (isApiUnavailableStatus(r.status) && window.VSC_DB?.getInternalBackup) {
+        log(`API de verificação indisponível (${r.status}). Validando metadado local.`);
+        const meta = await window.VSC_DB.getInternalBackup(id);
+        if (!meta) { log("ERRO: backup local não encontrado."); setProgress(0, "Falha."); return; }
+        log(`VERIFY OK ✓ bytes=${meta?.size_bytes||0} sha256=${meta?.sha256||""} formato=${meta?.format||"meta_only"}`);
+        setProgress(100, "Verificado localmente.");
+        return;
+      }
+      log("ERRO: " + (r.json?.error || `falha verify (${r.status || "sem status"})`));
+      setProgress(0, "Falha.");
     }
 
     if (btnVerifySel) {
@@ -2014,12 +2024,12 @@
     }
 
     if (btnDownloadSel) {
-      btnDownloadSel.addEventListener("click", async (ev) => {
+      btnDownloadSel.addEventListener("click", (ev) => {
         ev.preventDefault();
         const id = pickSelectedId();
         if (!id) { log("Selecione um backup."); return; }
-        if ((await getBackupMode()) !== "server") {
-          log("Modo navegador: use 'Fazer backup agora' para gerar um novo arquivo baixável.");
+        if (isLocalStaticMode()) {
+          log("Neste ambiente, gere um novo backup em arquivo pelo botão principal.");
           return;
         }
         log(`DOWNLOAD /api/backup/download/${id}`);
@@ -2038,8 +2048,8 @@
       if (btnRestoreSel) btnRestoreSel.disabled = true;
 
       try{
-        if ((await getBackupMode()) !== "server") {
-          log("Modo navegador: restauração por lista não está disponível. Use 'Restaurar de arquivo'.");
+        if (isLocalStaticMode()) {
+          log("Neste ambiente, restaure usando 'Restaurar de arquivo'.");
           setProgress(0, "Use arquivo local.");
           return;
         }
@@ -2047,7 +2057,10 @@
         await doVerify(id); // logs
         setProgress(30, "Baixando...");
         const resp = await fetch(`/api/backup/download/${encodeURIComponent(id)}`, { cache:"no-store" });
-        if (!resp.ok) throw new Error("falha download");
+        if (!resp.ok) {
+          if (isApiUnavailableStatus(resp.status)) throw new Error("api de backup indisponível para restauração por lista; use 'Restaurar de arquivo'");
+          throw new Error("falha download");
+        }
         const blob = await resp.blob();
         const file = new File([blob], `${id}.vscbak`, { type: "application/octet-stream" });
 
@@ -2083,15 +2096,19 @@
         const ok = confirm(`Excluir backup ${id}?\n\nEsta ação não pode ser desfeita.`);
         if (!ok) { log("Cancelado."); return; }
         try{
-          if ((await getBackupMode()) !== "server") {
-            log("Modo navegador: exclusão remota não está disponível neste painel.");
-            setProgress(0, "Indisponível no modo navegador.");
+          if (isLocalStaticMode()) {
+            log("Exclusão de backups locais do navegador não é suportada por este painel.");
+            setProgress(0, "Indisponível neste modo.");
             return;
           }
           setProgress(10, "Excluindo...");
           log(`POST /api/backup/delete/${id}`);
           const r = await apiJSON(`/api/backup/delete/${encodeURIComponent(id)}`, "POST", {});
-          if (!r.ok || r.json?.ok !== true) throw new Error(r.json?.error || "falha ao excluir");
+          if (!r.ok) {
+            if (isApiUnavailableStatus(r.status)) throw new Error("api de exclusão indisponível neste ambiente");
+            throw new Error(r.json?.error || "falha ao excluir");
+          }
+          if (r.json?.ok !== true) throw new Error(r.json?.error || "falha ao excluir");
           log(`Excluído ✓ (${(r.json?.removed||[]).join(", ")})`);
           setProgress(100, "Excluído.");
           await refreshList();
@@ -2107,15 +2124,19 @@
         ev.preventDefault();
         try{
           const keep = Math.max(1, Math.min(200, parseInt(String(inpKeepLast?.value||"10"),10) || 10));
-          if ((await getBackupMode()) !== "server") {
-            log(`Modo navegador: retenção remota do painel não se aplica. Limite sugerido: ${keep}.`);
-            setProgress(0, "Indisponível no modo navegador.");
+          if (isLocalStaticMode()) {
+            log(`Retenção automática centralizada não se aplica neste modo. Limite sugerido: ${keep}.`);
+            setProgress(0, "Indisponível neste modo.");
             return;
           }
           setProgress(10, "Aplicando retenção...");
           log(`POST /api/backup/retention keep_last=${keep}`);
           const r = await apiJSON("/api/backup/retention", "POST", { keep_last: keep });
-          if (!r.ok || r.json?.ok !== true) throw new Error(r.json?.error || "falha retenção");
+          if (!r.ok) {
+            if (isApiUnavailableStatus(r.status)) throw new Error("api de retenção indisponível neste ambiente");
+            throw new Error(r.json?.error || "falha retenção");
+          }
+          if (r.json?.ok !== true) throw new Error(r.json?.error || "falha retenção");
           log(`Retenção aplicada ✓ removidos=${(r.json?.deleted||[]).length}`);
           setProgress(100, "Retenção aplicada.");
           await refreshList();
@@ -2130,15 +2151,19 @@
       btnAudit.addEventListener("click", async (ev) => {
         ev.preventDefault();
         try{
-          if ((await getBackupMode()) !== "server") {
-            log("Modo navegador: auditoria do backend não disponível.");
-            setProgress(0, "Indisponível no modo navegador.");
+          if (isLocalStaticMode()) {
+            log("Auditoria centralizada do backend não está disponível neste modo.");
+            setProgress(0, "Indisponível neste modo.");
             return;
           }
           setProgress(10, "Carregando auditoria...");
           log("GET /api/backup/audit");
           const r = await apiJSON("/api/backup/audit?limit=200", "GET");
-          if (!r.ok || r.json?.ok !== true) throw new Error(r.json?.error || "falha auditoria");
+          if (!r.ok) {
+            if (isApiUnavailableStatus(r.status)) throw new Error("api de auditoria indisponível neste ambiente");
+            throw new Error(r.json?.error || "falha auditoria");
+          }
+          if (r.json?.ok !== true) throw new Error(r.json?.error || "falha auditoria");
           const lines = r.json?.lines || [];
           log(`Auditoria (${lines.length}):`);
           lines.slice(-50).forEach(l => log("· " + l));
@@ -2283,10 +2308,9 @@
       if (btnCancel) btnCancel.disabled = false;
       if (btnBackup) btnBackup.disabled = true;
 
-      const mode = await getBackupMode();
-      if (mode !== "server") {
+      if (isLocalStaticMode()) {
         try {
-          await doBackupLocalFallback("API de backup remoto indisponível neste ambiente. Alternando para backup em arquivo.");
+          await doBackupFileFallback("modo local/off-line");
         } finally {
           _session = null;
           if (btnCancel) btnCancel.disabled = true;
@@ -2297,19 +2321,21 @@
 
       const sess = await (async () => {
         const r = await apiJSON("/api/backup/session", "POST", {});
-        if (!r.ok || r.json?.ok !== true) {
-          if ([404,405,501].includes(r.status) && supportsBrowserBackup()) {
-            await doBackupLocalFallback(`API remota retornou ${r.status}. Alternando para backup em arquivo.`);
-            return null;
-          }
-          throw new Error(r.json?.error || "Falha ao iniciar sessão");
+        if (!r.ok) {
+          if (isApiUnavailableStatus(r.status)) return null;
+          throw new Error(r.json?.error || `Falha ao iniciar sessão (${r.status || "sem status"})`);
         }
+        if (r.json?.ok !== true) throw new Error(r.json?.error || "Falha ao iniciar sessão");
         return r.json;
       })();
       if (!sess) {
-        _session = null;
-        if (btnCancel) btnCancel.disabled = true;
-        if (btnBackup) btnBackup.disabled = false;
+        try {
+          await doBackupFileFallback("API remota ausente ou incompatível");
+        } finally {
+          _session = null;
+          if (btnCancel) btnCancel.disabled = true;
+          if (btnBackup) btnBackup.disabled = false;
+        }
         return;
       }
       _session = sess.id;
