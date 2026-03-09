@@ -267,13 +267,46 @@
         }, 1500);
       }
 
-      function wireLogout(){
-        var btn = document.getElementById("vscLogoutBtn");
+      function bindLogout(id){
+        var btn = document.getElementById(id);
         if(!btn) return;
         btn.addEventListener("click", function(ev){
           try{ ev.preventDefault(); ev.stopPropagation(); }catch(_){ }
           handleLogout();
         });
+      }
+
+      function updatePending(n){
+        ["vscSyncPending","vscMobilePending"].forEach(function(id){
+          var el = document.getElementById(id);
+          if(el) el.textContent = String(Number(n || 0));
+        });
+      }
+
+      function bindSync(id){
+        var btn = document.getElementById(id);
+        if(!btn) return;
+        btn.addEventListener("click", function(ev){
+          try{ ev.preventDefault(); ev.stopPropagation(); }catch(_){ }
+          try{
+            if(window.VSC_RELAY && typeof window.VSC_RELAY.syncNow === "function") {
+              window.VSC_RELAY.syncNow();
+            }
+          }catch(_){ }
+        });
+      }
+
+      function onProgress(ev){
+        var d = (ev && ev.detail) || {};
+        updatePending(d.pending || 0);
+      }
+
+      function syncInitialStatus(){
+        try{
+          if(window.VSC_RELAY && typeof window.VSC_RELAY.status === "function") {
+            onProgress({ detail: window.VSC_RELAY.status() });
+          }
+        }catch(_){ }
       }
 
       function onStorage(ev){
@@ -295,14 +328,17 @@
         wireNavToTop();
         loadLogoA();
         updateSessionBox();
-        wireLogout();
+        bindLogout("vscLogoutBtn");
+        bindSync("vscSyncBtn");
+        syncInitialStatus();
         window.addEventListener("storage", onStorage);
         window.addEventListener("message", onMessage);
+        window.addEventListener("vsc:sync-progress", onProgress);
       }
 
       if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot, {once:true});
       else boot();
     })();
-  </script>  </script>
+  </script>
 </body>
 </html>
