@@ -32,7 +32,7 @@ export async function onRequestGet(context) {
       meta: result.meta || null,
       snapshot: result.snapshot || null,
     }, 200, request);
-  } catch (error) {
-    return json({ ok: false, error: 'sync_pull_failed', detail: String(error?.message || error || 'unknown_error') }, 500, request);
+  } catch (err) {
+    return json({ ok: false, error: 'sync_pull_failed', detail: String(err && (err.message || err) || 'unknown_error') }, 500, request);
   }
 }

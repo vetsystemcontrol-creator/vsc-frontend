@@ -32,19 +32,27 @@ function normalizeTenant(raw) {
   return v.replace(/[^a-z0-9._:-]+/g, '-').slice(0, 180) || 'tenant-default';
 }
 
-function isD1Like(db) {
-  return !!(db && typeof db.prepare === 'function' && typeof db.exec === 'function');
+function isD1Binding(db) {
+  return !!(db && typeof db.prepare === 'function');
 }
 
 function getBinding(env) {
   if (!env) return null;
   const db = env.DB || env.D1 || env.VSC_DB || null;
-  return isD1Like(db) ? db : null;
+  return isD1Binding(db) ? db : null;
+}
+
+async function execStatements(db, statements = []) {
+  for (const raw of statements) {
+    const sql = String(raw || '').trim();
+    if (!sql) continue;
+    await db.prepare(sql).run();
+  }
 }
 
 async function ensureD1Schema(db) {
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS vsc_state_snapshots (
+  await execStatements(db, [
+    `CREATE TABLE IF NOT EXISTS vsc_state_snapshots (
       tenant TEXT PRIMARY KEY,
       revision TEXT NOT NULL,
       sha256 TEXT NOT NULL,
@@ -53,9 +61,9 @@ async function ensureD1Schema(db) {
       exported_at TEXT,
       source TEXT,
       snapshot_json TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_vsc_state_saved_at ON vsc_state_snapshots(saved_at);
-  `);
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_vsc_state_saved_at ON vsc_state_snapshots(saved_at)`
+  ]);
 }
 
 export async function getCapabilities(env) {
@@ -64,7 +72,6 @@ export async function getCapabilities(env) {
     available: true,
     local_static_mode: false,
     remote_sync_allowed: !!(getBinding(env) || env?.VSC_STATE_BUCKET || env?.STATE_BUCKET || env?.R2),
-    storage_mode: getBinding(env) ? 'd1' : ((env?.VSC_STATE_BUCKET || env?.STATE_BUCKET || env?.R2) ? 'object-store' : 'none'),
   };
 }
 
