@@ -871,6 +871,36 @@ req.onupgradeneeded = (e) => {
     };
   }
 
+  async function _countPendingOutbox(){
+    try{
+      const db = await openDB();
+      return await new Promise((resolve) => {
+        try{
+          const tx = db.transaction([STORE_OUTBOX], "readonly");
+          const st = tx.objectStore(STORE_OUTBOX);
+          let req = null;
+          if (st.indexNames && st.indexNames.contains("status")) req = st.index("status").count("PENDING");
+          else req = st.getAll();
+          req.onsuccess = () => {
+            try{
+              const result = req.result;
+              if (typeof result === "number") resolve(result || 0);
+              else resolve((Array.isArray(result) ? result : []).filter(x => x && x.status === "PENDING").length);
+            }catch(_){ resolve(0); }
+          };
+          req.onerror = () => resolve(0);
+        }catch(_){ resolve(0); }
+      });
+    }catch(_){ return 0; }
+  }
+
+  async function _emitOutboxChanged(){
+    const pending = await _countPendingOutbox();
+    try{ window.dispatchEvent(new CustomEvent("vsc:outbox-changed", { detail:{ pending } })); }catch(_){ }
+    try{ window.dispatchEvent(new CustomEvent("vsc:sync-progress", { detail:{ pending, running:false } })); }catch(_){ }
+    return pending;
+  }
+
   async function outboxEnqueue(entity, action, entity_id, payload){
     const evt = makeOutboxEvent(entity, entity, action, entity_id, payload);
     await tx([STORE_OUTBOX], "readwrite", (s) => {
@@ -996,6 +1026,7 @@ req.onupgradeneeded = (e) => {
 
     // pós-commit: processa fila de backup sem travar UI
     _kickBackupWorker();
+    await _emitOutboxChanged();
 
     return { ok:true, outbox_id: evt.id };
   }
