@@ -82,6 +82,34 @@
     );
   }
 
+  function _safeJsonParse(v, fb = null) {
+    try { return JSON.parse(v); } catch (_) { return fb; }
+  }
+
+  function _normalizeDigits(v) {
+    return String(v || '').replace(/\D+/g, '');
+  }
+
+  function _getTenantHeader() {
+    try {
+      const empresa = _safeJsonParse(localStorage.getItem('vsc_empresa_v1'), null) ||
+                      _safeJsonParse(localStorage.getItem('VSC_EMPRESA_V1'), null);
+      const cnpj = _normalizeDigits(empresa && (empresa.cnpj || empresa.CNPJ || empresa.documento || empresa.doc));
+      if (cnpj) return `tenant-${cnpj}`;
+      const nome = String((empresa && (empresa.razao || empresa.nome_fantasia || empresa.nome)) || '').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+      if (nome) return `tenant-${nome}`;
+    } catch (_) {}
+    return 'tenant-default';
+  }
+
+  function _getUserHeader() {
+    try {
+      const user = _safeJsonParse(localStorage.getItem('vsc_user'), null);
+      return String(user && (user.username || user.nome || user.name || user.id) || 'anonymous').slice(0, 120);
+    } catch (_) {}
+    return 'anonymous';
+  }
+
   function _emitProgress(extra = {}) {
     const detail = {
       ok: !_lastError,
@@ -270,6 +298,8 @@
       headers: {
         'Content-Type': 'application/json',
         'X-VSC-Token': token,
+        'X-VSC-Tenant': _getTenantHeader(),
+        'X-VSC-User': _getUserHeader(),
       },
       body: JSON.stringify({ operations: batch }),
     });
@@ -298,6 +328,8 @@
         headers: {
           'Content-Type': 'application/json',
           'X-VSC-Token': token,
+          'X-VSC-Tenant': _getTenantHeader(),
+          'X-VSC-User': _getUserHeader(),
         },
         body: JSON.stringify(body),
       });
@@ -393,13 +425,27 @@
 
             const resp = await _pushBatch(batch);
 
-            // Ack
-            if (ids.length) {
-              await _markBatch(db, ids, { status: 'DONE', done_at: _now(), last_ack: resp || null });
+            const ackIds = Array.isArray(resp && resp.ack_ids) && resp.ack_ids.length
+              ? resp.ack_ids.map(String)
+              : batch.map((ev) => String(ev && ev.op_id || ''));
+            const ackedDbIds = batch
+              .filter((ev) => ackIds.includes(String(ev && ev.op_id || '')))
+              .map((ev) => ev.id)
+              .filter(Boolean);
+            const pendingDbIds = batch
+              .filter((ev) => !ackIds.includes(String(ev && ev.op_id || '')))
+              .map((ev) => ev.id)
+              .filter(Boolean);
+
+            if (ackedDbIds.length) {
+              await _markBatch(db, ackedDbIds, { status: 'DONE', done_at: _now(), last_ack: resp || null });
+            }
+            if (pendingDbIds.length) {
+              await _markBatch(db, pendingDbIds, { status: 'PENDING', updated_at: _now(), last_error: 'partial_ack' });
             }
 
             _stats.sent += batch.length;
-            _stats.acked += batch.length;
+            _stats.acked += ackedDbIds.length;
 
             const dt = _now() - t0;
             _stats.lastDurationMs = dt;
