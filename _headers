@@ -1,32 +1,9 @@
-/*
+/* 
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
+  # Permitir frames apenas do próprio domínio (necessário para a topbar via iframe)
   X-Frame-Options: SAMEORIGIN
   Content-Security-Policy: frame-ancestors 'self'
   Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=(), usb=()
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Resource-Policy: same-origin
-
-/*.html
-  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
-
-/topbar.html
-  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
-
-/sw.js
-  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
-
-/modules/*.js
-  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
-
-/vendor/*.js
-  Cache-Control: public, max-age=31536000, immutable
-
-/assets/styles.css
-  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
-
-/assets/css/*.css
-  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
-
-/manifest.webmanifest
-  Cache-Control: no-store, no-cache, must-revalidate, max-age=0

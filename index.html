@@ -2,45 +2,47 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
-  <meta http-equiv="Pragma" content="no-cache">
-  <meta http-equiv="Expires" content="0">
   <title>Vet System Control – Equine</title>
   <link rel="manifest" href="/manifest.webmanifest">
-  <script>
-    (function(){
-      try{
-        var sid = localStorage.getItem('vsc_session_id');
-        location.replace(sid ? '/dashboard' : '/login');
-      }catch(_){
-        location.replace('/login');
-      }
-    })();
-  </script>
-  <noscript>
-    <meta http-equiv="refresh" content="0; url=/login">
-  </noscript>
-  <style>
-    html,body{height:100%;margin:0;background:#f6faf8;color:#173424;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;}
-    body{display:grid;place-items:center;}
-    .boot{display:flex;flex-direction:column;align-items:center;gap:12px;padding:24px;text-align:center;}
-    .boot__spinner{width:38px;height:38px;border:3px solid rgba(31,122,74,.14);border-top-color:#2fb26a;border-radius:50%;animation:spin .8s linear infinite;}
-    .boot__title{font-size:18px;font-weight:800;}
-    .boot__sub{font-size:13px;color:#5f746a;}
-    @keyframes spin{to{transform:rotate(360deg);}}
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="modules/vsc_db.js" charset="utf-8"></script>
+  <script src="modules/auth.js" charset="utf-8"></script>
+  <script src="modules/auth_guard.js" charset="utf-8"></script>
+<style>
+
+    /* ─── Topbar (Oficial) ──────────────────────────────────────────────────── */
+    #vscTopbarFrame { width: 100%; height: 86px; border: 0; display: block; background: #fff; }
+    .topbar, .top-bar, header.topbar, header.top-bar,
+    #topbar, #topBar, #headerTopbar { display: none !important; }
+    body { margin-top: 0 !important; }
+
+</style>
 </head>
 <body>
-  <div class="boot" aria-live="polite">
-    <div class="boot__spinner" aria-hidden="true"></div>
-    <div class="boot__title">Vet System Control – Equine</div>
-    <div class="boot__sub">Redirecionando com segurança…</div>
-  </div>
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', function(){ navigator.serviceWorker.register('/sw.js').catch(function(){}); });
-    }
-  </script>
+<script>
+  // Entrada única (padrão enterprise): sempre decide login vs dashboard.
+  (function(){
+    try{
+      const sid = localStorage.getItem("vsc_session_id");
+      const isLogin = /(?:^|\/)(login\.html)$/i.test(location.pathname);
+      const isDash  = /(?:^|\/)(dashboard\.html)$/i.test(location.pathname);
+      if (!isLogin && !isDash){
+        if (sid) location.replace("dashboard.html");
+        else location.replace("login.html");
+      }
+    }catch(e){}
+  })();
+</script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(()=>{}));
+  }
+</script>
+
+<body>
+<iframe id="vscTopbarFrame" src="topbar.html?v=final" title="Navegação"></iframe>
+
+  <h1>Vet System Control – Equine</h1>
+  <p>Base limpa inicial do Vet System Control – Equine.</p>
 </body>
 </html>

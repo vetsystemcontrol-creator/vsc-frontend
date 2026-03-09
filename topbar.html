@@ -65,20 +65,20 @@
     }
   </style>
 </head>
-<body data-vsc-topbar-ready="1">
+<body>
   <header class="vsc-topbar">
     <div class="vsc-topbar__brand">
-      <img id="vscLogoSistema" src="/assets/brand/vsc-logo-horizontal.png" alt="Vet System Control | Equine" />
+      <img id="vscLogoSistema" src="assets/brand/vsc-logo-horizontal.png" alt="Vet System Control | Equine" />
     </div>
     <div class="vsc-topbar__navwrap">
       <nav class="vsc-topbar__nav" id="vscTopbarNav" aria-label="Navegação principal">
-        <a href="/dashboard" data-route="dashboard">Dashboard</a>
-        <a href="/clientes" data-route="clientes">Clientes</a>
-        <a href="/animais" data-route="animais">Animais</a>
-        <a href="/reproducao_equina" data-route="reproducao_equina">Reprodução</a>
-        <a href="/atendimentos" data-route="atendimentos">Atendimentos</a>
-        <a href="/produtos" data-route="produtos">Produtos</a>
-        <a href="/empresa" data-route="empresa">Empresa</a>
+        <a href="dashboard.html" data-route="dashboard.html">Dashboard</a>
+        <a href="clientes.html" data-route="clientes.html">Clientes</a>
+        <a href="animais.html" data-route="animais.html">Animais</a>
+        <a href="reproducao_equina.html" data-route="reproducao_equina.html">Reprodução</a>
+        <a href="atendimentos.html" data-route="atendimentos.html">Atendimentos</a>
+        <a href="produtos.html" data-route="produtos.html">Produtos</a>
+        <a href="empresa.html" data-route="empresa.html">Empresa</a>
       </nav>
     </div>
     <div class="vsc-topbar__right">
@@ -104,19 +104,20 @@
     </div>
   </header>
 
-  <script src="/vendor/jszip.min.js"></script>
-  <script src="/modules/vsc_db.js"></script>
-  <script src="/modules/vsc-outbox-relay.js"></script>
-  <script src="/modules/vsc-sync-ui.js"></script>
-  <script src="/modules/auth.js" charset="utf-8"></script>
-  <script src="/modules/ui-global.js?v=20260308c"></script>
+  <script src="vendor/jszip.min.js"></script>
+  <script src="modules/vsc_db.js"></script>
+  <script src="modules/vsc-outbox-relay.js"></script>
+  <script src="modules/vsc-sync-ui.js"></script>
+  <script src="modules/auth.js" charset="utf-8"></script>
+  <script src="modules/auth_guard.js" charset="utf-8"></script>
+  <script src="modules/ui-global.js?v=20260307f"></script>
   <script>
     (function(){
       "use strict";
 
       var EMPRESA_KEY = "vsc_empresa_v1";
       var LOGOUT_FLAG_KEY = "vsc_logout_in_progress";
-      var LOGIN_TARGET = "/login?logout=1";
+      var LOGIN_TARGET = "login.html?logout=1";
 
       function getTopWindow(){
         try{ if(window.top && window.top !== window) return window.top; }catch(_){ }
@@ -151,12 +152,12 @@
       function normalizeFile(pathname){
         var p = String(pathname || "").split("?")[0].split("#")[0];
         p = p.substring(p.lastIndexOf("/") + 1);
-        return p || "dashboard";
+        return p || "dashboard.html";
       }
 
       function setActiveFromCurrentContext(){
-        var route = "dashboard";
-        try{ route = normalizeFile(window.__VSC_HOST_ROUTE || getTopWindow().location.pathname || ""); }catch(_){ route = normalizeFile(window.__VSC_HOST_ROUTE || location.pathname || ""); }
+        var route = "dashboard.html";
+        try{ route = normalizeFile(getTopWindow().location.pathname || ""); }catch(_){ route = normalizeFile(location.pathname || ""); }
         var nav = document.getElementById("vscTopbarNav");
         if(!nav) return;
         nav.querySelectorAll("a[data-route]").forEach(function(a){
@@ -302,6 +303,6 @@
       if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot, {once:true});
       else boot();
     })();
-  </script>
+  </script>  </script>
 </body>
 </html>

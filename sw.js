@@ -1,29 +1,12 @@
-const CACHE = "vsc-static-v5";
+const CACHE = "vsc-static-v2";
 const CORE = [
-  "/",
+  "/index.html",
+  "/login.html",
+  "/dashboard.html",
   "/login",
   "/dashboard",
-  "/404.html",
   "/manifest.webmanifest"
 ];
-
-function isSameOriginGet(req, url) {
-  return req.method === "GET" && url.origin === self.location.origin;
-}
-
-function isHtmlLikeRequest(req) {
-  return req.mode === "navigate" || req.destination === "document" || req.destination === "iframe";
-}
-
-function shouldCache(req, res) {
-  if (!res || !res.ok || res.status >= 300) return false;
-  const url = new URL(req.url);
-  const ct = String(res.headers.get("content-type") || "").toLowerCase();
-  if (url.pathname === "/sw.js" || url.pathname === "/topbar.html") return false;
-  if (ct.includes("text/html")) return false;
-  return ct.includes("text/") || ct.includes("javascript") || ct.includes("css") || ct.includes("image") || ct.includes("font") || ct.includes("svg") || ct.includes("json");
-}
-
 self.addEventListener("install", (event) => {
   event.waitUntil((async ()=>{
     const cache = await caches.open(CACHE);
@@ -43,34 +26,44 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   const url = new URL(req.url);
-  if (!isSameOriginGet(req, url)) return;
 
-  if (isHtmlLikeRequest(req)) {
+  // Only handle same-origin GET
+  if (req.method !== "GET" || url.origin !== self.location.origin) return;
+
+  // Navigations: always go network-first (avoid "tela preta" por HTML cacheado/redirects)
+  if (req.mode === "navigate") {
     event.respondWith((async () => {
       try {
-        return await fetch(req, { cache: "no-store" });
+        // network first
+        return await fetch(req);
       } catch (e) {
         const cache = await caches.open(CACHE);
-        return (await cache.match("/404.html")) ||
-          new Response("Offline", { status: 503, headers: { "content-type": "text/plain; charset=utf-8" } });
+        // fallback offline
+        return (await cache.match("/login.html")) || (await cache.match("/index.html")) ||
+          new Response("Offline", { status: 503, headers: { "content-type": "text/plain" } });
       }
     })());
     return;
   }
 
+  // Static assets: cache-first
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
     const cached = await cache.match(req);
     if (cached) return cached;
 
     try {
-      const res = await fetch(req, { cache: "no-store" });
-      if (shouldCache(req, res)) {
+      const res = await fetch(req);
+      const ct = res.headers.get("content-type") || "";
+      const status = res.status;
+
+      // Nunca cachear redirects (301/302/307/308) para evitar loops persistidos
+      if (res.ok && status < 300 && (ct.includes("text/") || ct.includes("javascript") || ct.includes("css") || ct.includes("image") || ct.includes("font"))) {
         cache.put(req, res.clone());
       }
       return res;
     } catch (e) {
-      return new Response("Offline", { status: 503, headers: { "content-type": "text/plain; charset=utf-8" } });
+      return new Response("Offline", { status: 503, headers: { "content-type": "text/plain" } });
     }
   })());
 });
