@@ -287,6 +287,29 @@
         });
       }
 
+      async function readPendingFromTopDB(){
+        try{
+          var topWin = getTopWindow();
+          if(!(topWin && topWin.VSC_DB && typeof topWin.VSC_DB.openDB === "function")) return 0;
+          var db = await topWin.VSC_DB.openDB();
+          return await new Promise(function(resolve){
+            try{
+              var tx = db.transaction(["sync_queue"], "readonly");
+              var st = tx.objectStore("sync_queue");
+              var req = (st.indexNames && st.indexNames.contains("status")) ? st.index("status").count("PENDING") : st.getAll();
+              req.onsuccess = function(){
+                try{
+                  var result = req.result;
+                  if(typeof result === "number") resolve(result || 0);
+                  else resolve((Array.isArray(result) ? result : []).filter(function(x){ return x && x.status === "PENDING"; }).length);
+                }catch(_){ resolve(0); }
+              };
+              req.onerror = function(){ resolve(0); };
+            }catch(_){ resolve(0); }
+          });
+        }catch(_){ return 0; }
+      }
+
       function bindSync(id){
         var btn = document.getElementById(id);
         if(!btn || btn.dataset.vscSyncBound === "1") return;
@@ -316,11 +339,14 @@
         updatePending(d.pending || 0);
       }
 
-      function syncInitialStatus(){
+      async function syncInitialStatus(){
         try{
           if(window.VSC_RELAY && typeof window.VSC_RELAY.status === "function") {
             onProgress({ detail: window.VSC_RELAY.status() });
           }
+        }catch(_){ }
+        try{
+          updatePending(await readPendingFromTopDB());
         }catch(_){ }
       }
 
@@ -345,10 +371,21 @@
         updateSessionBox();
         bindLogout("vscLogoutBtn");
         bindSync("vscSyncBtn");
-        syncInitialStatus();
+        Promise.resolve(syncInitialStatus()).catch(function(){});
         window.addEventListener("storage", onStorage);
         window.addEventListener("message", onMessage);
         window.addEventListener("vsc:sync-progress", onProgress);
+        try{
+          var topWin = getTopWindow();
+          if(topWin && topWin !== window){
+            topWin.addEventListener("vsc:sync-progress", onProgress);
+            topWin.addEventListener("vsc:outbox-changed", function(ev){
+              var d = (ev && ev.detail) || {};
+              if(typeof d.pending === "number") updatePending(d.pending);
+              else Promise.resolve(syncInitialStatus()).catch(function(){});
+            });
+          }
+        }catch(_){ }
       }
 
       if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot, {once:true});
