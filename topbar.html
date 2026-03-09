@@ -35,20 +35,21 @@
     .vsc-topbar__nav a{font-size:13px;font-weight:900;padding:12px 14px;border-radius:999px;color:#173424;text-decoration:none;border:1px solid transparent;line-height:1;flex:0 0 auto;transition:all .15s ease;display:inline-flex;align-items:center;justify-content:center;min-height:42px}
     .vsc-topbar__nav a:hover{background:rgba(47,178,106,.10);border-color:rgba(47,178,106,.14)}
     .vsc-topbar__nav a.is-active{background:linear-gradient(180deg,#e8f7ee,#dff1e7);color:var(--vsc-green-dark);box-shadow:inset 0 0 0 1px rgba(31,122,74,.10), 0 8px 18px rgba(47,178,106,.10)}
-    .vsc-topbar__right{min-width:0;flex:0 1 250px;display:flex;align-items:center;justify-content:flex-end;gap:8px;min-height:72px}
+    .vsc-topbar__right{min-width:0;flex:0 1 340px;display:flex;align-items:center;justify-content:flex-end;gap:10px;min-height:72px}
     .vsc-logo-a{display:none;height:58px;width:auto;max-width:180px;object-fit:contain;border:0;background:transparent;user-select:none}
-    .vsc-sync{display:flex;align-items:center;gap:10px;flex:0 0 auto}
+    .vsc-sync{display:flex;flex-direction:column;align-items:flex-start;gap:4px;flex:0 0 164px;min-width:164px}
     .vsc-sync__btn{appearance:none;border:1px solid rgba(47,178,106,.18);background:rgba(47,178,106,.10);color:var(--vsc-green-dark);font-weight:800;font-size:12px;padding:10px 12px;border-radius:999px;cursor:pointer;display:flex;align-items:center;gap:0;line-height:1;white-space:nowrap;min-width:42px;justify-content:center}
     .vsc-sync__btn:hover{background:rgba(47,178,106,.14)}
     .vsc-sync__btn:disabled{opacity:.55;cursor:not-allowed}
     .vsc-sync__icon{font-size:14px}
-    .vsc-sync__meta{display:flex;align-items:center;gap:6px;font-weight:900;font-size:12px;color:#111;padding:0 4px}
+    .vsc-sync__meta{display:flex;align-items:center;gap:6px;font-weight:900;font-size:12px;color:#111;padding:0 4px;min-height:18px}
     .vsc-sync__dot{width:10px;height:10px;border-radius:999px;background:var(--vsc-danger);box-shadow:0 0 0 2px rgba(0,0,0,.06) inset}
     .vsc-sync__pending{min-width:18px;text-align:right;font-variant-numeric:tabular-nums}
-    .vsc-userbox{display:flex;align-items:center;gap:6px;padding:6px 7px 6px 12px;border:1px solid rgba(0,0,0,.08);border-radius:999px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.04);min-width:0;max-width:170px;flex:0 1 auto}
+    .vsc-sync__note{font-size:11px;line-height:1.1;color:var(--vsc-muted);padding-left:2px;max-width:164px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .vsc-userbox{display:flex;align-items:center;gap:6px;padding:6px 7px 6px 12px;border:1px solid rgba(0,0,0,.08);border-radius:999px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.04);min-width:0;max-width:150px;flex:0 1 auto}
     .vsc-userbox__meta{display:flex;flex-direction:column;min-width:0;line-height:1.1}
     .vsc-userbox__label{display:none;font-size:10px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--vsc-muted)}
-    .vsc-userbox__name{font-size:12px;font-weight:900;color:var(--vsc-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:76px}
+    .vsc-userbox__name{font-size:12px;font-weight:900;color:var(--vsc-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60px}
     .vsc-userbox__role{display:none;font-size:11px;font-weight:700;color:var(--vsc-green-dark);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
     .vsc-logout-btn{appearance:none;border:1px solid rgba(17,24,39,.12);background:#fff;color:var(--vsc-text);font-weight:900;font-size:12px;padding:9px 10px;border-radius:999px;cursor:pointer;line-height:1;white-space:nowrap;transition:background .15s ease,border-color .15s ease,transform .15s ease;min-width:38px}
     .vsc-logout-btn:hover{background:#f9fafb;border-color:rgba(17,24,39,.22)}
@@ -58,9 +59,11 @@
       .vsc-topbar{padding:0 10px;gap:10px}
       .vsc-topbar__brand{min-width:144px;flex:0 1 144px}
       .vsc-topbar__brand img{height:60px;max-width:200px}
-      .vsc-topbar__right{min-width:0;flex:0 1 210px;gap:6px}
+      .vsc-topbar__right{min-width:0;flex:0 1 300px;gap:6px}
       .vsc-sync__label,.vsc-userbox__label,.vsc-userbox__role{display:none}
-      .vsc-userbox__name{max-width:64px}
+      .vsc-sync{flex-basis:132px;min-width:132px}
+      .vsc-sync__note{max-width:132px}
+      .vsc-userbox__name{max-width:52px}
       .vsc-logo-a{max-width:120px;height:60px}
     }
   </style>
@@ -85,12 +88,12 @@
       <div class="vsc-sync" id="vscSyncWidget" aria-label="Sincronização">
         <button class="vsc-sync__btn" id="vscSyncBtn" type="button" title="Sincronizar agora">
           <span class="vsc-sync__icon" aria-hidden="true">⟳</span>
-          
         </button>
         <div class="vsc-sync__meta" title="Status de rede e fila de alterações">
           <span class="vsc-sync__dot" id="vscNetDot" aria-hidden="true"></span>
           <span class="vsc-sync__pending" id="vscSyncPending">0</span>
         </div>
+        <div class="vsc-sync__note" id="vscSyncNote" aria-live="polite"></div>
       </div>
       <div class="vsc-userbox" id="vscUserBox" aria-live="polite">
         <div class="vsc-userbox__meta">
@@ -108,6 +111,7 @@
   <script src="modules/vsc_db.js"></script>
   <script src="modules/vsc-outbox-relay.js"></script>
   <script src="modules/vsc-sync-ui.js"></script>
+  <script src="modules/vsc-cloud-sync.js"></script>
   <script src="modules/auth.js" charset="utf-8"></script>
   <script src="modules/auth_guard.js" charset="utf-8"></script>
   <script src="modules/ui-global.js?v=20260307f"></script>
@@ -283,16 +287,25 @@
         });
       }
 
+      async function runManualSync(){
+        try{
+          if(window.VSC_RELAY && typeof window.VSC_RELAY.syncNow === "function") {
+            await window.VSC_RELAY.syncNow();
+          }
+        }catch(_){ }
+        try{
+          if(window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.syncNow === "function") {
+            await window.VSC_CLOUD_SYNC.syncNow();
+          }
+        }catch(_){ }
+      }
+
       function bindSync(id){
         var btn = document.getElementById(id);
         if(!btn) return;
         btn.addEventListener("click", function(ev){
           try{ ev.preventDefault(); ev.stopPropagation(); }catch(_){ }
-          try{
-            if(window.VSC_RELAY && typeof window.VSC_RELAY.syncNow === "function") {
-              window.VSC_RELAY.syncNow();
-            }
-          }catch(_){ }
+          runManualSync();
         });
       }
 
@@ -334,6 +347,7 @@
         window.addEventListener("storage", onStorage);
         window.addEventListener("message", onMessage);
         window.addEventListener("vsc:sync-progress", onProgress);
+        window.addEventListener("vsc:cloud-sync", function(){ syncInitialStatus(); });
       }
 
       if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot, {once:true});

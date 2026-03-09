@@ -302,6 +302,21 @@
               <input id="pEAN" maxlength="32" placeholder="Ex.: 789..." inputmode="numeric" />
             </div>
             <div class="field">
+              <label for="pUnEstoque">Unidade base (Estoque)</label>
+              <input id="pUnEstoque" maxlength="12" placeholder="Ex.: UN, ML, G" />
+            </div>
+            <div class="field">
+              <label for="pUnCompraPadrao">Unidade de compra padrão</label>
+              <input id="pUnCompraPadrao" maxlength="12" placeholder="Ex.: CX, FR, KG" />
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="field">
+              <label for="pConvFator">Fator conversão Compra → Estoque</label>
+              <input id="pConvFator" maxlength="20" placeholder="Ex.: 10, 1000, 1" inputmode="decimal" />
+            </div>
+            <div class="field">
               <label for="pCusto">Custo (R$)</label>
               <input id="pCusto" maxlength="20" placeholder="0,00" inputmode="decimal" data-vsc-mask="money-br" />
             </div>
@@ -309,6 +324,11 @@
               <label for="pVenda">Valor de venda (R$)</label>
               <input id="pVenda" maxlength="20" placeholder="0,00" inputmode="decimal" data-vsc-mask="money-br" />
             </div>
+          </div>
+
+          <div class="field">
+            <label for="pConvResumo">Resumo da conversão XML</label>
+            <input id="pConvResumo" placeholder="Sem conversão configurada" disabled />
           </div>
 
           <div class="row">

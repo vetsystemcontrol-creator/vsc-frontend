@@ -2311,50 +2311,28 @@
         }
         buf = "";
       }
-      const db = await (window.VSC_DB.openDB ? window.VSC_DB.openDB() : new Promise((r, j) => { const q = indexedDB.open("vsc_db"); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); }));
       try {
-        const stores = Array.from(db.objectStoreNames);
-        buf += `{"format":"vsc_backup_stream_v1","created_at":${JSON.stringify(new Date().toISOString())},"db_name":"vsc_db","db_version":${db.version},"data":{
-`;
-        await flush(true);
-        for (let si = 0; si < stores.length; si++) {
+        if (!window.VSC_DB?.exportDump) throw new Error("VSC_DB.exportDump indisponível.");
+        log("Exportando snapshot canônico do sistema (IndexedDB + localStorage gerenciado)...");
+        setProgress(10, "Gerando snapshot...");
+        const dump = await window.VSC_DB.exportDump();
+        if (_cancel) throw new Error("Cancelado");
+        const payload = JSON.stringify(dump);
+        const blob = new Blob([payload], { type: "application/json" });
+        const total = Math.max(blob.size, 1);
+        for (let off = 0; off < blob.size; off += SAFE) {
           if (_cancel) throw new Error("Cancelado");
-          const sn = stores[si];
-          log(`Exportando: ${sn}`);
-          setProgress(5 + Math.floor((si / Math.max(stores.length, 1)) * 80), `${sn}...`);
-          buf += `${JSON.stringify(sn)}:[`;
-          await flush(true);
-          let lk = null, first = true;
-          for (;;) {
-            if (_cancel) throw new Error("Cancelado");
-            const batch = await new Promise((res, rej) => {
-              const tx = db.transaction([sn], "readonly");
-              const st = tx.objectStore(sn);
-              const rng = lk != null ? IDBKeyRange.lowerBound(lk, true) : null;
-              const rq = st.openCursor(rng, "next");
-              const out = []; let n = 0;
-              rq.onerror = () => rej(rq.error);
-              rq.onsuccess = () => {
-                const c = rq.result;
-                if (!c || n >= 200) return res({ items: out, lk: c ? c.key : lk, done: !c });
-                out.push(c.value); lk = c.key; n++; c.continue();
-              };
-            });
-            for (const item of batch.items) {
-              if (!first) buf += ",";
-              buf += JSON.stringify(item);
-              first = false;
-              if (buf.length > 64 * 1024) await flush(true);
-            }
-            lk = batch.lk;
-            if (batch.done) break;
-            await flush(true);
-          }
-          buf += `]${si < stores.length - 1 ? ",\n" : "\n"}`;
-          await flush(true);
+          const part = blob.slice(off, off + SAFE);
+          const u8 = new Uint8Array(await part.arrayBuffer());
+          await sendChunk(_session, seq++, u8);
+          sent += u8.length;
+          const done = Math.min(off + u8.length, blob.size);
+          const pct = 10 + Math.floor((done / total) * 80);
+          setProgress(Math.min(pct, 90), `Enviando backup... ${Math.min(100, Math.floor((done / total) * 100))}%`);
         }
-        buf += "}}\n";
-        await flush(true);
+        if (blob.size === 0) {
+          await sendChunk(_session, seq++, enc.encode(""));
+        }
         setProgress(95, "Finalizando...");
         const fin = await (async () => {
           const r = await apiJSON(`/api/backup?action=finish&sid=${encodeURIComponent(_session)}`, "POST", { seq_final: seq - 1, meta: { origin: "dashboard", sent_bytes: sent } });
