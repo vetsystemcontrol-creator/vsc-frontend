@@ -13,11 +13,6 @@ export async function onRequestOptions(context) {
   });
 }
 
-export async function onRequestGet(context) {
-  const { request } = context;
-  return json({ ok: false, error: 'method_not_allowed', allow: 'POST, OPTIONS' }, 405, request);
-}
-
 export async function onRequestPost(context) {
   const { request, env } = context;
   try {
@@ -67,7 +62,7 @@ export async function onRequestPost(context) {
       rejected,
       state_revision: stateRevision,
     }, status, request);
-  } catch (err) {
-    return json({ ok: false, error: 'sync_push_failed', detail: String(err && (err.message || err) || 'unknown_error') }, 500, request);
+  } catch (error) {
+    return json({ ok: false, error: 'sync_push_failed', detail: String(error?.message || error || 'unknown_error') }, 500, request);
   }
 }

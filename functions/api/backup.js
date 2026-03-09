@@ -12,12 +12,22 @@ const MAX_AUDIT = 500;
 const MAX_KEEP_LAST = 200;
 const DEFAULT_CHUNK_MAX = 256 * 1024;
 
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), { status, headers: JSON_HEADERS });
+
+function corsHeaders(request) {
+  const origin = request?.headers?.get("Origin") || "";
+  if (/^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin))
+    return { "Access-Control-Allow-Origin": origin, "Vary": "Origin" };
+  if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin))
+    return { "Access-Control-Allow-Origin": origin, "Vary": "Origin" };
+  return { "Access-Control-Allow-Origin": "*" };
 }
 
-function badRequest(message, status = 400) {
-  return json({ ok: false, error: message }, status);
+function json(data, status = 200, request = null) {
+  return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...(request ? corsHeaders(request) : {}) } });
+}
+
+function badRequest(message, status = 400, request = null) {
+  return json({ ok: false, error: message }, status, request);
 }
 
 function getBucket(env) {
@@ -106,7 +116,7 @@ async function listSessionChunks(bucket, sid) {
   return (listed.objects || []).map((o) => o.key).sort();
 }
 
-async function handleCapabilities(env) {
+async function handleCapabilities(env, request) {
   const bucket = getBucket(env);
   if (!bucket) {
     return json({
@@ -114,19 +124,19 @@ async function handleCapabilities(env) {
       available: false,
       storage: "browser",
       reason: "missing_BACKUPS_BUCKET_binding",
-    }, 200);
+    }, 200, request);
   }
   return json({
     ok: true,
     available: true,
     storage: "r2",
     chunk_max_bytes: DEFAULT_CHUNK_MAX,
-  });
+  }, 200, request);
 }
 
 async function handleStart(request, env) {
   const bucket = getBucket(env);
-  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501);
+  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501, request);
   const body = await request.json().catch(() => ({}));
   const sid = makeId();
   const createdAt = new Date().toISOString();
@@ -138,46 +148,46 @@ async function handleStart(request, env) {
     state: "open",
   });
   await appendAudit(bucket, { type: "session_start", sid, source: String(body?.source || "dashboard") });
-  return json({ ok: true, id: sid, chunk_max_bytes: DEFAULT_CHUNK_MAX });
+  return json({ ok: true, id: sid, chunk_max_bytes: DEFAULT_CHUNK_MAX }, 200, request);
 }
 
 async function handleChunk(request, env, url) {
   const bucket = getBucket(env);
-  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501);
+  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501, request);
   const sid = String(url.searchParams.get("sid") || "").trim();
   const seq = String(url.searchParams.get("seq") || "").trim();
-  if (!sid) return badRequest("sid ausente.");
-  if (seq === "") return badRequest("seq ausente.");
+  if (!sid) return badRequest("sid ausente.", 400, request);
+  if (seq === "") return badRequest("seq ausente.", 400, request);
   const meta = await readSessionMeta(bucket, sid);
-  if (!meta || meta.state !== "open") return badRequest("sessão inválida.", 404);
+  if (!meta || meta.state !== "open") return badRequest("sessão inválida.", 404, request);
   const data = await request.arrayBuffer();
   await bucket.put(`${SESSION_PREFIX}${sid}/chunks/${padSeq(seq)}.bin`, data, {
     httpMetadata: { contentType: "application/octet-stream" },
   });
-  return json({ ok: true, sid, seq: Number(seq), bytes: data.byteLength });
+  return json({ ok: true, sid, seq: Number(seq), bytes: data.byteLength }, 200, request);
 }
 
-async function handleAbort(env, url) {
+async function handleAbort(env, url, request) {
   const bucket = getBucket(env);
-  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501);
+  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501, request);
   const sid = String(url.searchParams.get("sid") || "").trim();
-  if (!sid) return badRequest("sid ausente.");
+  if (!sid) return badRequest("sid ausente.", 400, request);
   await deleteByPrefix(bucket, `${SESSION_PREFIX}${sid}/`);
   await appendAudit(bucket, { type: "session_abort", sid });
-  return json({ ok: true, aborted: sid });
+  return json({ ok: true, aborted: sid }, 200, request);
 }
 
 async function handleFinish(request, env, url) {
   const bucket = getBucket(env);
-  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501);
+  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501, request);
   const sid = String(url.searchParams.get("sid") || "").trim();
-  if (!sid) return badRequest("sid ausente.");
+  if (!sid) return badRequest("sid ausente.", 400, request);
   const body = await request.json().catch(() => ({}));
   const meta = await readSessionMeta(bucket, sid);
-  if (!meta || meta.state !== "open") return badRequest("sessão inválida.", 404);
+  if (!meta || meta.state !== "open") return badRequest("sessão inválida.", 404, request);
 
   const chunkKeys = await listSessionChunks(bucket, sid);
-  if (!chunkKeys.length) return badRequest("nenhum chunk recebido.");
+  if (!chunkKeys.length) return badRequest("nenhum chunk recebido.", 400, request);
   const chunks = [];
   let total = 0;
   for (const key of chunkKeys) {
@@ -227,12 +237,12 @@ async function handleFinish(request, env, url) {
   await writeIndex(bucket, indexObj);
   await deleteByPrefix(bucket, `${SESSION_PREFIX}${sid}/`);
   await appendAudit(bucket, { type: "backup_finish", id, sid, bytes: joined.byteLength, sha256 });
-  return json({ ok: true, id, file: item.file, bytes: item.bytes, sha256 });
+  return json({ ok: true, id, file: item.file, bytes: item.bytes, sha256 }, 200, request);
 }
 
-async function handleList(env) {
+async function handleList(env, request) {
   const bucket = getBucket(env);
-  if (!bucket) return json({ ok: true, backups: [], available: false, storage: "browser" });
+  if (!bucket) return json({ ok: true, backups: [], available: false, storage: "browser" }, 200, request);
   const indexObj = await readIndex(bucket);
   const backups = sortNewest(indexObj.items || []).map((item) => ({
     id: item.id,
@@ -242,7 +252,7 @@ async function handleList(env) {
     file: item.file,
     source: item.source || "dashboard",
   }));
-  return json({ ok: true, backups, available: true, storage: "r2" });
+  return json({ ok: true, backups, available: true, storage: "r2" }, 200, request);
 }
 
 async function findItem(bucket, id) {
@@ -251,25 +261,25 @@ async function findItem(bucket, id) {
   return { indexObj, item };
 }
 
-async function handleVerify(env, url) {
+async function handleVerify(env, url, request) {
   const bucket = getBucket(env);
-  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501);
+  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501, request);
   const id = String(url.searchParams.get("id") || "").trim();
-  if (!id) return badRequest("id ausente.");
+  if (!id) return badRequest("id ausente.", 400, request);
   const { item } = await findItem(bucket, id);
-  if (!item) return badRequest("backup não encontrado.", 404);
-  return json({ ok: true, id: item.id, bytes: item.bytes, sha256: item.sha256, file: item.file, finished_at: item.finished_at });
+  if (!item) return badRequest("backup não encontrado.", 404, request);
+  return json({ ok: true, id: item.id, bytes: item.bytes, sha256: item.sha256, file: item.file, finished_at: item.finished_at }, 200, request);
 }
 
-async function handleDownload(env, url) {
+async function handleDownload(env, url, request) {
   const bucket = getBucket(env);
-  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501);
+  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501, request);
   const id = String(url.searchParams.get("id") || "").trim();
-  if (!id) return badRequest("id ausente.");
+  if (!id) return badRequest("id ausente.", 400, request);
   const { item } = await findItem(bucket, id);
-  if (!item) return badRequest("backup não encontrado.", 404);
+  if (!item) return badRequest("backup não encontrado.", 404, request);
   const obj = await bucket.get(item.file_key);
-  if (!obj) return badRequest("arquivo não encontrado.", 404);
+  if (!obj) return badRequest("arquivo não encontrado.", 404, request);
   const headers = new Headers();
   headers.set("content-type", obj.httpMetadata?.contentType || "application/octet-stream");
   headers.set("content-disposition", `attachment; filename="${item.file || filenameFor(id)}"`);
@@ -281,22 +291,22 @@ async function handleDownload(env, url) {
 
 async function handleDelete(request, env, url) {
   const bucket = getBucket(env);
-  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501);
+  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501, request);
   const id = String(url.searchParams.get("id") || "").trim();
-  if (!id) return badRequest("id ausente.");
+  if (!id) return badRequest("id ausente.", 400, request);
   const { indexObj, item } = await findItem(bucket, id);
-  if (!item) return badRequest("backup não encontrado.", 404);
+  if (!item) return badRequest("backup não encontrado.", 404, request);
   await bucket.delete(item.file_key);
   const removed = [item.file_key];
   indexObj.items = (indexObj.items || []).filter((entry) => entry.id !== id);
   await writeIndex(bucket, indexObj);
   await appendAudit(bucket, { type: "backup_delete", id, file: item.file });
-  return json({ ok: true, removed });
+  return json({ ok: true, removed }, 200, request);
 }
 
 async function handleRetention(request, env) {
   const bucket = getBucket(env);
-  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501);
+  if (!bucket) return json({ ok: false, error: "BACKUPS_BUCKET binding ausente." }, 501, request);
   const body = await request.json().catch(() => ({}));
   const keepLast = Math.max(1, Math.min(MAX_KEEP_LAST, Number(body?.keep_last || 10)));
   const indexObj = await readIndex(bucket);
@@ -306,17 +316,17 @@ async function handleRetention(request, env) {
   if (remove.length) await bucket.delete(remove.map((item) => item.file_key));
   await writeIndex(bucket, { version: 1, items: keep });
   await appendAudit(bucket, { type: "retention_apply", keep_last: keepLast, removed: remove.map((x) => x.id) });
-  return json({ ok: true, keep_last: keepLast, removed: remove.map((x) => x.id), deleted: remove.map((x) => x.id) });
+  return json({ ok: true, keep_last: keepLast, removed: remove.map((x) => x.id), deleted: remove.map((x) => x.id) }, 200, request);
 }
 
-async function handleAudit(env, url) {
+async function handleAudit(env, url, request) {
   const bucket = getBucket(env);
-  if (!bucket) return json({ ok: true, lines: [], available: false, storage: "browser" });
+  if (!bucket) return json({ ok: true, lines: [], available: false, storage: "browser" }, 200, request);
   const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit") || 50)));
   const parsed = await readJsonObject(bucket, AUDIT_KEY, { version: 1, events: [] });
   const events = Array.isArray(parsed?.events) ? parsed.events.slice(0, limit) : [];
   const lines = events.map((event) => JSON.stringify(event));
-  return json({ ok: true, lines, available: true, storage: "r2" });
+  return json({ ok: true, lines, available: true, storage: "r2" }, 200, request);
 }
 
 export async function onRequest(context) {
@@ -328,9 +338,10 @@ export async function onRequest(context) {
     return new Response(null, {
       status: 204,
       headers: {
-        "access-control-allow-origin": url.origin,
+        ...corsHeaders(request),
         "access-control-allow-methods": "GET,POST,OPTIONS",
-        "access-control-allow-headers": "content-type",
+        "access-control-allow-headers": "content-type, x-vsc-tenant, x-vsc-user, x-vsc-token",
+        "access-control-max-age": "86400",
         "cache-control": "no-store",
       },
     });
@@ -338,29 +349,29 @@ export async function onRequest(context) {
 
   try {
     if (request.method === "GET") {
-      if (action === "capabilities") return await handleCapabilities(env);
-      if (action === "list") return await handleList(env);
-      if (action === "verify") return await handleVerify(env, url);
-      if (action === "download") return await handleDownload(env, url);
-      if (action === "audit") return await handleAudit(env, url);
-      return badRequest("ação GET inválida.");
+      if (action === "capabilities") return await handleCapabilities(env, request);
+      if (action === "list") return await handleList(env, request);
+      if (action === "verify") return await handleVerify(env, url, request);
+      if (action === "download") return await handleDownload(env, url, request);
+      if (action === "audit") return await handleAudit(env, url, request);
+      return badRequest("ação GET inválida.", 400, request);
     }
 
     if (request.method === "POST") {
       if (action === "start") return await handleStart(request, env);
       if (action === "chunk") return await handleChunk(request, env, url);
       if (action === "finish") return await handleFinish(request, env, url);
-      if (action === "abort") return await handleAbort(env, url);
+      if (action === "abort") return await handleAbort(env, url, request);
       if (action === "delete") return await handleDelete(request, env, url);
       if (action === "retention") return await handleRetention(request, env);
-      return badRequest("ação POST inválida.");
+      return badRequest("ação POST inválida.", 400, request);
     }
 
-    return badRequest("método não suportado.", 405);
+    return badRequest("método não suportado.", 405, request);
   } catch (error) {
     return json({
       ok: false,
       error: String(error?.message || error || "erro interno"),
-    }, 500);
+    }, 500, request);
   }
 }

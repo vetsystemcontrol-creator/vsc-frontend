@@ -128,25 +128,6 @@
     return `${_apiBase()}${path}`;
   }
 
-  function _getTenant() {
-    try {
-      const raw = localStorage.getItem('vsc_empresa_v1') || localStorage.getItem('VSC_EMPRESA_V1') || '';
-      const empresa = raw ? JSON.parse(raw) : null;
-      const doc = String((empresa && (empresa.cnpj || empresa.CNPJ || empresa.documento || empresa.doc)) || '').replace(/\D+/g, '');
-      if (doc) return `tenant-${doc}`;
-    } catch (_) {}
-    return 'tenant-default';
-  }
-
-  function _getUserLabel() {
-    try {
-      const raw = localStorage.getItem('vsc_user') || sessionStorage.getItem('vsc_user') || '';
-      const user = raw ? JSON.parse(raw) : null;
-      return String((user && (user.username || user.nome || user.name || user.id)) || 'anonymous').slice(0, 120);
-    } catch (_) {}
-    return 'anonymous';
-  }
-
   async function _readCapabilities() {
     const now = _now();
     if (_capabilities && (now - _capabilitiesCheckedAt) < 15000) return _capabilities;
@@ -288,8 +269,8 @@
         'Content-Type': 'application/json',
         'Accept': 'application/json',
         'X-VSC-Token': token,
-        'X-VSC-Tenant': _getTenant(),
-        'X-VSC-User': _getUserLabel(),
+        'X-VSC-Tenant': (window.VSC_CLOUD_SYNC && window.VSC_CLOUD_SYNC.status ? window.VSC_CLOUD_SYNC.status().tenant : 'tenant-default'),
+        'X-VSC-User': (() => { try { const u = JSON.parse(localStorage.getItem('vsc_user') || 'null'); return String((u && (u.username || u.nome || u.name || u.id)) || 'anonymous').slice(0,120); } catch (_) { return 'anonymous'; } })(),
       },
       body: JSON.stringify({ operations: batch }),
     });
@@ -319,8 +300,8 @@
           'Content-Type': 'application/json',
           'Accept': 'application/json',
           'X-VSC-Token': token,
-          'X-VSC-Tenant': _getTenant(),
-          'X-VSC-User': _getUserLabel(),
+          'X-VSC-Tenant': (window.VSC_CLOUD_SYNC && window.VSC_CLOUD_SYNC.status ? window.VSC_CLOUD_SYNC.status().tenant : 'tenant-default'),
+          'X-VSC-User': (() => { try { const u = JSON.parse(localStorage.getItem('vsc_user') || 'null'); return String((u && (u.username || u.nome || u.name || u.id)) || 'anonymous').slice(0,120); } catch (_) { return 'anonymous'; } })(),
         },
         body: JSON.stringify(body),
       });
@@ -342,10 +323,9 @@
     try {
       return await _pushBatchSyncPush(batch);
     } catch (e) {
-      // Fallback only if endpoint missing (404) or not implemented
       const msg = String(e || '');
-      if (msg.includes('404') || msg.includes('405') || msg.includes('501') || msg.includes('method_not_allowed') || msg.includes('missing_d1_binding')) {
-        // try legacy
+      const recoverable = msg.includes(' 404 ') || msg.includes(' 405 ') || msg.includes(' 501 ') || msg.includes('unsupported_action') || msg.includes('Cannot');
+      if (recoverable) {
         return await _pushBatchLegacyOutbox(batch);
       }
       throw e;
