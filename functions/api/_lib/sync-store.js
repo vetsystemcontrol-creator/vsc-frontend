@@ -133,60 +133,20 @@ function normalizeOperation(op = {}) {
 
 async function ensureSchema(db) {
   if (!isD1Like(db)) throw new Error('invalid_d1_binding');
-  // D1 does NOT support multi-statement exec() — run each statement individually
   const stmts = [
-    `CREATE TABLE IF NOT EXISTS sync_operations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      tenant TEXT NOT NULL,
-      op_id TEXT NOT NULL,
-      dedupe_key TEXT NOT NULL,
-      entity TEXT NOT NULL,
-      store_name TEXT NOT NULL,
-      entity_id TEXT NOT NULL,
-      action TEXT NOT NULL,
-      payload_json TEXT,
-      device_id TEXT,
-      user_label TEXT,
-      created_at_client TEXT,
-      received_at TEXT NOT NULL,
-      base_revision INTEGER NOT NULL DEFAULT 0,
-      entity_revision INTEGER NOT NULL DEFAULT 1,
-      status TEXT NOT NULL DEFAULT 'ACKED'
-    )`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_operations_tenant_op_id
-      ON sync_operations (tenant, op_id)`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_operations_tenant_dedupe_key
-      ON sync_operations (tenant, dedupe_key)`,
-    `CREATE INDEX IF NOT EXISTS idx_sync_operations_tenant_store
-      ON sync_operations (tenant, store_name, entity_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_sync_operations_received_at
-      ON sync_operations (received_at)`,
-    `CREATE TABLE IF NOT EXISTS canonical_records (
-      tenant TEXT NOT NULL,
-      store_name TEXT NOT NULL,
-      record_id TEXT NOT NULL,
-      payload_json TEXT,
-      deleted INTEGER NOT NULL DEFAULT 0,
-      deleted_at TEXT,
-      updated_at TEXT NOT NULL,
-      source_op_id TEXT,
-      device_id TEXT,
-      entity_revision INTEGER NOT NULL DEFAULT 1,
-      PRIMARY KEY (tenant, store_name, record_id)
-    )`,
-    `CREATE INDEX IF NOT EXISTS idx_canonical_records_tenant_store
-      ON canonical_records (tenant, store_name, updated_at)`,
-    `CREATE TABLE IF NOT EXISTS canonical_state_meta (
-      tenant TEXT PRIMARY KEY,
-      state_revision INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL,
-      last_op_id TEXT,
-      last_store_name TEXT,
-      last_record_id TEXT
-    )`,
+    "CREATE TABLE IF NOT EXISTS sync_operations (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant TEXT NOT NULL, op_id TEXT NOT NULL, dedupe_key TEXT NOT NULL, entity TEXT NOT NULL, store_name TEXT NOT NULL, entity_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT, device_id TEXT, user_label TEXT, created_at_client TEXT, received_at TEXT NOT NULL, base_revision INTEGER NOT NULL DEFAULT 0, entity_revision INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'ACKED')",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_operations_tenant_op_id ON sync_operations (tenant, op_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_operations_tenant_dedupe_key ON sync_operations (tenant, dedupe_key)",
+    "CREATE INDEX IF NOT EXISTS idx_sync_operations_tenant_store ON sync_operations (tenant, store_name, entity_id)",
+    "CREATE INDEX IF NOT EXISTS idx_sync_operations_received_at ON sync_operations (received_at)",
+    "CREATE TABLE IF NOT EXISTS canonical_records (tenant TEXT NOT NULL, store_name TEXT NOT NULL, record_id TEXT NOT NULL, payload_json TEXT, deleted INTEGER NOT NULL DEFAULT 0, deleted_at TEXT, updated_at TEXT NOT NULL, source_op_id TEXT, device_id TEXT, entity_revision INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (tenant, store_name, record_id))",
+    "CREATE INDEX IF NOT EXISTS idx_canonical_records_tenant_store ON canonical_records (tenant, store_name, updated_at)",
+    "CREATE TABLE IF NOT EXISTS canonical_state_meta (tenant TEXT PRIMARY KEY, state_revision INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, last_op_id TEXT, last_store_name TEXT, last_record_id TEXT)",
   ];
   for (const sql of stmts) {
-    await db.prepare(sql).run();
+    try { await db.prepare(sql).run(); } catch (e) {
+      if (!String(e?.message || e).includes('already exists')) throw e;
+    }
   }
 }
 

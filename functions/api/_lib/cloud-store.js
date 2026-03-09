@@ -43,22 +43,15 @@ function getBinding(env) {
 }
 
 async function ensureD1Schema(db) {
-  // D1 does NOT support multi-statement exec() — run each statement individually
-  await db.prepare(`
-    CREATE TABLE IF NOT EXISTS vsc_state_snapshots (
-      tenant TEXT PRIMARY KEY,
-      revision TEXT NOT NULL,
-      sha256 TEXT NOT NULL,
-      bytes INTEGER NOT NULL,
-      saved_at TEXT NOT NULL,
-      exported_at TEXT,
-      source TEXT,
-      snapshot_json TEXT NOT NULL
-    )
-  `).run();
-  await db.prepare(
-    `CREATE INDEX IF NOT EXISTS idx_vsc_state_saved_at ON vsc_state_snapshots(saved_at)`
-  ).run();
+  const stmts = [
+    "CREATE TABLE IF NOT EXISTS vsc_state_snapshots (tenant TEXT PRIMARY KEY, revision TEXT NOT NULL, sha256 TEXT NOT NULL, bytes INTEGER NOT NULL, saved_at TEXT NOT NULL, exported_at TEXT, source TEXT, snapshot_json TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_vsc_state_saved_at ON vsc_state_snapshots(saved_at)",
+  ];
+  for (const sql of stmts) {
+    try { await db.prepare(sql).run(); } catch (e) {
+      if (!String(e?.message || e).includes('already exists')) throw e;
+    }
+  }
 }
 
 export async function getCapabilities(env) {
