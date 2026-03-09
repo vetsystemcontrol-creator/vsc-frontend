@@ -1,9 +1,9 @@
 /* ============================================================
-   VSC_CLOUD_SYNC — cloud-authoritative snapshot sync (R2-backed)
-   - fonte primária na nuvem
-   - cache local para operação local/offline
-   - restore automático do snapshot mais novo
-   - backup local opcional continua via VSC_DB.downloadBackupFile()
+   VSC_CLOUD_SYNC — sincronização manual por snapshot canônico
+   - sem auto-sync
+   - sem timers em background
+   - executa apenas quando o operador clica em Sincronizar
+   - push + pull controlados por botão
    ============================================================ */
 (() => {
   'use strict';
@@ -12,26 +12,20 @@
 
   const META_KEY = 'vsc_cloud_sync_meta_v1';
   const API = '/api/state';
-  const TICK_MS = 60 * 1000;
-  const MIN_PUSH_INTERVAL_MS = 45 * 1000;
-  const PULL_COOLDOWN_MS = 2 * 60 * 1000;
   const EXCLUDED_PAGES = new Set(['login.html', 'topbar.html', '404.html']);
 
   const state = {
     available: false,
-    mode: 'idle',
     running: false,
-    syncing: false,
+    mode: 'idle',
     lastError: null,
     lastDigest: null,
-    lastPushAt: 0,
-    lastPullAt: 0,
-    timer: null,
+    lastSyncAt: 0,
+    lastResult: null,
   };
 
   function nowIso(){ return new Date().toISOString(); }
   function safeJsonParse(v, fb = null){ try{ return JSON.parse(v); }catch(_){ return fb; } }
-  function sleep(ms){ return new Promise((resolve)=>setTimeout(resolve, ms)); }
   function currentPage(){ const p = String(location.pathname || '').split('/').pop() || 'index.html'; return p || 'index.html'; }
   function isExcludedPage(){ return EXCLUDED_PAGES.has(currentPage()) || (window.top && window.top !== window); }
   function isAuthed(){ try{ return !!localStorage.getItem('vsc_session_id'); }catch(_){ return false; } }
@@ -89,9 +83,15 @@
     return headers;
   }
 
+  function emit(detail){
+    try{ window.dispatchEvent(new CustomEvent('vsc:cloud-sync-progress', { detail })); }catch(_){ }
+    try{ window.dispatchEvent(new CustomEvent('vsc:sync-progress', { detail })); }catch(_){ }
+  }
+
   async function getCapabilities(){
     const r = await apiJSON(`${API}?action=capabilities`, { method:'GET' });
     state.available = !!(r.ok && r.json && r.json.available);
+    emit({ running:false, remote_sync_allowed: state.available, local_static_mode:false, pending:0, error: state.lastError });
     return r;
   }
 
@@ -99,7 +99,7 @@
     const snapshot = await window.VSC_DB.exportDump();
     const json = JSON.stringify(snapshot);
     const digest = await sha256HexFromString(json);
-    return { snapshot, json, digest, bytes: new Blob([json]).size };
+    return { snapshot, json, digest, bytes: new Blob([json]).size, exported_at: snapshot && snapshot.meta && snapshot.meta.exported_at ? snapshot.meta.exported_at : nowIso() };
   }
 
   async function pullLatest(metaOnly){
@@ -114,7 +114,7 @@
       tenant: payload.meta && payload.meta.tenant,
       revision: payload.meta && payload.meta.revision,
       sha256: payload.meta && payload.meta.sha256,
-      exported_at: payload.meta && payload.meta.exported_at,
+      saved_at: payload.meta && payload.meta.saved_at,
       last_imported_at: nowIso(),
     });
     setSavedMeta(meta);
@@ -122,130 +122,83 @@
     return result;
   }
 
-  async function maybePullNewerCloud(){
-    const now = Date.now();
-    if (now - state.lastPullAt < PULL_COOLDOWN_MS) return { ok:true, skipped:true, reason:'cooldown' };
-    state.lastPullAt = now;
-    const r = await pullLatest(false);
-    if (!r.ok || !r.json || !r.json.exists || !r.json.snapshot || !r.json.meta) return { ok:true, skipped:true, reason:'no_cloud_state' };
-
-    const saved = getSavedMeta();
-    const cloudMeta = r.json.meta || {};
-    const cloudRevision = String(cloudMeta.revision || '');
-    const cloudSaved = Date.parse(cloudMeta.saved_at || cloudMeta.exported_at || '') || 0;
-    const localSaved = Date.parse(saved.last_pushed_at || saved.last_imported_at || saved.exported_at || '') || 0;
-
-    if (saved.revision && saved.revision === cloudRevision) {
-      return { ok:true, skipped:true, reason:'already_current' };
-    }
-
-    if (cloudSaved > localSaved) {
-      state.mode = 'pulling';
-      await importCloudSnapshot(r.json);
-      state.mode = 'idle';
-      return { ok:true, pulled:true, revision: cloudRevision };
-    }
-
-    return { ok:true, skipped:true, reason:'local_is_newer_or_equal' };
+  async function pushSnapshot(reason){
+    const exp = await exportSnapshot();
+    const r = await apiJSON(`${API}?action=push`, {
+      method:'POST',
+      headers: buildHeaders(),
+      body: JSON.stringify({ snapshot: exp.snapshot, source: 'browser-manual-sync', reason: reason || 'manual' })
+    });
+    if (!r.ok || !r.json || !r.json.ok) throw new Error((r.json && r.json.error) || `cloud push falhou (${r.status})`);
+    state.lastDigest = exp.digest;
+    state.lastSyncAt = Date.now();
+    setSavedMeta(Object.assign({}, getSavedMeta(), {
+      tenant: r.json.meta && r.json.meta.tenant,
+      revision: r.json.meta && r.json.meta.revision,
+      sha256: r.json.meta && r.json.meta.sha256,
+      bytes: r.json.meta && r.json.meta.bytes,
+      saved_at: r.json.meta && r.json.meta.saved_at,
+      exported_at: exp.exported_at,
+      last_pushed_at: nowIso(),
+      page: currentPage(),
+    }));
+    return r.json;
   }
 
-  async function pushSnapshot(reason){
-    const now = Date.now();
-    if (state.syncing) return { ok:false, skipped:true, reason:'in_flight' };
-    if (now - state.lastPushAt < MIN_PUSH_INTERVAL_MS && reason !== 'manual') {
-      return { ok:false, skipped:true, reason:'throttled' };
+  async function pullAndApply(){
+    const r = await pullLatest(false);
+    if (!r.ok || !r.json || !r.json.ok || !r.json.exists || !r.json.snapshot || !r.json.meta) {
+      return { ok:true, skipped:true, reason:'no_cloud_state' };
     }
-    state.syncing = true;
-    state.mode = 'pushing';
+    await importCloudSnapshot(r.json);
+    return { ok:true, pulled:true, meta:r.json.meta };
+  }
+
+  async function syncNow(){
+    if (isExcludedPage()) return { ok:false, error:'page_excluded' };
+    await ensureCoreReady();
+    if (!isAuthed()) return { ok:false, error:'not_authenticated' };
+    if (state.running) return { ok:false, skipped:true, reason:'in_flight' };
+
+    state.running = true;
+    state.mode = 'syncing';
     state.lastError = null;
+    emit({ running:true, pending:0, error:null, remote_sync_allowed: state.available });
+
     try{
-      const exp = await exportSnapshot();
-      if (state.lastDigest && state.lastDigest === exp.digest && reason !== 'manual') {
-        state.mode = 'idle';
-        return { ok:true, skipped:true, reason:'unchanged' };
+      const cap = await getCapabilities();
+      if (!(cap.ok && cap.json && cap.json.available)) {
+        const err = (cap && cap.json && cap.json.error) || 'storage_unavailable';
+        throw new Error(err);
       }
-      const r = await apiJSON(`${API}?action=push`, {
-        method:'POST',
-        headers: buildHeaders(),
-        body: JSON.stringify({ snapshot: exp.snapshot, source: 'browser-cloud-sync', reason: reason || 'auto' })
-      });
-      if (!r.ok || !r.json || !r.json.ok) throw new Error((r.json && r.json.error) || `cloud push falhou (${r.status})`);
-      state.lastDigest = exp.digest;
-      state.lastPushAt = Date.now();
-      setSavedMeta(Object.assign({}, getSavedMeta(), {
-        tenant: r.json.meta && r.json.meta.tenant,
-        revision: r.json.meta && r.json.meta.revision,
-        sha256: r.json.meta && r.json.meta.sha256,
-        bytes: r.json.meta && r.json.meta.bytes,
-        exported_at: exp.snapshot && exp.snapshot.meta && exp.snapshot.meta.exported_at,
-        last_pushed_at: nowIso(),
-        page: currentPage(),
-      }));
+      const push = await pushSnapshot('manual');
+      const pull = await pullAndApply();
       state.mode = 'idle';
-      try{ window.dispatchEvent(new CustomEvent('vsc:cloud-sync', { detail:{ ok:true, mode:'push', revision:r.json.meta && r.json.meta.revision } })); }catch(_){}
-      return { ok:true, pushed:true };
+      state.lastResult = { ok:true, push, pull };
+      emit({ running:false, pending:0, ok:true, synced:true, remote_sync_allowed:true, last_sync_at: nowIso() });
+      return { ok:true, push, pull };
     }catch(e){
       state.lastError = String(e && (e.message || e));
       state.mode = 'idle';
-      try{ window.dispatchEvent(new CustomEvent('vsc:cloud-sync', { detail:{ ok:false, mode:'push', error:state.lastError } })); }catch(_){}
-      return { ok:false, error:state.lastError };
+      emit({ running:false, pending:0, ok:false, error:state.lastError, remote_sync_allowed: state.available });
+      return { ok:false, error: state.lastError };
     }finally{
-      state.syncing = false;
+      state.running = false;
     }
-  }
-
-  async function tick(){
-    if (!navigator.onLine || !document.hasFocus()) return;
-    if (!isAuthed()) return;
-    await maybePullNewerCloud();
-    await pushSnapshot('auto');
-  }
-
-  async function boot(){
-    if (isExcludedPage()) return;
-    await ensureCoreReady();
-    if (!isAuthed()) return;
-
-    const cap = await getCapabilities();
-    if (!(cap.ok && cap.json && cap.json.available)) {
-      state.available = false;
-      return;
-    }
-
-    state.available = true;
-
-    await maybePullNewerCloud();
-    await pushSnapshot('boot');
-
-    if (state.timer) clearInterval(state.timer);
-    state.timer = setInterval(() => {
-      tick().catch((e)=>{ state.lastError = String(e && (e.message || e)); });
-    }, TICK_MS);
-
-    window.addEventListener('online', () => { tick().catch(()=>{}); });
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') {
-        pushSnapshot('hidden').catch(()=>{});
-      } else {
-        tick().catch(()=>{});
-      }
-    });
-    window.addEventListener('beforeunload', () => { pushSnapshot('manual').catch(()=>{}); });
   }
 
   window.VSC_CLOUD_SYNC = {
     status(){ return Object.assign({}, state, { tenant:getTenantKey(), meta:getSavedMeta() }); },
-    async syncNow(){ await ensureCoreReady(); if (!state.available) await getCapabilities(); return await pushSnapshot('manual'); },
-    async pullNow(){ await ensureCoreReady(); return await maybePullNewerCloud(); },
+    async syncNow(){ return await syncNow(); },
+    async pullNow(){ await ensureCoreReady(); return await pullAndApply(); },
     async backupLocalNow(){ await ensureCoreReady(); return await window.VSC_DB.downloadBackupFile(); },
+    async refreshCapabilities(){ return await getCapabilities(); },
   };
 
-  (async () => {
-    try{
-      await sleep(350);
-      await boot();
-    }catch(e){
-      state.lastError = String(e && (e.message || e));
+  // Modo manual: sem boot com push/pull automático.
+  try{
+    if (!isExcludedPage()) {
+      getCapabilities().catch(()=>{});
     }
-  })();
+  }catch(_){ }
 })();

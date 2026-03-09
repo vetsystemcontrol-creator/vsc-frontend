@@ -1,14 +1,12 @@
 /*
- * VSC-SYNC-UI — Botão único de sincronização (Premium)
- * ---------------------------------------------------
+ * VSC-SYNC-UI — Botão único de sincronização manual
+ * ------------------------------------------------
  * Mostra:
  *  - Online/Offline (dot)
- *  - Pendências (count)
- *  - Progresso (enviando X ops/s)
+ *  - Pendências locais (quando informadas)
+ *  - Progresso/erro da sincronização manual
  *
- * Integra com:
- *  - window.VSC_RELAY.syncNow()
- *  - evento window 'vsc:sync-progress'
+ * Não dispara sincronização automática.
  */
 (() => {
   'use strict';
@@ -16,27 +14,16 @@
   function $(sel) { return document.querySelector(sel); }
 
   function _findEls() {
-    // Prefer ids (se existirem)
     const btn = $('#vscSyncBtn') || document.querySelector('[data-vsc-sync-btn]') || null;
     const dot = $('#vscNetDot') || $('#vscSyncDot') || document.querySelector('[data-vsc-sync-dot]') || null;
     const count = $('#vscSyncPending') || $('#vscSyncCount') || $('#vscMobilePending') || document.querySelector('[data-vsc-sync-count]') || null;
     const note = $('#vscSyncNote') || document.querySelector('[data-vsc-sync-note]') || null;
-
-    // Fallback: tenta achar pelo texto do botão
-    let btn2 = btn;
-    if (!btn2) {
-      const candidates = Array.from(document.querySelectorAll('button,a')).filter(el =>
-        (el.textContent || '').toLowerCase().includes('sincron')
-      );
-      btn2 = candidates[0] || null;
-    }
-
-    return { btn: btn2, dot, count, note };
+    return { btn, dot, count, note };
   }
 
   const UI = {
     _els: null,
-    _last: { pending: 0, running: false, rate: 0, batch: 0 },
+    _last: { pending: 0, running: false, rate: 0, batch: 0, error: null, local_static_mode: false, remote_sync_allowed: true, synced: false },
 
     init() {
       this._els = _findEls();
@@ -45,24 +32,13 @@
     },
 
     _bind() {
-      const { btn } = this._els;
-      if (btn) {
-        btn.addEventListener('click', async (ev) => {
-          try {
-            ev.preventDefault();
-            if (window.VSC_RELAY && typeof window.VSC_RELAY.syncNow === 'function') {
-              await window.VSC_RELAY.syncNow();
-            }
-          } catch (_) {}
-        });
-      }
-
-      // Network indicator
       window.addEventListener('online', () => this._render());
       window.addEventListener('offline', () => this._render());
-
-      // Progress from relay
       window.addEventListener('vsc:sync-progress', (e) => {
+        if (!e || !e.detail) return;
+        this.onProgress(e.detail);
+      });
+      window.addEventListener('vsc:cloud-sync-progress', (e) => {
         if (!e || !e.detail) return;
         this.onProgress(e.detail);
       });
@@ -76,39 +52,39 @@
       this._last.error = detail.error || null;
       this._last.local_static_mode = !!detail.local_static_mode;
       this._last.remote_sync_allowed = typeof detail.remote_sync_allowed === 'boolean' ? detail.remote_sync_allowed : this._last.remote_sync_allowed;
+      this._last.synced = !!detail.synced;
       this._render();
     },
 
     _render() {
       if (!this._els) this._els = _findEls();
       const { dot, count, note, btn } = this._els;
-
       const online = navigator.onLine;
+
       if (dot) {
         dot.style.opacity = online ? '1' : '0.35';
         dot.title = online ? 'Online' : 'Offline';
       }
 
-      if (count) {
-        count.textContent = String(this._last.pending || 0);
-      }
+      if (count) count.textContent = String(this._last.pending || 0);
 
-      // Mensagem compacta (sem poluir layout)
       let msg = '';
-      if (this._last.running) {
-        msg = this._last.rate > 0 ? `Enviando… ${this._last.rate} ops/s` : 'Enviando…';
-      } else if (this._last.local_static_mode || this._last.remote_sync_allowed === false) {
-        msg = 'Modo local: aguardando API de sync';
+      if (!online) {
+        msg = 'Offline';
+      } else if (this._last.running) {
+        msg = 'Sincronizando...';
       } else if (this._last.error) {
         msg = 'Falha ao sincronizar (veja console)';
+      } else if (this._last.local_static_mode || this._last.remote_sync_allowed === false) {
+        msg = 'Aguardando API de sync';
+      } else if (this._last.synced) {
+        msg = 'Sincronização concluída';
+      } else {
+        msg = 'Pronto para sincronizar';
       }
 
-      if (note) {
-        note.textContent = msg;
-      } else if (btn) {
-        // Tooltip se não existir label extra
-        btn.title = msg || (online ? 'Sincronizar agora' : 'Offline: sincronização pendente');
-      }
+      if (note) note.textContent = msg;
+      if (btn) btn.title = msg || (online ? 'Sincronizar agora' : 'Offline');
     }
   };
 
@@ -121,5 +97,4 @@
       window.addEventListener('DOMContentLoaded', () => UI.init(), { once: true });
     }
   } catch (_) {}
-
 })();
