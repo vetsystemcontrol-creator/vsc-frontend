@@ -30,8 +30,8 @@
   // Config (enterprise defaults)
   // ──────────────────────────────────────────────────────────
   const DB_NAME      = (window.VSC_DB_NAME || 'vsc_db');
-  const DB_VERSION   = (window.VSC_DB_VERSION || 1);
   const STORE_OUTBOX = 'sync_queue';
+  const API_CAPABILITIES_URL = '/api/state?action=capabilities';
 
   // Ritmo: rápido com backlog, econômico quando ocioso
   const ACTIVE_TICK_MS = 250;   // quando há pendências
@@ -57,6 +57,8 @@
   let _lastError = null;
   let _lastCycleAt = null;
   let _inFlight = null; // promise
+  let _capabilities = null;
+  let _capabilitiesCheckedAt = 0;
   let _stats = {
     pending: 0,
     sent: 0,
@@ -104,9 +106,84 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  function _isLocalStaticMode() {
+    try {
+      const proto = String(location.protocol || '').toLowerCase();
+      const host = String(location.hostname || '').toLowerCase();
+      if (proto === 'file:') return true;
+      if (host === '127.0.0.1' || host === 'localhost') {
+        const forced = String(localStorage.getItem('vsc_allow_local_sync_api') || '').toLowerCase();
+        return forced !== '1' && forced !== 'true' && forced !== 'yes';
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  async function _readCapabilities() {
+    const now = _now();
+    if (_capabilities && (now - _capabilitiesCheckedAt) < 15000) return _capabilities;
+    if (_isLocalStaticMode()) {
+      _capabilities = {
+        ok: true,
+        available: false,
+        remote_sync_allowed: false,
+        local_static_mode: true,
+        reason: 'local-static-no-api',
+      };
+      _capabilitiesCheckedAt = now;
+      return _capabilities;
+    }
+
+    try {
+      const res = await fetch(API_CAPABILITIES_URL, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' },
+        cache: 'no-store',
+      });
+      if (!res.ok) {
+        _capabilities = {
+          ok: false,
+          available: false,
+          remote_sync_allowed: false,
+          local_static_mode: false,
+          reason: 'capabilities-http-' + res.status,
+          status: res.status,
+        };
+      } else {
+        const body = await res.json().catch(() => ({}));
+        _capabilities = {
+          ok: body.ok !== false,
+          available: body.available !== false,
+          remote_sync_allowed: body.remote_sync_allowed !== false,
+          local_static_mode: !!body.local_static_mode,
+          reason: body.reason || '',
+          status: res.status,
+          body,
+        };
+      }
+    } catch (err) {
+      _capabilities = {
+        ok: false,
+        available: false,
+        remote_sync_allowed: false,
+        local_static_mode: false,
+        reason: String(err || 'capabilities-fetch-failed'),
+      };
+    }
+    _capabilitiesCheckedAt = now;
+    return _capabilities;
+  }
+
   function _openDB() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      try {
+        if (window.VSC_DB && typeof window.VSC_DB.openDB === 'function') {
+          Promise.resolve(window.VSC_DB.openDB()).then(resolve).catch(reject);
+          return;
+        }
+      } catch (_) {}
+
+      const req = indexedDB.open(DB_NAME);
       req.onerror = () => reject(req.error || new Error('IDB open failed'));
       req.onsuccess = () => resolve(req.result);
     });
@@ -233,6 +310,11 @@
   }
 
   async function _pushBatch(batch) {
+    const caps = await _readCapabilities();
+    if (!caps || caps.remote_sync_allowed === false) {
+      const reason = (caps && caps.reason) ? caps.reason : 'remote-sync-disabled';
+      throw new Error(reason);
+    }
     // Prefer /api/sync/push
     try {
       return await _pushBatchSyncPush(batch);
@@ -276,6 +358,22 @@
               _stats.lastRateOps = 0;
               _stats.lastDurationMs = _now() - t0;
               _emitProgress({ idle: true });
+              if (force) break;
+              await _sleep(IDLE_TICK_MS);
+              continue;
+            }
+
+            const caps = await _readCapabilities();
+            if (!caps || caps.remote_sync_allowed === false) {
+              _stats.lastBatchSize = 0;
+              _stats.lastRateOps = 0;
+              _stats.lastDurationMs = _now() - t0;
+              _emitProgress({
+                idle: true,
+                capabilities: caps || null,
+                local_static_mode: !!(caps && caps.local_static_mode),
+                remote_sync_allowed: false,
+              });
               if (force) break;
               await _sleep(IDLE_TICK_MS);
               continue;
@@ -350,7 +448,7 @@
 
         // Backoff only on errors
         backoffMs = Math.min(MAX_BACKOFF_MS, Math.max(BASE_BACKOFF_MS, (backoffMs || BASE_BACKOFF_MS) * 2));
-        _emitProgress({ error: String(err || ''), backoffMs });
+        _emitProgress({ error: String(err || ''), backoffMs, capabilities: _capabilities || null, local_static_mode: !!(_capabilities && _capabilities.local_static_mode), remote_sync_allowed: !!(_capabilities && _capabilities.remote_sync_allowed) });
         await _sleep(backoffMs);
 
       } finally {
@@ -408,6 +506,9 @@
         last_batch: Number(_stats.lastBatchSize || 0) || 0,
         last_batch_size: Number(_stats.lastBatchSize || 0) || 0,
         last_duration_ms: Number(_stats.lastDurationMs || 0) || 0,
+        local_static_mode: !!(_capabilities && _capabilities.local_static_mode),
+        remote_sync_allowed: !!(_capabilities && _capabilities.remote_sync_allowed),
+        capabilities: _capabilities ? { ..._capabilities } : null,
         stats: { ..._stats },
       };
     },

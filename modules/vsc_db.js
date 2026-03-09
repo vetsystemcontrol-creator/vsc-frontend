@@ -25,7 +25,7 @@ try{
   }
 }catch(_){}
 const DB_NAME = "vsc_db";
-  const DB_VERSION = 33;// v32: Fechamentos/Faturamento em lote (STORE_FECHAMENTOS) // v30: Subscription/Billing control (tenant_subscription + billing_events) | v29: Estoque ledger/saldos/import_ledger | v26: Reprodução Equina | v25: Fornecedores | v24: Produtos Lotes | v23: Config + RBAC + Auditoria
+  const DB_VERSION = 34;// v34: Sync hardening (op_id/device_id/revision metadata) // v32: Fechamentos/Faturamento em lote (STORE_FECHAMENTOS) // v30: Subscription/Billing control (tenant_subscription + billing_events) | v29: Estoque ledger/saldos/import_ledger | v26: Reprodução Equina | v25: Fornecedores | v24: Produtos Lotes | v23: Config + RBAC + Auditoria
   const STORE_OUTBOX = "sync_queue";
 
   const STORE_FECHAMENTOS = "fechamentos";
@@ -237,6 +237,52 @@ exames_master: [
   }
 
   // ============================================================
+// SYNC HARDENING (v34)
+// - device_id estável por instalação
+// - dedupe key por entidade/operação
+// - base/entity revision para reconciliação futura
+// ============================================================
+  function getOrCreateSyncDeviceId(){
+    const KEY = "vsc_sync_device_id";
+    try{
+      const ls = window.localStorage;
+      if(ls){
+        let cur = String(ls.getItem(KEY) || "").trim();
+        if(cur) return cur;
+        cur = uuidv4();
+        ls.setItem(KEY, cur);
+        return cur;
+      }
+    }catch(_){}
+    return uuidv4();
+  }
+
+  function nextEntityRevision(payload){
+    try{
+      const p = payload && typeof payload === "object" ? payload : null;
+      const cur = Number(p && (p.sync_rev ?? p.entity_revision ?? p.base_revision ?? p.revision)) || 0;
+      return cur + 1;
+    }catch(_){}
+    return 1;
+  }
+
+  function buildOutboxMetadata(entity, action, entity_id, payload){
+    const body = payload && typeof payload === "object" ? payload : null;
+    const deviceId = getOrCreateSyncDeviceId();
+    const baseRevision = Number(body && (body.sync_rev ?? body.base_revision ?? body.entity_revision ?? body.revision)) || 0;
+    const entityRevision = nextEntityRevision(body);
+    const opId = uuidv4();
+    const dedupeKey = [String(entity||""), String(entity_id||""), String(action||"upsert").toLowerCase(), String(baseRevision), String(entityRevision)].join(":");
+    return {
+      op_id: opId,
+      device_id: deviceId,
+      base_revision: baseRevision,
+      entity_revision: entityRevision,
+      dedupe_key: dedupeKey
+    };
+  }
+
+// ============================================================
   // OUTBOX REPAIR (compat/anti-regressão)
   // - Normaliza registros antigos/incompletos em sync_queue.
   // - Rodar UMA vez por schema via SYS_META para não impactar performance.
@@ -252,7 +298,7 @@ exames_master: [
         const meta = tx0.objectStore(STORE_SYS_META);
         const outb = tx0.objectStore(STORE_OUTBOX);
 
-        const flagKey = "outbox_repair_v1";
+        const flagKey = "outbox_repair_v34";
         const rqFlag = meta.get(flagKey);
 
         const stats = { ok:true, skipped:false, scanned:0, fixed:0 };
@@ -281,6 +327,14 @@ exames_master: [
             if(!v.entity_id){ v.entity_id = v.ref_id || v.target_id || v.id; changed = true; }
             if(!v.created_at){ v.created_at = now; changed = true; }
             if(!v.updated_at){ v.updated_at = now; changed = true; }
+            if(!v.op_id){ v.op_id = uuidv4(); changed = true; }
+            if(!v.device_id){ v.device_id = getOrCreateSyncDeviceId(); changed = true; }
+            if(typeof v.base_revision !== "number"){ v.base_revision = Number(v.base_revision) || 0; changed = true; }
+            if(typeof v.entity_revision !== "number"){ v.entity_revision = Math.max(1, Number(v.entity_revision) || (Number(v.base_revision) || 0) + 1); changed = true; }
+            if(!v.dedupe_key){
+              v.dedupe_key = [String(v.entity||""), String(v.entity_id||""), String(v.action||"upsert").toLowerCase(), String(v.base_revision||0), String(v.entity_revision||1)].join(":");
+              changed = true;
+            }
 
             if(changed){
               stats.fixed++;
@@ -294,7 +348,7 @@ exames_master: [
           try{
             // Marca reparo executado.
             const tx1 = db.transaction([STORE_SYS_META], "readwrite");
-            tx1.objectStore(STORE_SYS_META).put({ key:"outbox_repair_v1", value:true, at: nowISO() });
+            tx1.objectStore(STORE_SYS_META).put({ key:"outbox_repair_v34", value:true, at: nowISO() });
           }catch(_){ }
           resolve(stats);
         };
@@ -320,6 +374,14 @@ req.onupgradeneeded = (e) => {
           outbox.createIndex("status", "status", { unique: false });
           outbox.createIndex("entity", "entity", { unique: false });
           outbox.createIndex("created_at", "created_at", { unique: false });
+          outbox.createIndex("op_id", "op_id", { unique: false });
+          outbox.createIndex("dedupe_key", "dedupe_key", { unique: false });
+          outbox.createIndex("status_created", ["status", "created_at"], { unique: false });
+        } else {
+          const outbox = req.transaction.objectStore(STORE_OUTBOX);
+          if (!outbox.indexNames.contains("op_id")) outbox.createIndex("op_id", "op_id", { unique: false });
+          if (!outbox.indexNames.contains("dedupe_key")) outbox.createIndex("dedupe_key", "dedupe_key", { unique: false });
+          if (!outbox.indexNames.contains("status_created")) outbox.createIndex("status_created", ["status", "created_at"], { unique: false });
         }
 
         // SYS_META (governança/contadores/backup policy)
@@ -789,6 +851,7 @@ req.onupgradeneeded = (e) => {
 
   function makeOutboxEvent(entity, action, entity_id, payload){
     const ts = nowISO();
+    const meta = buildOutboxMetadata(entity, action, entity_id, payload);
     return {
       id: uuidv4(),
       status: "PENDING",
@@ -797,7 +860,12 @@ req.onupgradeneeded = (e) => {
       entity_id,
       payload: payload || null,
       created_at: ts,
-      updated_at: ts
+      updated_at: ts,
+      op_id: meta.op_id,
+      device_id: meta.device_id,
+      base_revision: meta.base_revision,
+      entity_revision: meta.entity_revision,
+      dedupe_key: meta.dedupe_key
     };
   }
 

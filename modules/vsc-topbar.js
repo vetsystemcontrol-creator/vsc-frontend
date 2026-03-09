@@ -8,7 +8,7 @@
   "use strict";
   var TOPBAR_FRAME_ID = "vscTopbarFrame";
   var TOPBAR_HEIGHT = 94;
-  var TOPBAR_SRC = "/topbar.html?v=20260309b";
+  var TOPBAR_SRC = "/topbar.html?v=20260309c";
   var EMPRESA_KEY = "vsc_empresa_v1";
 
   function getFrame(){ return document.getElementById(TOPBAR_FRAME_ID); }

@@ -74,6 +74,8 @@
       this._last.rate = Number(detail.lastRateOps ?? 0) || 0;
       this._last.batch = Number(detail.lastBatchSize ?? 0) || 0;
       this._last.error = detail.error || null;
+      this._last.local_static_mode = !!detail.local_static_mode;
+      this._last.remote_sync_allowed = typeof detail.remote_sync_allowed === 'boolean' ? detail.remote_sync_allowed : this._last.remote_sync_allowed;
       this._render();
     },
 
@@ -92,13 +94,14 @@
       }
 
       // Mensagem compacta (sem poluir layout)
-      const msg = this._last.running
-        ? (this._last.rate > 0
-            ? `Enviando… ${this._last.rate} ops/s`
-            : 'Enviando…')
-        : (this._last.error
-            ? 'Falha ao sincronizar (veja console)'
-            : '');
+      let msg = '';
+      if (this._last.running) {
+        msg = this._last.rate > 0 ? `Enviando… ${this._last.rate} ops/s` : 'Enviando…';
+      } else if (this._last.local_static_mode || this._last.remote_sync_allowed === false) {
+        msg = 'Modo local: aguardando API de sync';
+      } else if (this._last.error) {
+        msg = 'Falha ao sincronizar (veja console)';
+      }
 
       if (note) {
         note.textContent = msg;

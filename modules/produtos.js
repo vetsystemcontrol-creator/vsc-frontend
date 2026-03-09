@@ -75,6 +75,35 @@ function nowISO(){ return new Date().toISOString(); }
     return Math.round(n * 100);
   }
 
+  function parseDecimalInput(v, fallback){
+    var s = String(v == null ? "" : v).trim();
+    if(!s) return Number(fallback || 0);
+    var n = Number(s.replace(/\./g, "").replace(",", "."));
+    return isFinite(n) ? n : Number(fallback || 0);
+  }
+
+  function sanitizeUnit(raw){
+    return String(raw || "").trim().toUpperCase().replace(/\s+/g, "");
+  }
+
+  function buildConversaoResumo(obj){
+    if(!obj) return "Sem conversão configurada";
+    var uCompra = sanitizeUnit(obj.un_compra_padrao || obj.unidade_compra || "");
+    var uEstoque = sanitizeUnit(obj.un_estoque || obj.unidade_estoque || "");
+    var fator = Number(obj.conv_fator_compra_para_estoque || 0);
+    if(!uCompra && !uEstoque && !(fator > 0)) return "Sem conversão configurada";
+    if(uCompra && uEstoque && uCompra === uEstoque){
+      return "Mesma unidade: " + uCompra + " → " + uEstoque + " (fator 1)";
+    }
+    if(uCompra && uEstoque && fator > 0){
+      return "Compra " + uCompra + " → Estoque " + uEstoque + " | fator " + String(fator).replace('.', ',');
+    }
+    if(uEstoque){
+      return "Estoque em " + uEstoque + (fator > 0 ? (" | fator " + String(fator).replace('.', ',')) : "");
+    }
+    return "Sem conversão configurada";
+  }
+
   function sanitizeEAN(eanRaw){
     return String(eanRaw || "").trim().replace(/\D+/g, "");
   }
@@ -215,13 +244,12 @@ function nowISO(){ return new Date().toISOString(); }
   }
 
 
-  // Soma quantidade por produto a partir de produtos_lotes (offline-first)
-  async function idbGetStockMapFromLotes(){
+  async function idbGetStockMapFromStore(storeName, qtyField){
     var db = await VSC_DB.openDB();
     try{
       return await new Promise(function(resolve, reject){
-        var tx = db.transaction([VSC_DB.stores.produtos_lotes], "readonly");
-        var st = tx.objectStore(VSC_DB.stores.produtos_lotes);
+        var tx = db.transaction([storeName], "readonly");
+        var st = tx.objectStore(storeName);
         var rq = st.openCursor();
         var map = {};
         rq.onsuccess = function(){
@@ -230,7 +258,8 @@ function nowISO(){ return new Date().toISOString(); }
             var v = cur.value || {};
             if(!v.deleted_at){
               var pid = String(v.produto_id || "");
-              var q = Number(v.qtd || 0);
+              var raw = (v[qtyField] != null) ? v[qtyField] : v.qtd;
+              var q = Number(raw || 0);
               if(pid){
                 map[pid] = (map[pid] || 0) + (isFinite(q) ? q : 0);
               }
@@ -240,10 +269,26 @@ function nowISO(){ return new Date().toISOString(); }
             resolve(map);
           }
         };
-        rq.onerror = function(){ reject(rq.error || new Error("Falha IDB cursor produtos_lotes")); };
+        rq.onerror = function(){ reject(rq.error || new Error("Falha IDB cursor " + storeName)); };
       });
     } finally { try{ db.close(); }catch(_e){} }
   }
+
+  // Fonte canônica: estoque_saldos. Fallback: produtos_lotes.
+  async function idbGetStockMapCanonic(){
+    try{
+      var fromSaldo = await idbGetStockMapFromStore("estoque_saldos", "saldo");
+      if(fromSaldo && Object.keys(fromSaldo).length) return fromSaldo;
+    }catch(_e){}
+    try{
+      var fromLegacy = await idbGetStockMapFromStore(VSC_DB.stores.produtos_lotes, "qtd");
+      if(fromLegacy && Object.keys(fromLegacy).length) return fromLegacy;
+    }catch(_e){}
+    return {};
+  }
+
+  window.VSC_PRODUTOS = window.VSC_PRODUTOS || {};
+  window.VSC_PRODUTOS.getStockMapCanonic = idbGetStockMapCanonic;
 
   async function idbGetLotesByProduto(produto_id){
     var db = await VSC_DB.openDB();
@@ -374,6 +419,9 @@ function nowISO(){ return new Date().toISOString(); }
   function setInputsEnabled(enabled){
     var _pNome = byId("pNome"); if(_pNome) _pNome.disabled = !enabled;
     var _pEAN = byId("pEAN"); if(_pEAN) _pEAN.disabled = !enabled;
+    var _pUnEstoque = byId("pUnEstoque"); if(_pUnEstoque) _pUnEstoque.disabled = !enabled;
+    var _pUnCompraPadrao = byId("pUnCompraPadrao"); if(_pUnCompraPadrao) _pUnCompraPadrao.disabled = !enabled;
+    var _pConvFator = byId("pConvFator"); if(_pConvFator) _pConvFator.disabled = !enabled;
     var _pCusto = byId("pCusto"); if(_pCusto) _pCusto.disabled = !enabled;
     var _pVenda = byId("pVenda"); if(_pVenda) _pVenda.disabled = !enabled;
     // dados técnicos
@@ -462,6 +510,10 @@ function nowISO(){ return new Date().toISOString(); }
     state.selectedId = "";
     byId("pNome").value = "";
     byId("pEAN").value = "";
+    if(byId("pUnEstoque")) byId("pUnEstoque").value = "";
+    if(byId("pUnCompraPadrao")) byId("pUnCompraPadrao").value = "";
+    if(byId("pConvFator")) byId("pConvFator").value = "1";
+    if(byId("pConvResumo")) byId("pConvResumo").value = "Sem conversão configurada";
     byId("pCusto").value = "0,00";
     byId("pVenda").value = "0,00";
     byId("pLucro").value = "0,00";
@@ -495,6 +547,10 @@ function nowISO(){ return new Date().toISOString(); }
     state.selectedId = String(obj.produto_id || obj.id || "");
     byId("pNome").value = obj.nome || "";
     byId("pEAN").value = obj.ean || "";
+    if(byId("pUnEstoque")) byId("pUnEstoque").value = sanitizeUnit(obj.un_estoque || "");
+    if(byId("pUnCompraPadrao")) byId("pUnCompraPadrao").value = sanitizeUnit(obj.un_compra_padrao || "");
+    if(byId("pConvFator")) byId("pConvFator").value = String(Number(obj.conv_fator_compra_para_estoque || 1));
+    if(byId("pConvResumo")) byId("pConvResumo").value = buildConversaoResumo(obj);
     byId("pCusto").value = centsToMoney(obj.custo_base_cents);
     byId("pVenda").value = centsToMoney(obj.venda_cents);
     byId("pCustoReal").value = centsToMoney(obj.custo_real_cents);
@@ -932,6 +988,15 @@ state.mode = "NEW";
       if(!isFinite(custo) || custo < 0) throw new Error("Custo inválido.");
       if(!isFinite(venda) || venda < 0) throw new Error("Venda inválida.");
 
+      var unEstoque = sanitizeUnit(byId("pUnEstoque") && byId("pUnEstoque").value);
+      var unCompra = sanitizeUnit(byId("pUnCompraPadrao") && byId("pUnCompraPadrao").value);
+      var convFator = parseDecimalInput(byId("pConvFator") && byId("pConvFator").value, 1);
+      if((unEstoque || unCompra) && !unEstoque) throw new Error("Unidade base (estoque) é obrigatória quando houver conversão.");
+      if((unEstoque || unCompra) && !unCompra) throw new Error("Unidade de compra padrão é obrigatória quando houver conversão.");
+      if(unEstoque && unCompra && unEstoque !== unCompra && !(convFator > 0)) throw new Error("Fator de conversão inválido.");
+      if(unEstoque && unCompra && unEstoque === unCompra) convFator = 1;
+      if(!unEstoque && !unCompra) convFator = 1;
+
       var now = nowISO();
       var obj = null;
 
@@ -949,6 +1014,9 @@ state.mode = "NEW";
       obj.nome = nome;
       obj.nome_norm = nome; // compat (normalização pode ser feita em outro ciclo)
       obj.ean = ean;
+      obj.un_estoque = unEstoque || obj.un_estoque || "";
+      obj.un_compra_padrao = unCompra || obj.un_compra_padrao || obj.un_estoque || "";
+      obj.conv_fator_compra_para_estoque = convFator > 0 ? convFator : 1;
       obj.custo_base_cents = custo;
       obj.venda_cents = venda;
       obj.deleted_at = null;
@@ -973,6 +1041,7 @@ state.mode = "NEW";
       if(!isFinite(obj.estoque_minimo) || obj.estoque_minimo < 0) obj.estoque_minimo = 0;
       if(!isFinite(obj.ponto_reposicao) || obj.ponto_reposicao < 0) obj.ponto_reposicao = 0;
       obj.enrich_updated_at = obj.enrich_updated_at || null;
+      if(byId("pConvResumo")) byId("pConvResumo").value = buildConversaoResumo(obj);
 
       await idbUpsertProdutoAtomico(obj);
 
@@ -1048,7 +1117,7 @@ state.mode = "NEW";
       state.produtos = await idbGetAllProdutos();
           state.stockMap = (window.VSC_ESTOQUE && typeof window.VSC_ESTOQUE.getStockMap === "function")
             ? await window.VSC_ESTOQUE.getStockMap()
-            : await idbGetStockMapFromLotes();
+            : await idbGetStockMapCanonic();
       
           // ordem alfabética (enterprise default)
           state.produtos = (state.produtos || []).slice().sort(function(a,b){
