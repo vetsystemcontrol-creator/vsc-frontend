@@ -983,7 +983,7 @@
       <div class="vsc-modal__head">
         <div>
           <div id="vscBackupTitle" class="vsc-modal__title">Backup / Restaurar</div>
-          <div class="vsc-modal__sub">Serviço local · <b>C:\Vet System Control - Equine\Vet_Backups</b></div>
+          <div class="vsc-modal__sub">Modo híbrido local/online · <b>backup em arquivo .json pelo navegador</b></div>
         </div>
         <button class="vsc-modal__x" id="vscBackupClose" title="Fechar">✕</button>
       </div>
@@ -1863,14 +1863,39 @@
       return false;
     }
 
-    async function doBackupLocalFallback() {
-      if (!window.VSC_DB?.downloadBackupFile) throw new Error("Backup local indisponível.");
-      setProgress(10, "Gerando backup local...");
-      log("Modo local/off-line detectado. Gerando backup em arquivo...");
+    function supportsBrowserBackup() {
+      return !!window.VSC_DB?.downloadBackupFile;
+    }
+
+    let _backupModePromise = null;
+    async function getBackupMode(forceRefresh) {
+      if (!forceRefresh && _backupModePromise) return _backupModePromise;
+      _backupModePromise = (async () => {
+        if (isLocalStaticMode()) return "browser";
+        if (!navigator.onLine && supportsBrowserBackup()) return "browser";
+        try {
+          const r = await fetch("/api/backup/list", {
+            method: "GET",
+            credentials: "same-origin",
+            cache: "no-store"
+          });
+          if (r.ok || r.status === 401 || r.status === 403) return "server";
+          if ([404, 405, 501].includes(r.status)) return supportsBrowserBackup() ? "browser" : "server";
+        } catch (_) {}
+        return supportsBrowserBackup() ? "browser" : "server";
+      })();
+      return _backupModePromise;
+    }
+
+    async function doBackupLocalFallback(reason) {
+      if (!window.VSC_DB?.downloadBackupFile) throw new Error("Backup em arquivo indisponível.");
+      setProgress(10, "Gerando backup em arquivo...");
+      if (reason) log(reason);
+      log("Gerando backup em arquivo .json pelo navegador...");
       const res = await window.VSC_DB.downloadBackupFile();
-      log(`Backup local concluído. Arquivo: ${res?.filename || "backup.json"}`);
+      log(`Backup concluído. Arquivo: ${res?.filename || "backup.json"}`);
       log(`Tamanho: ${fmtBytes(res?.bytes || 0)}`);
-      setProgress(100, "Backup local concluído.");
+      setProgress(100, "Backup concluído.");
       return res;
     }
 
@@ -1930,8 +1955,8 @@
 
     async function refreshList(){
       setProgress(0, "Listando...");
-      if (isLocalStaticMode() && window.VSC_DB?.listInternalBackups) {
-        log("Modo local/off-line: listando metadados internos do IndexedDB.");
+      if ((await getBackupMode()) !== "server" && window.VSC_DB?.listInternalBackups) {
+        log("Modo navegador/local: listando metadados internos do IndexedDB.");
         const arr0 = await window.VSC_DB.listInternalBackups();
         const arr = (Array.isArray(arr0) ? arr0 : []).map(b => ({
           id: b?.id || "",
@@ -1967,7 +1992,7 @@
     async function doVerify(id){
       if (!id) { log("Selecione um backup."); return; }
       setProgress(10, "Verificando...");
-      if (isLocalStaticMode() && window.VSC_DB?.getInternalBackup) {
+      if ((await getBackupMode()) !== "server" && window.VSC_DB?.getInternalBackup) {
         const meta = await window.VSC_DB.getInternalBackup(id);
         if (!meta) { log("ERRO: backup interno não encontrado."); setProgress(0, "Falha."); return; }
         log(`VERIFY OK ✓ bytes=${meta?.size_bytes||0} sha256=${meta?.sha256||""} formato=${meta?.format||"meta_only"}`);
@@ -1989,12 +2014,12 @@
     }
 
     if (btnDownloadSel) {
-      btnDownloadSel.addEventListener("click", (ev) => {
+      btnDownloadSel.addEventListener("click", async (ev) => {
         ev.preventDefault();
         const id = pickSelectedId();
         if (!id) { log("Selecione um backup."); return; }
-        if (isLocalStaticMode()) {
-          log("Modo local/off-line: use 'Fazer backup agora' para gerar um novo arquivo baixável.");
+        if ((await getBackupMode()) !== "server") {
+          log("Modo navegador: use 'Fazer backup agora' para gerar um novo arquivo baixável.");
           return;
         }
         log(`DOWNLOAD /api/backup/download/${id}`);
@@ -2013,8 +2038,8 @@
       if (btnRestoreSel) btnRestoreSel.disabled = true;
 
       try{
-        if (isLocalStaticMode()) {
-          log("Modo local/off-line: restauração por lista não está disponível. Use 'Restaurar de arquivo'.");
+        if ((await getBackupMode()) !== "server") {
+          log("Modo navegador: restauração por lista não está disponível. Use 'Restaurar de arquivo'.");
           setProgress(0, "Use arquivo local.");
           return;
         }
@@ -2058,9 +2083,9 @@
         const ok = confirm(`Excluir backup ${id}?\n\nEsta ação não pode ser desfeita.`);
         if (!ok) { log("Cancelado."); return; }
         try{
-          if (isLocalStaticMode()) {
-            log("Modo local/off-line: exclusão da lista interna não é suportada por este painel.");
-            setProgress(0, "Indisponível no modo local.");
+          if ((await getBackupMode()) !== "server") {
+            log("Modo navegador: exclusão remota não está disponível neste painel.");
+            setProgress(0, "Indisponível no modo navegador.");
             return;
           }
           setProgress(10, "Excluindo...");
@@ -2082,9 +2107,9 @@
         ev.preventDefault();
         try{
           const keep = Math.max(1, Math.min(200, parseInt(String(inpKeepLast?.value||"10"),10) || 10));
-          if (isLocalStaticMode()) {
-            log(`Modo local/off-line: retenção automática do painel não se aplica. Limite sugerido: ${keep}.`);
-            setProgress(0, "Indisponível no modo local.");
+          if ((await getBackupMode()) !== "server") {
+            log(`Modo navegador: retenção remota do painel não se aplica. Limite sugerido: ${keep}.`);
+            setProgress(0, "Indisponível no modo navegador.");
             return;
           }
           setProgress(10, "Aplicando retenção...");
@@ -2105,9 +2130,9 @@
       btnAudit.addEventListener("click", async (ev) => {
         ev.preventDefault();
         try{
-          if (isLocalStaticMode()) {
-            log("Modo local/off-line: auditoria do backend não disponível.");
-            setProgress(0, "Indisponível no modo local.");
+          if ((await getBackupMode()) !== "server") {
+            log("Modo navegador: auditoria do backend não disponível.");
+            setProgress(0, "Indisponível no modo navegador.");
             return;
           }
           setProgress(10, "Carregando auditoria...");
@@ -2258,9 +2283,10 @@
       if (btnCancel) btnCancel.disabled = false;
       if (btnBackup) btnBackup.disabled = true;
 
-      if (isLocalStaticMode()) {
+      const mode = await getBackupMode();
+      if (mode !== "server") {
         try {
-          await doBackupLocalFallback();
+          await doBackupLocalFallback("API de backup remoto indisponível neste ambiente. Alternando para backup em arquivo.");
         } finally {
           _session = null;
           if (btnCancel) btnCancel.disabled = true;
@@ -2271,9 +2297,21 @@
 
       const sess = await (async () => {
         const r = await apiJSON("/api/backup/session", "POST", {});
-        if (!r.ok || r.json?.ok !== true) throw new Error("Falha ao iniciar sessão");
+        if (!r.ok || r.json?.ok !== true) {
+          if ([404,405,501].includes(r.status) && supportsBrowserBackup()) {
+            await doBackupLocalFallback(`API remota retornou ${r.status}. Alternando para backup em arquivo.`);
+            return null;
+          }
+          throw new Error(r.json?.error || "Falha ao iniciar sessão");
+        }
         return r.json;
       })();
+      if (!sess) {
+        _session = null;
+        if (btnCancel) btnCancel.disabled = true;
+        if (btnBackup) btnBackup.disabled = false;
+        return;
+      }
       _session = sess.id;
       const SAFE = Math.min(sess.chunk_max_bytes || 850 * 1024, 850 * 1024);
       const enc = new TextEncoder();
