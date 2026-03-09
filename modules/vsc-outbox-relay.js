@@ -516,6 +516,6 @@
 
   window.VSC_RELAY = VSC_RELAY;
 
-  // Modo manual: não iniciar automaticamente.
+  // Auto-start desabilitado: sincronização somente por clique manual.
 
 })();

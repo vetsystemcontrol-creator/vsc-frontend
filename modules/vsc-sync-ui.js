@@ -1,13 +1,3 @@
-/*
- * VSC-SYNC-UI — Botão único de sincronização manual
- * ------------------------------------------------
- * Mostra:
- *  - Online/Offline (dot)
- *  - Pendências locais (quando informadas)
- *  - Progresso/erro da sincronização manual
- *
- * Não dispara sincronização automática.
- */
 (() => {
   'use strict';
 
@@ -21,9 +11,22 @@
     return { btn, dot, count, note };
   }
 
+  async function runManualSync() {
+    if (window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.manualSync === 'function') {
+      return await window.VSC_CLOUD_SYNC.manualSync();
+    }
+    if (window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.syncNow === 'function') {
+      return await window.VSC_CLOUD_SYNC.syncNow();
+    }
+    if (window.VSC_RELAY && typeof window.VSC_RELAY.syncNow === 'function') {
+      return await window.VSC_RELAY.syncNow();
+    }
+    throw new Error('manual_sync_unavailable');
+  }
+
   const UI = {
     _els: null,
-    _last: { pending: 0, running: false, rate: 0, batch: 0, error: null, local_static_mode: false, remote_sync_allowed: true, synced: false },
+    _last: { pending: 0, running: false, rate: 0, batch: 0, local_static_mode: false, remote_sync_allowed: true, error: null },
 
     init() {
       this._els = _findEls();
@@ -32,15 +35,23 @@
     },
 
     _bind() {
+      const { btn } = this._els;
+      if (btn && btn.dataset.vscSyncBound !== '1') {
+        btn.dataset.vscSyncBound = '1';
+        btn.addEventListener('click', async (ev) => {
+          try {
+            ev.preventDefault();
+            ev.stopPropagation();
+            await runManualSync();
+          } catch (e) {
+            this.onProgress({ running:false, error:String(e && (e.message || e)) });
+          }
+        });
+      }
       window.addEventListener('online', () => this._render());
       window.addEventListener('offline', () => this._render());
       window.addEventListener('vsc:sync-progress', (e) => {
-        if (!e || !e.detail) return;
-        this.onProgress(e.detail);
-      });
-      window.addEventListener('vsc:cloud-sync-progress', (e) => {
-        if (!e || !e.detail) return;
-        this.onProgress(e.detail);
+        if (e && e.detail) this.onProgress(e.detail);
       });
     },
 
@@ -52,7 +63,6 @@
       this._last.error = detail.error || null;
       this._last.local_static_mode = !!detail.local_static_mode;
       this._last.remote_sync_allowed = typeof detail.remote_sync_allowed === 'boolean' ? detail.remote_sync_allowed : this._last.remote_sync_allowed;
-      this._last.synced = !!detail.synced;
       this._render();
     },
 
@@ -60,41 +70,29 @@
       if (!this._els) this._els = _findEls();
       const { dot, count, note, btn } = this._els;
       const online = navigator.onLine;
-
       if (dot) {
         dot.style.opacity = online ? '1' : '0.35';
         dot.title = online ? 'Online' : 'Offline';
       }
-
       if (count) count.textContent = String(this._last.pending || 0);
-
-      let msg = '';
+      let msg = 'Pronto para sincronizar';
       if (!online) {
         msg = 'Offline';
       } else if (this._last.running) {
-        msg = 'Sincronizando...';
+        msg = this._last.rate > 0 ? `Sincronizando… ${this._last.rate} ops/s` : 'Sincronizando...';
       } else if (this._last.error) {
-        msg = 'Falha ao sincronizar (veja console)';
-      } else if (this._last.local_static_mode || this._last.remote_sync_allowed === false) {
-        msg = 'Aguardando API de sync';
-      } else if (this._last.synced) {
-        msg = 'Sincronização concluída';
-      } else {
-        msg = 'Pronto para sincronizar';
+        msg = 'Falha ao sincronizar';
+      } else if (this._last.local_static_mode && this._last.remote_sync_allowed !== false) {
+        msg = 'Modo local → nuvem';
+      } else if (this._last.remote_sync_allowed === false) {
+        msg = 'API de sync indisponível';
       }
-
       if (note) note.textContent = msg;
-      if (btn) btn.title = msg || (online ? 'Sincronizar agora' : 'Offline');
+      if (btn) btn.title = msg;
     }
   };
 
   window.VSC_SYNC_UI = UI;
-
-  try {
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
-      UI.init();
-    } else {
-      window.addEventListener('DOMContentLoaded', () => UI.init(), { once: true });
-    }
-  } catch (_) {}
+  if (document.readyState === 'complete' || document.readyState === 'interactive') UI.init();
+  else window.addEventListener('DOMContentLoaded', () => UI.init(), { once: true });
 })();

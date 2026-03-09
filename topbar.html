@@ -109,9 +109,9 @@
 
   <script src="vendor/jszip.min.js"></script>
   <script src="modules/vsc_db.js"></script>
+  <script src="modules/vsc-cloud-sync.js?v=20260309h"></script>
   <script src="modules/vsc-outbox-relay.js"></script>
   <script src="modules/vsc-sync-ui.js"></script>
-  <script src="modules/vsc-cloud-sync.js"></script>
   <script src="modules/auth.js" charset="utf-8"></script>
   <script src="modules/auth_guard.js" charset="utf-8"></script>
   <script src="modules/ui-global.js?v=20260307f"></script>
@@ -287,25 +287,27 @@
         });
       }
 
-      async function runManualSync(){
-        try{
-          if(window.VSC_RELAY && typeof window.VSC_RELAY.syncNow === "function") {
-            await window.VSC_RELAY.syncNow();
-          }
-        }catch(_){ }
-        try{
-          if(window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.syncNow === "function") {
-            await window.VSC_CLOUD_SYNC.syncNow();
-          }
-        }catch(_){ }
-      }
-
       function bindSync(id){
         var btn = document.getElementById(id);
-        if(!btn) return;
-        btn.addEventListener("click", function(ev){
+        if(!btn || btn.dataset.vscSyncBound === "1") return;
+        btn.dataset.vscSyncBound = "1";
+        btn.addEventListener("click", async function(ev){
           try{ ev.preventDefault(); ev.stopPropagation(); }catch(_){ }
-          runManualSync();
+          try{
+            if(window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.manualSync === "function") {
+              await window.VSC_CLOUD_SYNC.manualSync();
+              return;
+            }
+            if(window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.syncNow === "function") {
+              await window.VSC_CLOUD_SYNC.syncNow();
+              return;
+            }
+            if(window.VSC_RELAY && typeof window.VSC_RELAY.syncNow === "function") {
+              await window.VSC_RELAY.syncNow();
+            }
+          }catch(err){
+            try{ console.error("[VSC_TOPBAR] falha no sync manual", err); }catch(_){ }
+          }
         });
       }
 
@@ -347,7 +349,6 @@
         window.addEventListener("storage", onStorage);
         window.addEventListener("message", onMessage);
         window.addEventListener("vsc:sync-progress", onProgress);
-        window.addEventListener("vsc:cloud-sync", function(){ syncInitialStatus(); });
       }
 
       if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot, {once:true});

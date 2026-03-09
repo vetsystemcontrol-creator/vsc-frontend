@@ -1,95 +1,74 @@
-import {
-  storageEngine,
-  ensureStorage,
-  tenantFromRequest,
-  actorFromRequest,
-  parseJsonBody,
-  readSnapshot,
-  writeSnapshot,
-  listRecentOperations,
-  json,
-  badRequest,
-  MAX_SNAPSHOT_BYTES,
-} from './_lib/cloud-store.js';
+import { buildJsonResponse, buildOptionsResponse, getCapabilities, loadSnapshot, saveSnapshot } from './_lib/cloud-store.js';
 
-export async function onRequest(context) {
+function readTenant(request, url) {
+  const fromHeader = request.headers.get('X-VSC-Tenant');
+  const fromQuery = url.searchParams.get('tenant');
+  return String(fromHeader || fromQuery || 'tenant-default').trim() || 'tenant-default';
+}
+
+export async function onRequestOptions(context) {
+  return buildOptionsResponse(context.request);
+}
+
+export async function onRequestGet(context) {
   const { request, env } = context;
   const url = new URL(request.url);
   const action = String(url.searchParams.get('action') || 'capabilities').trim().toLowerCase();
+  const tenant = readTenant(request, url);
 
-  try {
-    const storage = await ensureStorage(env);
-    const engine = storageEngine(env);
-
-    if (request.method === 'GET' && action === 'capabilities') {
-      const available = engine !== 'none';
-      return json({
-        ok: true,
-        action: 'capabilities',
-        available,
-        engine,
-        canonical_mode: available ? 'cloud-canonical-snapshot' : 'browser-only',
-        max_snapshot_bytes: MAX_SNAPSHOT_BYTES,
-        local_static_mode: false,
-        remote_sync_allowed: available,
-        endpoints: {
-          sync_push: '/api/sync/push',
-          outbox: '/api/outbox',
-          state: '/api/state?action=capabilities',
-          state_push: '/api/state?action=push',
-          state_pull: '/api/state?action=pull',
-          state_ops: '/api/state?action=ops',
-        },
-      });
-    }
-
-    if (request.method === 'GET' && action === 'pull') {
-      const tenant = tenantFromRequest(request);
-      const metaOnly = String(url.searchParams.get('meta_only') || '') === '1';
-      const current = await readSnapshot(env, tenant);
-      if (!current) {
-        return json({ ok: true, exists: false, tenant, engine });
-      }
-      return json({
-        ok: true,
-        exists: true,
-        engine,
-        meta: current.meta,
-        snapshot: metaOnly ? undefined : current.snapshot,
-      });
-    }
-
-    if (request.method === 'GET' && action === 'ops') {
-      const tenant = tenantFromRequest(request);
-      const items = await listRecentOperations(env, tenant, Number(url.searchParams.get('limit') || 50));
-      return json({ ok: true, engine, tenant, items });
-    }
-
-    if (request.method === 'POST' && action === 'push') {
-      const { body } = await parseJsonBody(request);
-      const tenant = tenantFromRequest(request, body);
-      if (!body || typeof body !== 'object') return badRequest('invalid_body');
-      if (!body.snapshot || typeof body.snapshot !== 'object') return badRequest('snapshot_missing');
-
-      const saved = await writeSnapshot(env, tenant, body.snapshot, {
-        source: String(body.source || 'browser-cloud-sync'),
-        actor: actorFromRequest(request),
-      });
-
-      return json({ ok: true, engine, meta: saved.meta });
-    }
-
-    return badRequest('unsupported_action', 400, { action, method: request.method });
-  } catch (err) {
-    const code = String(err && err.message ? err.message : err || 'state_error');
-    if (code === 'invalid_json') return badRequest(code, 400);
-    if (code === 'snapshot_too_large') return badRequest(code, 413);
-    if (code === 'snapshot_missing' || code === 'snapshot_schema_missing' || code === 'snapshot_data_missing') {
-      return badRequest(code, 400);
-    }
-    return json({ ok: false, error: code }, 500);
+  if (action === 'capabilities') {
+    const caps = await getCapabilities(env);
+    return buildJsonResponse(request, {
+      ...caps,
+      action,
+      endpoints: {
+        state_capabilities: '/api/state?action=capabilities',
+        state_pull: '/api/state?action=pull',
+        state_push: '/api/state?action=push',
+      },
+    });
   }
+
+  if (action === 'pull') {
+    const metaOnly = /^(1|true|yes)$/i.test(String(url.searchParams.get('meta_only') || ''));
+    const result = await loadSnapshot(env, tenant, metaOnly);
+    if (!result.ok) {
+      return buildJsonResponse(request, { ok: false, action, tenant, error: result.error || 'pull_failed' }, 503);
+    }
+    return buildJsonResponse(request, { ok: true, action, tenant, ...result });
+  }
+
+  return buildJsonResponse(request, { ok: false, error: 'unsupported_action', action }, 400);
 }
 
-export const onRequestGet = onRequest;
-export const onRequestPost = onRequest;
+export async function onRequestPost(context) {
+  const { request, env } = context;
+  const url = new URL(request.url);
+  const action = String(url.searchParams.get('action') || '').trim().toLowerCase();
+  const tenant = readTenant(request, url);
+
+  if (action !== 'push') {
+    return buildJsonResponse(request, { ok: false, error: 'unsupported_action', action }, 400);
+  }
+
+  let body = null;
+  try {
+    body = await request.json();
+  } catch (_) {
+    return buildJsonResponse(request, { ok: false, action, tenant, error: 'invalid_json' }, 400);
+  }
+
+  if (!body || typeof body !== 'object' || !body.snapshot || typeof body.snapshot !== 'object') {
+    return buildJsonResponse(request, { ok: false, action, tenant, error: 'missing_snapshot' }, 400);
+  }
+
+  const result = await saveSnapshot(env, tenant, body.snapshot, {
+    source: body.source || 'manual-browser-sync',
+    exported_at: body.snapshot?.meta?.exported_at,
+  });
+  if (!result.ok) {
+    return buildJsonResponse(request, { ok: false, action, tenant, error: result.error || 'push_failed' }, 503);
+  }
+
+  return buildJsonResponse(request, { ok: true, action, tenant, ...result });
+}
