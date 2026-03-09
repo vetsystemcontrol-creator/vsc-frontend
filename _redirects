@@ -1,11 +1,1 @@
-/assets/*   /assets/:splat   200
-/modules/*  /modules/:splat  200
-/vendor/*   /vendor/:splat   200
-/images/*   /images/:splat   200
-/css/*      /css/:splat      200
-
-/topbar      /topbar.html     200
-/login       /login.html      200
-/dashboard   /dashboard.html  200
-
-/            /login           302
+/ /login 302
