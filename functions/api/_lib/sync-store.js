@@ -65,8 +65,13 @@ function json(data, status = 200, request = null) {
   return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...corsHeaders(request) } });
 }
 
+function isD1Like(db) {
+  return !!(db && typeof db.prepare === 'function' && typeof db.exec === 'function');
+}
+
 function getDB(env) {
-  return env?.DB || env?.D1 || env?.VSC_DB || null;
+  const db = env?.DB || env?.D1 || env?.VSC_DB || null;
+  return isD1Like(db) ? db : null;
 }
 
 function getTenant(request) {
@@ -127,6 +132,7 @@ function normalizeOperation(op = {}) {
 }
 
 async function ensureSchema(db) {
+  if (!isD1Like(db)) throw new Error('invalid_d1_binding');
   await db.exec(`
     CREATE TABLE IF NOT EXISTS sync_operations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -424,6 +430,7 @@ export {
   JSON_HEADERS,
   json,
   corsHeaders,
+  isD1Like,
   getDB,
   getTenant,
   getUserLabel,

@@ -2,6 +2,7 @@ import {
   json as syncJson,
   corsHeaders,
   getDB,
+  isD1Like,
   getTenant,
   getUserLabel,
   ensureSchema,
@@ -30,6 +31,7 @@ async function buildCapabilities(request, env) {
     available: true,
     local_static_mode: !!legacy.local_static_mode,
     remote_sync_allowed: !!(db || legacy.remote_sync_allowed),
+    binding_ok: !!isD1Like(db),
     action: 'capabilities',
     endpoints: {
       state_capabilities: '/api/state?action=capabilities',
@@ -138,21 +140,29 @@ export async function onRequestOptions(context) {
 
 export async function onRequestGet(context) {
   const { request, env } = context;
-  const url = new URL(request.url);
-  const action = String(url.searchParams.get('action') || 'capabilities').trim().toLowerCase();
-  const tenant = readTenant(request, url);
+  try {
+    const url = new URL(request.url);
+    const action = String(url.searchParams.get('action') || 'capabilities').trim().toLowerCase();
+    const tenant = readTenant(request, url);
 
-  if (action === 'capabilities') return buildCapabilities(request, env);
-  if (action === 'pull') return handlePull(request, env, tenant);
-  return buildJsonResponse(request, { ok: false, error: 'unsupported_action', action }, 400);
+    if (action === 'capabilities') return buildCapabilities(request, env);
+    if (action === 'pull') return await handlePull(request, env, tenant);
+    return buildJsonResponse(request, { ok: false, error: 'unsupported_action', action }, 400);
+  } catch (error) {
+    return buildJsonResponse(request, { ok: false, error: 'state_get_failed', detail: String(error?.message || error || 'unknown_error') }, 500);
+  }
 }
 
 export async function onRequestPost(context) {
   const { request, env } = context;
-  const url = new URL(request.url);
-  const action = String(url.searchParams.get('action') || '').trim().toLowerCase();
-  const tenant = readTenant(request, url);
+  try {
+    const url = new URL(request.url);
+    const action = String(url.searchParams.get('action') || '').trim().toLowerCase();
+    const tenant = readTenant(request, url);
 
-  if (action === 'push') return handlePush(request, env, tenant);
-  return buildJsonResponse(request, { ok: false, error: 'unsupported_action', action }, 400);
+    if (action === 'push') return await handlePush(request, env, tenant);
+    return buildJsonResponse(request, { ok: false, error: 'unsupported_action', action }, 400);
+  } catch (error) {
+    return buildJsonResponse(request, { ok: false, error: 'state_post_failed', detail: String(error?.message || error || 'unknown_error') }, 500);
+  }
 }

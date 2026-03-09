@@ -32,9 +32,14 @@ function normalizeTenant(raw) {
   return v.replace(/[^a-z0-9._:-]+/g, '-').slice(0, 180) || 'tenant-default';
 }
 
+function isD1Like(db) {
+  return !!(db && typeof db.prepare === 'function' && typeof db.exec === 'function');
+}
+
 function getBinding(env) {
   if (!env) return null;
-  return env.DB || env.D1 || env.VSC_DB || null;
+  const db = env.DB || env.D1 || env.VSC_DB || null;
+  return isD1Like(db) ? db : null;
 }
 
 async function ensureD1Schema(db) {
@@ -59,6 +64,7 @@ export async function getCapabilities(env) {
     available: true,
     local_static_mode: false,
     remote_sync_allowed: !!(getBinding(env) || env?.VSC_STATE_BUCKET || env?.STATE_BUCKET || env?.R2),
+    storage_mode: getBinding(env) ? 'd1' : ((env?.VSC_STATE_BUCKET || env?.STATE_BUCKET || env?.R2) ? 'object-store' : 'none'),
   };
 }
 
