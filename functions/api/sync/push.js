@@ -1,7 +1,16 @@
-import { json, options, getDB, getTenant, getUserLabel, ensureSchema, ingestOperation } from '../_lib/sync-store.js';
+import { json, corsHeaders, getDB, getTenant, getUserLabel, ensureSchema, ingestOperation } from '../_lib/sync-store.js';
 
 export async function onRequestOptions(context) {
-  return options(context.request);
+  return new Response(null, {
+    status: 204,
+    headers: {
+      ...corsHeaders(context.request),
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, X-VSC-Tenant, X-VSC-User, X-VSC-Token',
+      'Access-Control-Max-Age': '86400',
+      'cache-control': 'no-store',
+    },
+  });
 }
 
 export async function onRequestPost(context) {
@@ -27,6 +36,7 @@ export async function onRequestPost(context) {
   const ack_ids = [];
   const duplicates = [];
   const rejected = [];
+  let stateRevision = null;
 
   for (const rawOp of operations) {
     const result = await ingestOperation(db, tenant, userLabel, rawOp);
@@ -36,9 +46,19 @@ export async function onRequestPost(context) {
     }
     ack_ids.push(result.ack_id);
     if (result.duplicate) duplicates.push(result.ack_id);
+    if (Number.isFinite(Number(result.state_revision))) stateRevision = Number(result.state_revision);
   }
 
   const ok = ack_ids.length > 0 && rejected.length === 0;
   const status = rejected.length ? 207 : 200;
-  return json({ ok, tenant, received: operations.length, acked: ack_ids.length, ack_ids, duplicates, rejected }, status, request);
+  return json({
+    ok,
+    tenant,
+    received: operations.length,
+    acked: ack_ids.length,
+    ack_ids,
+    duplicates,
+    rejected,
+    state_revision: stateRevision,
+  }, status, request);
 }

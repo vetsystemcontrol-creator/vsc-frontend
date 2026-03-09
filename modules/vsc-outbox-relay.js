@@ -31,8 +31,8 @@
   // ──────────────────────────────────────────────────────────
   const DB_NAME      = (window.VSC_DB_NAME || 'vsc_db');
   const STORE_OUTBOX = 'sync_queue';
+  const API_CAPABILITIES_URL = '/api/state?action=capabilities';
   const REMOTE_BASE = 'https://app.vetsystemcontrol.com.br';
-  const API_CAPABILITIES_PATH = '/api/state?action=capabilities';
 
   // Ritmo: rápido com backlog, econômico quando ocioso
   const ACTIVE_TICK_MS = 250;   // quando há pendências
@@ -83,32 +83,6 @@
     );
   }
 
-  function _getTenantKey() {
-    try {
-      const empresa = JSON.parse(localStorage.getItem('vsc_empresa_v1') || localStorage.getItem('VSC_EMPRESA_V1') || 'null');
-      const cnpj = String((empresa && (empresa.cnpj || empresa.CNPJ || empresa.documento || empresa.doc)) || '').replace(/\D+/g, '');
-      if (cnpj) return `tenant-${cnpj}`;
-    } catch (_) {}
-    return 'tenant-default';
-  }
-
-  function _getUserLabel() {
-    try {
-      const user = JSON.parse(localStorage.getItem('vsc_user') || 'null');
-      return String((user && (user.username || user.nome || user.name || user.id)) || 'anonymous').slice(0, 120);
-    } catch (_) {
-      return 'anonymous';
-    }
-  }
-
-  function _apiBase() {
-    return _isLocalStaticMode() ? REMOTE_BASE : '';
-  }
-
-  function _apiUrl(path) {
-    return `${_apiBase()}${path}`;
-  }
-
   function _emitProgress(extra = {}) {
     const detail = {
       ok: !_lastError,
@@ -146,17 +120,22 @@
     return false;
   }
 
+  function _apiBase() {
+    return _isLocalStaticMode() ? REMOTE_BASE : '';
+  }
+
+  function _apiUrl(path) {
+    return `${_apiBase()}${path}`;
+  }
+
   async function _readCapabilities() {
     const now = _now();
     if (_capabilities && (now - _capabilitiesCheckedAt) < 15000) return _capabilities;
-    const capabilitiesUrl = (_isLocalStaticMode() ? REMOTE_BASE : '') + API_CAPABILITIES_PATH;
 
     try {
-      const res = await fetch(capabilitiesUrl, {
+      const res = await fetch(_apiUrl(API_CAPABILITIES_URL), {
         method: 'GET',
-        headers: { 'Accept': 'application/json', 'X-VSC-Tenant': _getTenantKey(), 'X-VSC-User': _getUserLabel() },
-        mode: 'cors',
-        credentials: 'omit',
+        headers: { 'Accept': 'application/json' },
         cache: 'no-store',
       });
       if (!res.ok) {
@@ -289,12 +268,8 @@
       headers: {
         'Content-Type': 'application/json',
         'X-VSC-Token': token,
-        'X-VSC-Tenant': _getTenantKey(),
-        'X-VSC-User': _getUserLabel(),
       },
-      mode: 'cors',
-      credentials: 'omit',
-      body: JSON.stringify({ operations: batch.map(ev => Object.assign({}, ev, { store: ev.store || ev.store_name || '' })) }),
+      body: JSON.stringify({ operations: batch }),
     });
 
     if (!res.ok) {
@@ -321,12 +296,8 @@
         headers: {
           'Content-Type': 'application/json',
           'X-VSC-Token': token,
-          'X-VSC-Tenant': _getTenantKey(),
-          'X-VSC-User': _getUserLabel(),
         },
-        mode: 'cors',
-        credentials: 'omit',
-        body: JSON.stringify(Object.assign({}, body, { store: ev.store || ev.store_name || '' })),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const text = await res.text().catch(() => '');

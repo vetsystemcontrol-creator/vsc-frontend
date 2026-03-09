@@ -1,7 +1,16 @@
-import { json, options, getDB, getTenant, getUserLabel, ensureSchema, ingestOperation } from './_lib/sync-store.js';
+import { json, corsHeaders, getDB, getTenant, getUserLabel, ensureSchema, ingestOperation } from './_lib/sync-store.js';
 
 export async function onRequestOptions(context) {
-  return options(context.request);
+  return new Response(null, {
+    status: 204,
+    headers: {
+      ...corsHeaders(context.request),
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, X-VSC-Tenant, X-VSC-User, X-VSC-Token',
+      'Access-Control-Max-Age': '86400',
+      'cache-control': 'no-store',
+    },
+  });
 }
 
 export async function onRequestPost(context) {
@@ -17,9 +26,10 @@ export async function onRequestPost(context) {
   await ensureSchema(db);
 
   const result = await ingestOperation(db, tenant, userLabel, {
-    entity: body?.entity,
     store: body?.store,
+    entity: body?.entity,
     entity_id: body?.entity_id,
+    record_id: body?.record_id,
     action: body?.action || body?.op,
     op: body?.op,
     op_id: body?.op_id,
@@ -36,5 +46,5 @@ export async function onRequestPost(context) {
     return json({ ok: false, error: result.code }, 400, request);
   }
 
-  return json({ ok: true, ack_id: result.ack_id, duplicate: !!result.duplicate, tenant }, 200, request);
+  return json({ ok: true, ack_id: result.ack_id, duplicate: !!result.duplicate, tenant, store_name: result.store_name || null }, 200, request);
 }

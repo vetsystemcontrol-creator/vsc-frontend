@@ -3,41 +3,66 @@ const JSON_HEADERS = {
   'cache-control': 'no-store',
 };
 
+const STORE_NAME_MAP = Object.freeze({
+  produtos: 'produtos_master',
+  produtos_master: 'produtos_master',
+  produtos_lotes: 'produtos_lotes',
+  servicos: 'servicos_master',
+  servicos_master: 'servicos_master',
+  exames: 'exames_master',
+  exames_master: 'exames_master',
+  clientes: 'clientes_master',
+  clientes_master: 'clientes_master',
+  animais: 'animais_master',
+  animais_master: 'animais_master',
+  atendimentos: 'atendimentos_master',
+  atendimentos_master: 'atendimentos_master',
+  contas_pagar: 'contas_pagar',
+  contas_receber: 'contas_receber',
+  fornecedores: 'fornecedores_master',
+  fornecedores_master: 'fornecedores_master',
+  fechamentos: 'fechamentos',
+  repro_cases: 'repro_cases',
+  repro_exams: 'repro_exams',
+  repro_protocols: 'repro_protocols',
+  repro_events: 'repro_events',
+  repro_pregnancy: 'repro_pregnancy',
+  repro_foaling: 'repro_foaling',
+  repro_tasks: 'repro_tasks',
+  config_params: 'config_params',
+  config_audit_log: 'config_audit_log',
+  auth_users: 'auth_users',
+  auth_roles: 'auth_roles',
+  auth_role_permissions: 'auth_role_permissions',
+  auth_sessions: 'auth_sessions',
+  auth_audit_log: 'auth_audit_log',
+  user_profiles: 'user_profiles',
+  business_audit_log: 'business_audit_log',
+  estoque_movimentos: 'estoque_movimentos',
+  estoque_saldos: 'estoque_saldos',
+  import_ledger: 'import_ledger',
+  estoque_reasons: 'estoque_reasons',
+  tenant_subscription: 'tenant_subscription',
+  billing_events: 'billing_events',
+  animais_racas: 'animais_racas',
+  animais_pelagens: 'animais_pelagens',
+  animais_especies: 'animais_especies',
+  animal_vitals_history: 'animal_vitals_history',
+  animal_vaccines: 'animal_vaccines',
+  documentos: 'documents',
+  documents: 'documents',
+});
+
 function corsHeaders(request) {
-  const origin = request?.headers?.get?.('Origin') || '';
-  if (!origin) {
-    return {
-      'Access-Control-Allow-Origin': '*',
-      Vary: 'Origin',
-    };
-  }
-  if (/^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin)) {
-    return { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
-  }
-  if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) {
-    return { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
-  }
-  return { 'Access-Control-Allow-Origin': '*', Vary: 'Origin' };
+  const origin = request?.headers?.get('Origin') || '';
+  if (!origin) return { 'Access-Control-Allow-Origin': '*' };
+  if (/^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin)) return { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin' };
+  if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) return { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin' };
+  return { 'Access-Control-Allow-Origin': '*' };
 }
 
 function json(data, status = 200, request = null) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { ...JSON_HEADERS, ...corsHeaders(request) },
-  });
-}
-
-function options(request) {
-  return new Response(null, {
-    status: 204,
-    headers: {
-      ...corsHeaders(request),
-      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, X-VSC-Tenant, X-VSC-User, X-VSC-Token',
-      'Access-Control-Max-Age': '86400',
-      'cache-control': 'no-store',
-    },
-  });
+  return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...corsHeaders(request) } });
 }
 
 function getDB(env) {
@@ -67,23 +92,28 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function resolveStoreName(rawStore, rawEntity) {
+  const raw = normStr(rawStore || rawEntity || 'UNKNOWN', 120).toLowerCase();
+  return STORE_NAME_MAP[raw] || raw || 'UNKNOWN';
+}
+
 function normalizeOperation(op = {}) {
   const action = normStr(op.action || op.op || 'upsert', 40).toLowerCase() || 'upsert';
-  const entity = normStr(op.entity || op.store || 'UNKNOWN', 120) || 'UNKNOWN';
-  const entityId = normStr(op.entity_id || op.target_id || op.ref_id || op.id || '', 160);
+  const entity = normStr(op.entity || op.store || op.store_name || 'UNKNOWN', 120) || 'UNKNOWN';
+  const storeName = resolveStoreName(op.store || op.store_name, entity);
+  const entityId = normStr(op.entity_id || op.record_id || op.target_id || op.ref_id || op.id || '', 160);
   const opId = normStr(op.op_id || op.id || '', 160);
   const deviceId = normStr(op.device_id || '', 160);
   const baseRevision = normNum(op.base_revision, 0);
   const entityRevision = Math.max(1, normNum(op.entity_revision, baseRevision + 1));
-  const dedupeKey = normStr(op.dedupe_key || [entity, entityId, action, String(baseRevision), String(entityRevision)].join(':'), 300);
+  const dedupeKey = normStr(op.dedupe_key || [storeName, entityId, action, String(baseRevision), String(entityRevision)].join(':'), 300);
   const payload = op.payload ?? null;
   const createdAt = normStr(op.created_at || op.updated_at || nowIso(), 40) || nowIso();
   const status = normStr(op.status || 'PENDING', 40) || 'PENDING';
-  const store = inferStore({ entity, action, payload, store: op.store || op.store_name || '' });
   return {
     op_id: opId,
     entity,
-    store,
+    store_name: storeName,
     entity_id: entityId,
     action,
     payload,
@@ -96,90 +126,6 @@ function normalizeOperation(op = {}) {
   };
 }
 
-const ENTITY_TO_STORE = Object.freeze({
-  clientes: 'clientes_master',
-  clientes_master: 'clientes_master',
-  fornecedores: 'fornecedores_master',
-  fornecedores_master: 'fornecedores_master',
-  produtos: 'produtos_master',
-  produtos_master: 'produtos_master',
-  produtos_lotes: 'produtos_lotes',
-  animais: 'animais_master',
-  animais_master: 'animais_master',
-  atendimentos: 'atendimentos_master',
-  atendimentos_master: 'atendimentos_master',
-  servicos: 'servicos_master',
-  servicos_master: 'servicos_master',
-  exames: 'exames_master',
-  exames_master: 'exames_master',
-  contas_pagar: 'contas_pagar',
-  contas_receber: 'contas_receber',
-  fechamentos: 'fechamentos',
-  user_profiles: 'user_profiles',
-  repro_cases: 'repro_cases',
-  repro_events: 'repro_events',
-  repro_exams: 'repro_exams',
-  repro_foaling: 'repro_foaling',
-  repro_pregnancy: 'repro_pregnancy',
-  repro_protocols: 'repro_protocols',
-  repro_tasks: 'repro_tasks',
-  animal_vitals_history: 'animal_vitals_history',
-  animal_vaccines: 'animal_vaccines',
-  estoque_movimentos: 'estoque_movimentos',
-  estoque_saldos: 'estoque_saldos',
-  import_ledger: 'import_ledger',
-  billing_events: 'billing_events',
-  tenant_subscription: 'tenant_subscription',
-  auth_users: 'auth_users',
-  auth_roles: 'auth_roles',
-  auth_role_permissions: 'auth_role_permissions',
-  auth_sessions: 'auth_sessions',
-  auth_audit_log: 'auth_audit_log',
-  business_audit_log: 'business_audit_log',
-  config_params: 'config_params',
-  config_audit_log: 'config_audit_log',
-  backup_events: 'backup_events',
-  db_backups: 'db_backups',
-  sys_meta: 'sys_meta',
-});
-
-function inferStore({ entity = '', payload = null, store = '' } = {}) {
-  const direct = normStr(store, 120).toLowerCase();
-  if (direct) return direct;
-  const e = normStr(entity, 120).toLowerCase();
-  if (ENTITY_TO_STORE[e]) return ENTITY_TO_STORE[e];
-  if (payload && typeof payload === 'object') {
-    if (typeof payload.__store === 'string' && payload.__store.trim()) return normStr(payload.__store, 120).toLowerCase();
-    if (payload.cliente) return 'clientes_master';
-    if (payload.fornecedor) return 'fornecedores_master';
-    if (payload.produto) return 'produtos_master';
-    if (payload.animal) return 'animais_master';
-    if (payload.atendimento) return 'atendimentos_master';
-    if (payload.servico) return 'servicos_master';
-    if (payload.exame) return 'exames_master';
-  }
-  return e || 'unknown_records';
-}
-
-function extractCanonicalPayload(op) {
-  const payload = op?.payload;
-  if (!payload || typeof payload !== 'object') return payload ?? null;
-
-  const preferredKeys = ['cliente', 'fornecedor', 'produto', 'animal', 'atendimento', 'servico', 'exame', 'record', 'data'];
-  for (const key of preferredKeys) {
-    if (payload[key] && typeof payload[key] === 'object') {
-      return { ...payload[key] };
-    }
-  }
-
-  const cleaned = { ...payload };
-  delete cleaned.action;
-  delete cleaned.op;
-  delete cleaned.__origin;
-  delete cleaned.__store;
-  return cleaned;
-}
-
 async function ensureSchema(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS sync_operations (
@@ -188,6 +134,7 @@ async function ensureSchema(db) {
       op_id TEXT NOT NULL,
       dedupe_key TEXT NOT NULL,
       entity TEXT NOT NULL,
+      store_name TEXT NOT NULL,
       entity_id TEXT NOT NULL,
       action TEXT NOT NULL,
       payload_json TEXT,
@@ -203,24 +150,35 @@ async function ensureSchema(db) {
       ON sync_operations (tenant, op_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_operations_tenant_dedupe_key
       ON sync_operations (tenant, dedupe_key);
-    CREATE INDEX IF NOT EXISTS idx_sync_operations_tenant_entity
-      ON sync_operations (tenant, entity, entity_id);
+    CREATE INDEX IF NOT EXISTS idx_sync_operations_tenant_store
+      ON sync_operations (tenant, store_name, entity_id);
     CREATE INDEX IF NOT EXISTS idx_sync_operations_received_at
       ON sync_operations (received_at);
 
     CREATE TABLE IF NOT EXISTS canonical_records (
       tenant TEXT NOT NULL,
       store_name TEXT NOT NULL,
-      entity_id TEXT NOT NULL,
+      record_id TEXT NOT NULL,
       payload_json TEXT,
       deleted INTEGER NOT NULL DEFAULT 0,
-      revision INTEGER NOT NULL DEFAULT 1,
+      deleted_at TEXT,
       updated_at TEXT NOT NULL,
       source_op_id TEXT,
-      PRIMARY KEY (tenant, store_name, entity_id)
+      device_id TEXT,
+      entity_revision INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (tenant, store_name, record_id)
     );
     CREATE INDEX IF NOT EXISTS idx_canonical_records_tenant_store
       ON canonical_records (tenant, store_name, updated_at);
+
+    CREATE TABLE IF NOT EXISTS canonical_state_meta (
+      tenant TEXT PRIMARY KEY,
+      state_revision INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      last_op_id TEXT,
+      last_store_name TEXT,
+      last_record_id TEXT
+    );
   `);
 }
 
@@ -237,41 +195,100 @@ async function findDuplicate(db, tenant, op) {
   return row || null;
 }
 
-async function materializeCanonicalRecord(db, tenant, op) {
-  const storeName = normStr(op.store || inferStore(op), 120).toLowerCase() || 'unknown_records';
-  const updatedAt = nowIso();
-  const revision = normNum(op.entity_revision, 1);
-  const action = String(op.action || 'upsert').toLowerCase();
+function clonePayloadRecord(op) {
+  const base = (op.payload && typeof op.payload === 'object' && !Array.isArray(op.payload))
+    ? JSON.parse(JSON.stringify(op.payload))
+    : { value: op.payload };
+  const updatedAt = base.updated_at || base.updatedAt || op.created_at || nowIso();
+  if (op.store_name === 'produtos_master' && !base.produto_id) {
+    base.produto_id = op.entity_id;
+  }
+  if (!base.id && !base.produto_id && !base.key) {
+    base.id = op.entity_id;
+  }
+  base.updated_at = updatedAt;
+  base.sync_rev = op.entity_revision;
+  base.entity_revision = op.entity_revision;
+  base.base_revision = op.base_revision;
+  base.last_synced_op_id = op.op_id;
+  return base;
+}
 
-  if (action === 'delete' || action === 'remove' || action === 'archive') {
+async function applyOperationToCanonical(db, tenant, op) {
+  const receivedAt = nowIso();
+  const payloadRecord = clonePayloadRecord(op);
+  if (String(op.action).toLowerCase() === 'delete') {
     await db.prepare(`
-      INSERT INTO canonical_records (tenant, store_name, entity_id, payload_json, deleted, revision, updated_at, source_op_id)
-      VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7)
-      ON CONFLICT(tenant, store_name, entity_id) DO UPDATE SET
-        payload_json=excluded.payload_json,
-        deleted=1,
-        revision=excluded.revision,
-        updated_at=excluded.updated_at,
-        source_op_id=excluded.source_op_id
-    `).bind(tenant, storeName, op.entity_id, JSON.stringify({ id: op.entity_id, deleted_at: updatedAt }), revision, updatedAt, op.op_id).run();
-    return;
+      INSERT INTO canonical_records (
+        tenant, store_name, record_id, payload_json, deleted, deleted_at, updated_at,
+        source_op_id, device_id, entity_revision
+      ) VALUES (?1, ?2, ?3, NULL, 1, ?4, ?4, ?5, ?6, ?7)
+      ON CONFLICT(tenant, store_name, record_id) DO UPDATE SET
+        payload_json = NULL,
+        deleted = 1,
+        deleted_at = excluded.deleted_at,
+        updated_at = excluded.updated_at,
+        source_op_id = excluded.source_op_id,
+        device_id = excluded.device_id,
+        entity_revision = excluded.entity_revision
+    `).bind(
+      tenant,
+      op.store_name,
+      op.entity_id,
+      receivedAt,
+      op.op_id,
+      op.device_id,
+      op.entity_revision,
+    ).run();
+  } else {
+    await db.prepare(`
+      INSERT INTO canonical_records (
+        tenant, store_name, record_id, payload_json, deleted, deleted_at, updated_at,
+        source_op_id, device_id, entity_revision
+      ) VALUES (?1, ?2, ?3, ?4, 0, NULL, ?5, ?6, ?7, ?8)
+      ON CONFLICT(tenant, store_name, record_id) DO UPDATE SET
+        payload_json = excluded.payload_json,
+        deleted = 0,
+        deleted_at = NULL,
+        updated_at = excluded.updated_at,
+        source_op_id = excluded.source_op_id,
+        device_id = excluded.device_id,
+        entity_revision = excluded.entity_revision
+    `).bind(
+      tenant,
+      op.store_name,
+      op.entity_id,
+      JSON.stringify(payloadRecord),
+      payloadRecord.updated_at || receivedAt,
+      op.op_id,
+      op.device_id,
+      op.entity_revision,
+    ).run();
   }
 
-  const payload = extractCanonicalPayload(op);
-  const record = (payload && typeof payload === 'object') ? { ...payload } : { value: payload };
-  if (!record.id && op.entity_id) record.id = op.entity_id;
-  if (!record.updated_at) record.updated_at = updatedAt;
-
   await db.prepare(`
-    INSERT INTO canonical_records (tenant, store_name, entity_id, payload_json, deleted, revision, updated_at, source_op_id)
-    VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7)
-    ON CONFLICT(tenant, store_name, entity_id) DO UPDATE SET
-      payload_json=excluded.payload_json,
-      deleted=0,
-      revision=excluded.revision,
-      updated_at=excluded.updated_at,
-      source_op_id=excluded.source_op_id
-  `).bind(tenant, storeName, op.entity_id, JSON.stringify(record), revision, updatedAt, op.op_id).run();
+    INSERT INTO canonical_state_meta (tenant, state_revision, updated_at, last_op_id, last_store_name, last_record_id)
+    VALUES (?1, 1, ?2, ?3, ?4, ?5)
+    ON CONFLICT(tenant) DO UPDATE SET
+      state_revision = canonical_state_meta.state_revision + 1,
+      updated_at = excluded.updated_at,
+      last_op_id = excluded.last_op_id,
+      last_store_name = excluded.last_store_name,
+      last_record_id = excluded.last_record_id
+  `).bind(tenant, receivedAt, op.op_id, op.store_name, op.entity_id).run();
+
+  const meta = await db.prepare(`
+    SELECT tenant, state_revision, updated_at, last_op_id, last_store_name, last_record_id
+    FROM canonical_state_meta
+    WHERE tenant = ?1
+    LIMIT 1
+  `).bind(tenant).first();
+
+  return {
+    ok: true,
+    state_revision: Number(meta?.state_revision || 0) || 0,
+    updated_at: meta?.updated_at || receivedAt,
+  };
 }
 
 async function ingestOperation(db, tenant, userLabel, rawOp) {
@@ -282,6 +299,9 @@ async function ingestOperation(db, tenant, userLabel, rawOp) {
   if (!op.entity_id) {
     return { ok: false, code: 'missing_entity_id', operation: op };
   }
+  if (!op.store_name || op.store_name === 'UNKNOWN') {
+    return { ok: false, code: 'missing_store_name', operation: op };
+  }
 
   const existing = await findDuplicate(db, tenant, op);
   if (existing) {
@@ -291,6 +311,8 @@ async function ingestOperation(db, tenant, userLabel, rawOp) {
       ack_id: op.op_id,
       dedupe_key: op.dedupe_key,
       received_at: existing.received_at,
+      state_revision: null,
+      store_name: op.store_name,
     };
   }
 
@@ -298,15 +320,16 @@ async function ingestOperation(db, tenant, userLabel, rawOp) {
   const payloadJson = JSON.stringify(op.payload ?? null);
   await db.prepare(`
     INSERT INTO sync_operations (
-      tenant, op_id, dedupe_key, entity, entity_id, action, payload_json,
+      tenant, op_id, dedupe_key, entity, store_name, entity_id, action, payload_json,
       device_id, user_label, created_at_client, received_at,
       base_revision, entity_revision, status
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'ACKED')
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'ACKED')
   `).bind(
     tenant,
     op.op_id,
     op.dedupe_key,
     op.entity,
+    op.store_name,
     op.entity_id,
     op.action,
     payloadJson,
@@ -318,7 +341,7 @@ async function ingestOperation(db, tenant, userLabel, rawOp) {
     op.entity_revision,
   ).run();
 
-  await materializeCanonicalRecord(db, tenant, op);
+  const apply = await applyOperationToCanonical(db, tenant, op);
 
   return {
     ok: true,
@@ -326,49 +349,71 @@ async function ingestOperation(db, tenant, userLabel, rawOp) {
     ack_id: op.op_id,
     dedupe_key: op.dedupe_key,
     received_at: receivedAt,
+    state_revision: apply.state_revision,
+    store_name: op.store_name,
   };
 }
 
-async function buildCanonicalSnapshot(db, tenant) {
+async function loadCanonicalSnapshot(db, tenant) {
   await ensureSchema(db);
   const rows = await db.prepare(`
-    SELECT store_name, entity_id, payload_json, deleted, revision, updated_at
+    SELECT store_name, record_id, payload_json, deleted, updated_at, entity_revision
     FROM canonical_records
-    WHERE tenant = ?1
-    ORDER BY store_name ASC, updated_at ASC, entity_id ASC
+    WHERE tenant = ?1 AND deleted = 0
+    ORDER BY store_name, updated_at, record_id
   `).bind(tenant).all();
-  const results = Array.isArray(rows?.results) ? rows.results : [];
+
+  const metaRow = await db.prepare(`
+    SELECT tenant, state_revision, updated_at, last_op_id, last_store_name, last_record_id
+    FROM canonical_state_meta
+    WHERE tenant = ?1
+    LIMIT 1
+  `).bind(tenant).first();
+
   const data = {};
-  for (const row of results) {
-    const store = String(row.store_name || '').trim();
-    if (!store) continue;
-    if (!data[store]) data[store] = [];
-    if (Number(row.deleted || 0) === 1) continue;
-    try {
-      const obj = JSON.parse(row.payload_json || 'null');
-      if (obj && typeof obj === 'object') data[store].push(obj);
-    } catch (_) {}
+  for (const storeName of Array.from(new Set(Object.values(STORE_NAME_MAP)))) {
+    data[storeName] = [];
   }
-  const stores = Object.keys(data).sort();
+  for (const row of (rows?.results || rows || [])) {
+    const storeName = String(row.store_name || '').trim();
+    if (!storeName) continue;
+    if (!data[storeName]) data[storeName] = [];
+    let payload = null;
+    try {
+      payload = row.payload_json ? JSON.parse(row.payload_json) : null;
+    } catch (_) {
+      payload = null;
+    }
+    if (!payload || typeof payload !== 'object') continue;
+    if (!payload.updated_at) payload.updated_at = row.updated_at || nowIso();
+    if (!payload.sync_rev) payload.sync_rev = Number(row.entity_revision || 1) || 1;
+    data[storeName].push(payload);
+  }
+
   return {
     ok: true,
-    exists: stores.length > 0,
+    exists: !!metaRow || Object.keys(data).length > 0,
+    revision: Number(metaRow?.state_revision || 0) || 0,
     meta: {
       tenant,
-      exported_at: nowIso(),
-      source: 'canonical_records',
-      stores: stores.length,
+      state_revision: Number(metaRow?.state_revision || 0) || 0,
+      updated_at: metaRow?.updated_at || null,
+      last_op_id: metaRow?.last_op_id || null,
+      last_store_name: metaRow?.last_store_name || null,
+      last_record_id: metaRow?.last_record_id || null,
     },
     snapshot: {
       meta: {
-        format: 'vsc_backup_stream_v1',
+        app: 'Vet System Control – Equine',
+        db_name: 'vsc_db',
         exported_at: nowIso(),
-        source: 'canonical_records',
+        source: 'cloud-master',
+        state_revision: Number(metaRow?.state_revision || 0) || 0,
       },
       schema: {
         db_name: 'vsc_db',
-        db_version: 34,
-        stores,
+        exported_at: nowIso(),
+        stores: Object.keys(data),
       },
       data,
     },
@@ -378,12 +423,11 @@ async function buildCanonicalSnapshot(db, tenant) {
 export {
   JSON_HEADERS,
   json,
-  options,
   corsHeaders,
   getDB,
   getTenant,
   getUserLabel,
   ensureSchema,
   ingestOperation,
-  buildCanonicalSnapshot,
+  loadCanonicalSnapshot,
 };
