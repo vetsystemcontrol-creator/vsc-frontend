@@ -1105,38 +1105,47 @@ function render(){
     const lastAt = getAnimalLastAtendimento(a?.id);
 
     const tdIdade = document.createElement("td");
+    tdIdade.className = 'col-hide-md';
     tdIdade.textContent = calcIdadeTxt(a?.nascimento);
     tr.appendChild(tdIdade);
 
     const tdPeso = document.createElement("td");
+    tdPeso.className = 'col-hide-md';
     tdPeso.textContent = lastVital && lastVital.peso ? String(lastVital.peso).replace('.',',') + ' kg' : '—';
     tr.appendChild(tdPeso);
 
     const tdUlt = document.createElement("td");
+    tdUlt.className = 'col-hide-lg';
     tdUlt.textContent = lastAt ? fmtDate(lastAt.data_atendimento || lastAt.created_at) : '—';
     tr.appendChild(tdUlt);
 
     const tdStc = document.createElement("td");
+    tdStc.className = 'col-hide-lg';
     tdStc.textContent = getAnimalClinicalStatus(a?.id);
     tr.appendChild(tdStc);
 
     const tdR = document.createElement("td");
+    tdR.className = 'col-hide-lg';
     tdR.textContent = getNomeCatalogById(st_racas, a?.raca_id) || "-";
     tr.appendChild(tdR);
 
     const tdP = document.createElement("td");
+    tdP.className = 'col-hide-xl';
     tdP.textContent = getNomeCatalogById(st_pelagens, a?.pelagem_id) || "-";
     tr.appendChild(tdP);
 
     const tdM = document.createElement("td");
+    tdM.className = 'col-hide-xl';
     tdM.textContent = a?.microchip || "-";
     tr.appendChild(tdM);
 
     const tdPa = document.createElement("td");
+    tdPa.className = 'col-hide-xl';
     tdPa.textContent = a?.passaporte || "-";
     tr.appendChild(tdPa);
 
     const tdA = document.createElement("td");
+    tdA.className = 'col-actions';
     tdA.innerHTML = `
       <div style="display:flex; gap:8px; flex-wrap:wrap">
         <button class="btn btnMini btnGhost" data-act="history" data-id="${a?.id}">Histórico</button><button class="btn btnMini btnGhost" data-act="edit" data-id="${a?.id}">Alterar</button>

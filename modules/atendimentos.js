@@ -501,19 +501,59 @@ async function loadEmpresaSnapshot(db){
         };
       }
     }
-    // fallback: config_params
+    // Fallback canônico: config_params (empresa.js persiste aqui via IDB)
     if(hasStore(db,"config_params")){
       const rows = await idbGetAll(db,"config_params");
-      function getKey(k){ const r = rows.find(x=>String(x.key||x.nome||"")==k); return r? String(r.value||""):""; }
+      function getKey(k){ const r = rows.find(x=>String(x.key||x.nome||x.id||"")===k); return r ? String(r.value||"") : ""; }
+
+      // Tenta ler o snapshot completo (salvo pelo empresa.js como JSON)
+      const snapRaw = getKey("vsc_empresa_v1");
+      if(snapRaw){
+        try{
+          const snap = JSON.parse(snapRaw);
+          if(snap && snap.nome){
+            const logoAKey = getKey("vsc_empresa_logo_a") || snap.__logoA || "";
+            const logoBKey = getKey("vsc_empresa_logo_b") || snap.__logoB || "";
+            return {
+              nome:     snap.nome || snap.razao_social || snap.fantasia || "",
+              cnpj:     snap.cnpj || "",
+              endereco: snap.endereco || "",
+              cidade:   snap.cidade || "",
+              uf:       snap.uf || "",
+              cep:      snap.cep || "",
+              telefone: snap.telefone || snap.celular || "",
+              email:    snap.email || "",
+              site:     snap.site || "",
+              crmv:     snap.crmv || "",
+              __logoA:  logoAKey || (await getEmpresaLogoAFromLocalStorage()),
+              __logoB:  logoBKey || "",
+              pix_tipo:       snap.pix_tipo || "",
+              pix_chave:      snap.pix_chave || (await getEmpresaPixFromLocalStorage()),
+              pix_chave_norm: snap.pix_chave_norm || "",
+              pix_nome:       snap.pix_nome || "",
+            };
+          }
+        }catch(_){}
+      }
+
+      // Fallback por chaves individuais legacy
       return {
-        nome: getKey("empresa_nome") || getKey("razao_social") || "",
-        cnpj: getKey("empresa_cnpj") || getKey("cnpj") || "",
+        nome:     getKey("empresa_nome") || getKey("razao_social") || "",
+        cnpj:     getKey("empresa_cnpj") || getKey("cnpj") || "",
         endereco: getKey("empresa_endereco") || getKey("endereco") || "",
         telefone: getKey("empresa_telefone") || getKey("telefone") || "",
-        email: getKey("empresa_email") || getKey("email") || "",
-        __logoA: getKey("empresa_logo_a") || getKey("logo_a") || (await getEmpresaLogoAFromLocalStorage()),
+        email:    getKey("empresa_email") || getKey("email") || "",
+        __logoA:  getKey("empresa_logo_a") || getKey("logo_a") || (await getEmpresaLogoAFromLocalStorage()),
         pix_chave: getKey("pix_chave") || getKey("chave_pix") || getKey("pix") || (await getEmpresaPixFromLocalStorage()),
       };
+    }
+    // Último recurso: só localStorage
+    const lsRaw = localStorage.getItem("vsc_empresa_v1");
+    if(lsRaw){
+      try{
+        const ls = JSON.parse(lsRaw);
+        if(ls && ls.nome) return Object.assign({ __logoA:"", pix_chave:"" }, ls);
+      }catch(_){}
     }
     return { nome:"", cnpj:"", endereco:"", telefone:"", email:"" };
   }
@@ -753,6 +793,14 @@ async function openPrintWindow(payload, docType){
   const ui = ensurePrintPreviewModal();
   ui.setState("loading", "Gerando PDF premium (incluindo anexos)…");
 
+  // Anexos: usa apenas o que já está em memória local (dataUrl).
+  // NÃO faz download em tempo de impressão — evita travamento da UI.
+  // Arquivos apenas no servidor aparecem com aviso no documento impresso.
+  if(doc.atendimento && Array.isArray(doc.atendimento.attachments)){
+    const sem = doc.atendimento.attachments.filter(a => a && !a.dataUrl && a.synced_to_r2);
+    if(sem.length) console.info('[PRINT] ' + sem.length + ' anexo(s) só no servidor (exibidos como referência no doc):', sem.map(a=>a.name));
+  }
+
   let r;
   try{
     r = await fetch("/api/atendimentos/print-pack", {
@@ -764,16 +812,16 @@ async function openPrintWindow(payload, docType){
   }catch(e){
     console.error("[SGQT-PRINT][NET] erro:", e);
     ui.setState("loading", "Backend indisponível. Gerando impressão local...");
-    return openPrintWindowClient(payload, docType, { openPreview:true });
+    return openPrintWindowClient(doc, docType, { openPreview:true });
   }
 
   if(!r.ok){
     let detail = "";
     try{ detail = await r.text(); }catch(_){ }
     console.error("[SGQT-PRINT][HTTP] status:", r.status, detail);
-    if(r.status === 404 || r.status === 501){
+    if(r.status === 404 || r.status === 405 || r.status === 501){
       ui.setState("loading", "Backend de impressão ausente. Gerando impressão local...");
-      return openPrintWindowClient(payload, docType, { openPreview:true });
+      return openPrintWindowClient(doc, docType, { openPreview:true });
     }
     ui.setState("error", "Backend retornou erro ("+r.status+").");
     if(r.status === 413){
@@ -892,6 +940,10 @@ th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06
 img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid var(--bd);border-radius:10px;}
 .pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
 .muted{color:var(--muted);}
+.att{margin:14px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:10px;break-inside:avoid;}
+.att-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:#334155;margin-bottom:6px;}
+.att-desc{font-size:12px;color:var(--muted);margin-top:6px;font-style:italic;}
+.att-nodata{font-size:12px;color:#b45309;background:#fef3c7;padding:8px 10px;border-radius:6px;margin-top:6px;}
 
 /* Marca d'água (somente relatório) */
 .wmLocal{
@@ -977,27 +1029,43 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     atts.length ? atts.map((a, idx)=>{
       const isPdf = String(a.mime||"")==="application/pdf";
       const name = esc(a.name||("Anexo "+(idx+1)));
+      const hasData = !!a.dataUrl;
+      const sizeKb = a.size ? Math.round(a.size/1024) + " KB" : "";
+      if(!hasData){
+        // Sem dataUrl — mostra referência (arquivo está no servidor)
+        return `
+          <section class="att">
+            <div class="att-title">${name} ${isPdf ? "• PDF" : "• Imagem"} ${sizeKb ? "• "+sizeKb : ""}</div>
+            ${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ""}
+            <div class="att-nodata">⚠ Arquivo disponível no servidor (${sizeKb}). Abra o atendimento para visualizar.</div>
+          </section>
+        `;
+      }
       if(isPdf){
         return `
           <section class="att">
-            <div class="att-title">${name} • PDF</div>
+            <div class="att-title">${name} • PDF ${sizeKb ? "• "+sizeKb : ""}</div>
             <div class="no-print small"><a href="${a.dataUrl}" target="_blank" rel="noopener">Abrir PDF em nova aba</a></div>
             <div class="pdf-block att-media" data-idx="${idx}">
               <div class="pdf-loading">Renderizando PDF para impressão…</div>
               <div class="pdf-pages" data-name="${name}" data-dataurl="${a.dataUrl}"></div>
             </div>
-            ${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ``}
+            ${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ""}
           </section>
         `;
       }
+      // Imagem — usa canvas para redimensionar antes de imprimir (evita travamento com imagens grandes)
       return `
         <section class="att">
-          <div class="att-title">${name} • Imagem</div>
-          <div class="att-media"><img src="${a.dataUrl}" alt="${name}"/></div>${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ``}
+          <div class="att-title">${name} • Imagem ${sizeKb ? "• "+sizeKb : ""}</div>
+          <div class="att-media">
+            <canvas class="att-img-canvas" data-src="${a.dataUrl}" style="max-width:100%;display:block;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;"></canvas>
+          </div>
+          ${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ""}
         </section>
       `;
     }).join("")
-    : `<div class="small muted">Nenhum anexo.</div>`
+    : `<div class="small muted">Nenhum anexo clínico registrado.</div>`
   ) : "";
 
   const vitalsHtml = (animais.length ? animais : (Array.isArray(atd.animal_ids) ? atd.animal_ids.map(id=>({id, nome:id})) : [])).map(a=>{
@@ -1314,7 +1382,30 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           }catch(_e){}
         }
 
+        // Renderiza imagens grandes via canvas (evita travamento)
+        async function renderCanvasImages(){
+          var canvases = Array.from(document.querySelectorAll('.att-img-canvas'));
+          for(var cv of canvases){
+            var src = cv.getAttribute('data-src');
+            if(!src) continue;
+            try{
+              var MAX_W = 900, MAX_H = 1200;
+              var img = new Image();
+              await new Promise(function(res,rej){ img.onload=res; img.onerror=rej; img.src=src; });
+              var w = img.naturalWidth, h = img.naturalHeight;
+              var scale = Math.min(1, MAX_W/w, MAX_H/h);
+              cv.width = Math.floor(w*scale);
+              cv.height = Math.floor(h*scale);
+              var ctx = cv.getContext('2d');
+              ctx.drawImage(img, 0, 0, cv.width, cv.height);
+            }catch(e){ cv.style.display='none'; }
+          }
+        }
+
         window.addEventListener('load', async function(){
+          // 0) Renderizar imagens via canvas (redimensiona grandes)
+          try{ await renderCanvasImages(); } catch(e){}
+
           // 1) Renderizar PDFs (se houver) e inserir como imagens (efeito "escaneado")
           try{ await renderAllPdfs(); } catch(e){}
 
@@ -1395,6 +1486,11 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   w.document.open();
   w.document.write(html);
   w.document.close();
+
+  // Auto-abre diálogo de impressão após carregar (inclui opção "Salvar como PDF")
+  w.addEventListener("load", () => {
+    setTimeout(() => { try{ w.print(); }catch(_){} }, 800);
+  });
 }
 
   async function imprimirAtendimento(db, docType){
@@ -3360,38 +3456,92 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     if (!produtosItens.length) return { ok: true, movs: 0 };
     if (!hasStore(db, "produtos_master")) return { ok: false, msg: "Store produtos_master não encontrada." };
 
+    // Usa VSC_ESTOQUE (estoque_core.js) quando disponível — garante ledger correto
+    if (window.VSC_ESTOQUE && typeof window.VSC_ESTOQUE.registrarSaida === "function") {
+      let movs = 0;
+      for (const it of produtosItens) {
+        if (!it.catalog_id || Number(it.qtd||0) <= 0) continue;
+        try {
+          const fn = sentido === "baixar" ? window.VSC_ESTOQUE.registrarSaida : window.VSC_ESTOQUE.registrarEntrada;
+          await fn({
+            produto_id: it.catalog_id,
+            produto_nome: it.desc || "",
+            qtd: Number(it.qtd || 0),
+            origem: "ATENDIMENTO",
+            ref_id: ATD.atendimento_id,
+            ref_numero: ATD.numero || "",
+            responsavel_user_id: ATD.responsavel_user_id || null,
+            custo_unit_cents: Number(it.custo_cents || 0)
+          });
+          movs++;
+        } catch(e) { console.warn("[ATD] VSC_ESTOQUE erro:", it.catalog_id, e); }
+      }
+      _catalogCache["PRODUTO"] = null;
+      return { ok: true, movs };
+    }
+
     let movs = 0;
+    const now = isoNow();
+    const tipoMov = sentido === "baixar" ? "SAIDA" : "ENTRADA";
+
     for (const it of produtosItens) {
       try {
         const prod = await idbGet(db, "produtos_master", it.catalog_id);
         if (!prod) continue;
-        const saldoAtual = Number(prod.saldo_estoque || 0);
         const qty = Number(it.qtd || 0);
-        prod.saldo_estoque = sentido === "baixar"
-          ? Math.max(0, saldoAtual - qty)
-          : saldoAtual + qty;
-        prod.updated_at = isoNow();
+        if (qty <= 0) continue;
+
+        // 1. Atualiza saldo_estoque no produto (cache denormalizado)
+        const saldoAtual = Number(prod.saldo_estoque || 0);
+        const novoSaldo = sentido === "baixar" ? Math.max(0, saldoAtual - qty) : saldoAtual + qty;
+        prod.saldo_estoque = novoSaldo;
+        prod.updated_at = now;
         await idbPut(db, "produtos_master", prod);
+
+        // 2. Atualiza estoque_saldos (fonte canônica, alinhado com importacaoxml)
+        if (hasStore(db, "estoque_saldos")) {
+          try {
+            const saldoKey = String(it.catalog_id) + ":sem-lote";
+            const saldoRec = await idbGet(db, "estoque_saldos", saldoKey);
+            const saldoBase = Number((saldoRec && saldoRec.saldo) || saldoAtual || 0);
+            const novoSaldoRec = sentido === "baixar" ? Math.max(0, saldoBase - qty) : saldoBase + qty;
+            await idbPut(db, "estoque_saldos", Object.assign({}, saldoRec || {}, {
+              id: saldoKey,
+              produto_id: it.catalog_id,
+              lote_id: null,
+              saldo: novoSaldoRec,
+              updated_at: now,
+              _origem: "atendimento"
+            }));
+          } catch(_) {}
+        }
+
+        // 3. Registra movimento individual em estoque_movimentos (store canonico)
+        if (hasStore(db, "estoque_movimentos")) {
+          try {
+            const movItem = {
+              id: uuidv4(),
+              produto_id: it.catalog_id,
+              produto_nome: it.desc || "",
+              tipo: tipoMov,
+              origem: "ATENDIMENTO",
+              ref_id: ATD.atendimento_id,
+              ref_numero: ATD.numero || "",
+              responsavel_user_id: ATD.responsavel_user_id || null,
+              qtd_delta: sentido === "baixar" ? -qty : qty,
+              saldo_delta: novoSaldo - saldoAtual,
+              custo_unit_cents: Number(it.custo_cents || 0),
+              custo_total_cents: Math.round(Number(it.custo_cents || 0) * qty),
+              created_at: now,
+              updated_at: now,
+              _origem: "atendimento"
+            };
+            await idbPut(db, "estoque_movimentos", movItem);
+          } catch(_) {}
+        }
+
         movs++;
       } catch (e) { console.warn("[ATD] estoque mov erro item:", it.catalog_id, e); }
-    }
-
-    // Registrar em estoque_movimentacoes se store existir
-    if (hasStore(db, "estoque_movimentacoes")) {
-      try {
-        const mov = {
-          id: uuidv4(),
-          tipo: sentido === "baixar" ? "SAIDA" : "ENTRADA",
-          origem: "atendimento",
-          ref_id: ATD.atendimento_id,
-          ref_numero: ATD.numero,
-      responsavel_user_id: ATD.responsavel_user_id || null,
-      responsavel_snapshot: ATD.responsavel_snapshot || null,
-          itens: produtosItens,
-          created_at: isoNow()
-        };
-        await idbPut(db, "estoque_movimentacoes", mov);
-      } catch (_) { }
     }
 
     // Limpar cache de catálogo para forçar releitura

@@ -314,6 +314,8 @@ function normalizePix(tipo, chave){
       localStorage.setItem(LS_META, JSON.stringify(meta));
       // Compatibilidade (legacy)
       try { localStorage.setItem("empresa_configurada", "1"); } catch (e) { /* ignora */ }
+      // Persiste também no IDB (offline-first) para não perder dados quando browser limpar localStorage
+      _saveEmpresaToIDB(o || {}).catch(function(e){ console.warn("[EMPRESA] IDB save warn:", e); });
       return true;
     }catch(e){ return false; }
   }
@@ -420,20 +422,37 @@ function normalizePix(tipo, chave){
     }
   }
 
-  function loadLocal() {
+  async function loadLocal() {
     try {
       var raw = localStorage.getItem(LS_KEY);
-      if (!raw) { toast("Sem dados locais para carregar."); return false; }
-      var obj = JSON.parse(raw);
+      var obj = null;
+      if (raw) {
+        try { obj = JSON.parse(raw); } catch(_) {}
+      }
+      // Fallback IDB — cobre iOS Safari, modo privado, clear cache
+      if (!obj || typeof obj !== "object" || !obj.nome) {
+        var idbObj = await _loadEmpresaFromIDB();
+        if (idbObj && typeof idbObj === "object") {
+          obj = idbObj;
+          // Repopula localStorage a partir do IDB (restauração automática)
+          try {
+            localStorage.setItem(LS_KEY, JSON.stringify(obj));
+            localStorage.setItem("empresa_configurada", "1");
+          } catch(_) {}
+          console.log("[EMPRESA] dados restaurados do IDB para localStorage");
+        }
+      }
+      if (!obj || typeof obj !== "object") {
+        toast("Sem dados cadastrados. Preencha e salve.");
+        return false;
+      }
       applyForm(obj);
-
       if (obj.__logoA) setLogoPreview("logoAPreview", obj.__logoA);
       if (obj.__logoB) setLogoPreview("logoBPreview", obj.__logoB);
-
       toast("Dados carregados.");
       return true;
     } catch (e) {
-      toast("Falha ao carregar dados locais.");
+      toast("Falha ao carregar dados.");
       return false;
     }
   }
@@ -807,8 +826,12 @@ function normalizePix(tipo, chave){
     maskDate(byId("abertura"));
     maskPhone(byId("celular"));
 
-    // Auto-load inicial
-    window.__VSC_EMPRESA__ && window.__VSC_EMPRESA__.loadLocal && window.__VSC_EMPRESA__.loadLocal();
+    // Auto-load inicial (async: tenta localStorage, fallback IDB)
+    if (window.__VSC_EMPRESA__ && typeof window.__VSC_EMPRESA__.loadLocal === "function") {
+      Promise.resolve(window.__VSC_EMPRESA__.loadLocal()).catch(function(e){
+        console.warn("[EMPRESA] loadLocal error:", e);
+      });
+    }
   }
 
   document.addEventListener("DOMContentLoaded", function(){
