@@ -25,8 +25,11 @@ try{
   }
 }catch(_){}
 const DB_NAME = "vsc_db";
-  const DB_VERSION = 35;// v35: fornecedores_master schema alignment for cloud snapshot sync | v34: Sync hardening (op_id/device_id/revision metadata) // v32: Fechamentos/Faturamento em lote (STORE_FECHAMENTOS) // v30: Subscription/Billing control (tenant_subscription + billing_events) | v29: Estoque ledger/saldos/import_ledger | v26: Reprodução Equina | v25: Fornecedores | v24: Produtos Lotes | v23: Config + RBAC + Auditoria
+  const DB_VERSION = 36;// v36: empresa cadastral/fiscal store (CNPJ, Razão Social, IE, IM, CNAE, endereço) | v35: fornecedores_master schema alignment for cloud snapshot sync | v34: Sync hardening (op_id/device_id/revision metadata) // v32: Fechamentos/Faturamento em lote (STORE_FECHAMENTOS) // v30: Subscription/Billing control (tenant_subscription + billing_events) | v29: Estoque ledger/saldos/import_ledger | v26: Reprodução Equina | v25: Fornecedores | v24: Produtos Lotes | v23: Config + RBAC + Auditoria
   const STORE_OUTBOX = "sync_queue";
+
+  // Empresa (cadastro fiscal/legal) — v36
+  const STORE_EMPRESA = "empresa";
 
   const STORE_FECHAMENTOS = "fechamentos";
   const STORE_SYS_META = "sys_meta";
@@ -136,6 +139,14 @@ exames_master: [
   "tipo",
   "custo_base_cents", "preco_venda_cents",
   "ativo", "deleted_at"
+],
+// Empresa (cadastro fiscal/legal)
+empresa: [
+  "cnpj", "razao_social", "nome_fantasia",
+  "ie", "im", "cnae_principal",
+  "cep", "logradouro", "numero", "complemento", "bairro", "cidade", "uf",
+  "telefone", "email", "site",
+  "regime_tributario", "updated_at"
 ],
 });
 
@@ -817,6 +828,19 @@ req.onupgradeneeded = (e) => {
               }
             }
           }catch(_){}
+        }
+
+        // =========================
+        // EMPRESA CADASTRAL/FISCAL — v36
+        // Armazena dados da empresa: CNPJ, Razão Social, Nome Fantasia,
+        // IE, IM, CNAE, endereço completo, contatos, dados bancários e logo.
+        // keyPath "id" = tenant_id (string) para suporte multi-tenant futuro.
+        // =========================
+        if (!db.objectStoreNames.contains(STORE_EMPRESA)) {
+          const st = db.createObjectStore(STORE_EMPRESA, { keyPath: "id" });
+          st.createIndex("cnpj_digits", "cnpj_digits", { unique: false });
+          st.createIndex("razao_social_norm", "razao_social_norm", { unique: false });
+          st.createIndex("updated_at", "updated_at", { unique: false });
         }
 
       };
@@ -1768,7 +1792,10 @@ async function importBackupFromJson(jsonText, opts){
 
       // Subscription/Billing (v30)
       tenant_subscription: STORE_TENANT_SUBSCRIPTION,
-      billing_events: STORE_BILLING_EVENTS
+      billing_events: STORE_BILLING_EVENTS,
+
+      // Empresa cadastral/fiscal (v36)
+      empresa: STORE_EMPRESA
     }
   };
 

@@ -1580,19 +1580,56 @@ async function delAnimal(id){
       throw new Error("VSC_DB.upsertWithOutbox não disponível (vsc_db.js não carregou).");
     }
 
-    await window.VSC_DB.upsertWithOutbox(
-      "animais_master",
-      updated.id,
-      updated,
-      "animais"
-    );
+    // ── Soft-delete local (IDB) - sempre permitido para ADMIN/MASTER ──
+    // Para sincronizar a remoção ao D1 (banco mãe), exige confirmação MASTER.
+    // Literatura: "Distributed Systems - Martin Fowler" + LGPD Art.16 + OWASP re-autenticação.
+    const db = await window.VSC_DB.openDB();
+    await new Promise(function(res,rej){
+      const tx = db.transaction(["animais_master"],"readwrite");
+      const req = tx.objectStore("animais_master").put(updated);
+      req.onsuccess = ()=>res(); req.onerror = ()=>rej(req.error);
+    });
+    db.close();
 
     st_animais.splice(idx, 1);
     render();
-    vscSnack("Animal excluído.", "warn");
+
+    // Verificar se é MASTER para propagar ao D1
+    let isMaster = false;
+    try{ await window.VSC_AUTH.requireRole("MASTER"); isMaster = true; }catch(_){}
+
+    if(!isMaster){
+      const senha = window.prompt("Para remover do banco central (D1), informe a senha MASTER. Em branco = cancelar.");
+      if(senha){
+        try{
+          // verificação simplificada via IDB auth_users
+          const db2 = await window.VSC_DB.openDB();
+          const users = await new Promise(function(res,rej){
+            const tx=db2.transaction(["auth_users"],"readonly");
+            const req=tx.objectStore("auth_users").getAll();
+            req.onsuccess=()=>res(req.result||[]); req.onerror=()=>rej(req.error);
+          });
+          db2.close();
+          const masterUser = users.find(u=>u&&String(u.role||"").toUpperCase()==="MASTER");
+          if(masterUser && (masterUser.password===senha||masterUser.password_hash===senha||
+            (window.VSC_AUTH.verifyPassword&&await window.VSC_AUTH.verifyPassword(masterUser,senha)))){
+            isMaster = true;
+          } else {
+            vscSnack("Senha MASTER incorreta. Animal ocultado localmente, não removido do D1.", "warn");
+          }
+        }catch(e){ console.warn("[ANIMAIS] verify master:", e); }
+      }
+    }
+
+    if(isMaster){
+      await window.VSC_DB.upsertWithOutbox("animais_master", updated.id, updated, "animais");
+      vscSnack("Animal removido do sistema e do banco central.", "warn");
+    } else {
+      vscSnack("Animal ocultado localmente. Use conta MASTER para remover do banco central.", "warn");
+    }
   }catch(e){
     vscToast("err", String("[ANIMAIS] Falha ao excluir via VSC_DB:", e), {ms:3200});
-if(window.VSC_UI && window.VSC_UI.alert){
+    if(window.VSC_UI && window.VSC_UI.alert){
       await window.VSC_UI.alert("ERRO ao excluir (veja o console). " + (e && e.message ? e.message : e), "Erro");
     }
   }

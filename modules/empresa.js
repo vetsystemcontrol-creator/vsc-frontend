@@ -154,6 +154,7 @@ function normalizePix(tipo, chave){
       "cnpj", "razao_social", "nome_fantasia", "ie", "im", "cnae", "abertura", "regime",
       "telefone", "celular", "email", "site", "pix_tipo", "pix_nome", "pix_chave",
       "cep", "uf", "logradouro", "numero", "complemento", "bairro", "cidade", "ibge",
+      "crmv", "crmv_uf",
       "obs"
     ];
   }
@@ -410,14 +411,16 @@ function normalizePix(tipo, chave){
       }catch(_e){}
 
       if(!setStoredEmpresa(obj)){
-        toast("Falha ao salvar localmente.");
+        toast("Falha ao salvar: armazenamento indisponível.");
+        console.error("[EMPRESA] setStoredEmpresa retornou false - localStorage bloqueado?");
         return false;
       }
 
-      toast("Empresa salva localmente.");
+      toast("Empresa salva.");
       return true;
     } catch (e) {
-      toast("Falha ao salvar localmente.");
+      console.error("[EMPRESA] saveLocal exception:", e);
+      toast("Falha ao salvar: " + (e && e.message ? e.message : String(e)));
       return false;
     }
   }

@@ -924,8 +924,8 @@ body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:
 .sysSub{font-size:11px;color:var(--muted);font-weight:800;}
 .logoA{width:54px;height:54px;object-fit:contain;border:none;border-radius:0;margin:0;}
 .hdr h1{font-size:16px;margin:0;font-weight:900;letter-spacing:-.02em;}
-.small{font-size:12px;color:var(--muted);line-height:1.35;}
-.box{border:1px solid var(--bd);border-radius:12px;padding:12px 14px;margin:12px 0;}
+.small{font-size:11px;color:var(--muted);line-height:1.4;}
+.box{border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin:10px 0;}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
 .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700;}
 .val{font-size:13px;font-weight:800;margin-top:2px;}
@@ -987,12 +987,13 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   .footer{
     display:block;
     position:fixed; left:0; right:0; bottom:0;
-    padding:4mm 12mm 3mm;
-    font-size:10px; color:var(--muted);
+    border-top:1px solid var(--bd);
+    padding:3mm 12mm 3mm;
+    font-size:9px; color:var(--muted);
     background:#fff;
   }
-  .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:flex-end;}
-  .pnum:before{content:"Página " counter(page) " de " counter(pages);} 
+  .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:center;}
+  /* counter(pages) não funciona no Chrome para about:blank - JS preenche .pnum */
 }
   `;
 
@@ -1237,27 +1238,34 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         ${(docType === "clinico" && logoB) ? `<div class="wmLocal"><img src="${logoB}" alt="Marca d'água"/></div>` : ``}
         <div class="sheetContent">
           <div class="hdr">
-            <div class="hdr-left">
-              <div class="sysBrand">
-                <div class="sysIcon">${SYSTEM_LOGO_SVG}</div>
-                <div class="sysName">
-                  <div class="sysMain">Vet System Control</div>
-                  <div class="sysSub">| Equine</div>
-                </div>
-              </div>
-              ${logoA ? `<img class="logoA" src="${logoA}" alt="Logo A"/>` : ``}
-              <div>
-                <h1>${esc(DOC_LABEL)}</h1>
-                <div class="small">
-                  <div><strong>Nº:</strong> <span class="muted">${esc(atd.numero||"—")}</span></div>
-                  <div><strong>Status:</strong> <span class="muted">${esc(atd.status||"—")}</span></div>
-                  <div><strong>Gerado em:</strong> <span class="muted">${esc(fmtDate(R.gerado_em))}</span></div>
-                </div>
-              </div>
+            <!-- Logo empresa (destaque, lado esquerdo) -->
+            <div class="hdr-logos">
+              ${logoA ? `<img class="logoA" src="${logoA}" alt="Logo"/>` : `<div style="width:56px;height:56px;border-radius:4px;background:linear-gradient(135deg,#16a34a,#0369a1);display:flex;align-items:center;justify-content:center;">${SYSTEM_LOGO_SVG}</div>`}
             </div>
-            <div class="small" style="text-align:right;">
-              <div style="font-weight:900;color:#0b1220;">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"")}</div>
-              ${empLine ? `<div>${empLine}</div>`:""}
+            <!-- Dados da empresa (centro) -->
+            <div class="hdr-empresa">
+              <div class="emp-nome">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa")}</div>
+              ${empresa.razao_social && (empresa.razao_social !== empresa.nome) ? `<div class="emp-sub">${esc(empresa.razao_social)}</div>` : ""}
+              <div class="emp-dados">${[
+                empresa.cnpj ? "CNPJ: "+empresa.cnpj : "",
+                empresa.crmv ? "CRMV: "+empresa.crmv : "",
+                empresa.endereco||"",
+                [empresa.cidade, empresa.uf].filter(Boolean).join("/"),
+                [empresa.telefone, empresa.email].filter(Boolean).join("  •  ")
+              ].filter(Boolean).join("<br/>")}</div>
+            </div>
+            <!-- Identificação do documento (direita) -->
+            <div class="hdr-doc">
+              <div class="doc-tipo">${esc(DOC_LABEL)}</div>
+              <div class="doc-num"><strong>Nº:</strong> ${esc(atd.numero||"—")}</div>
+              <div class="doc-status"><strong>Status:</strong> ${esc(atd.status||"—")}</div>
+              <div class="doc-data"><strong>Data:</strong> ${esc(fmtDate(R.gerado_em))}</div>
+            </div>
+            <!-- Crédito sistema (rodapé do cabeçalho) -->
+            <div class="sys-credit">
+              ${SYSTEM_LOGO_SVG}
+              <span class="sysMain">Vet System Control</span>
+              <span class="sysSub">| Equine — Sistema de Gestão Veterinária</span>
             </div>
           </div>
 
@@ -1402,6 +1410,18 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           }
         }
 
+        // Preenche número de páginas no rodapé (Chrome não suporta counter(pages) em about:blank)
+        function fillPageNumbers(){
+          try{
+            var body = document.body;
+            var pageH = 1122; // altura aproximada A4 a 96dpi (297mm)
+            var total = Math.max(1, Math.ceil(body.scrollHeight / pageH));
+            document.querySelectorAll('.pnum').forEach(function(el, i){
+              el.textContent = 'Página ' + (i+1) + ' de ' + total;
+            });
+          }catch(_){}
+        }
+
         window.addEventListener('load', async function(){
           // 0) Renderizar imagens via canvas (redimensiona grandes)
           try{ await renderCanvasImages(); } catch(e){}
@@ -1468,6 +1488,9 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           }catch(_){}
 
           try{ await waitForImages(12000); }catch(_){}
+
+          // Preenche "Página X de Y"
+          try{ fillPageNumbers(); }catch(_){}
 
           await new Promise(function(r){ requestAnimationFrame(function(){ requestAnimationFrame(r); }); });
 

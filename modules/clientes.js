@@ -1961,8 +1961,9 @@ if(inat){
     }
 
     async function deleteCliente(){
+      // Requer pelo menos ADMIN para iniciar
       try{
-        await window.VSC_AUTH.requireRole("ADMIN"); // ADMIN ou MASTER
+        await window.VSC_AUTH.requireRole("ADMIN");
       }catch(e){
         toast(e && e.message ? e.message : "Acesso negado.", "warn", true);
         return;
@@ -1971,27 +1972,111 @@ if(inat){
         toast("Selecione um cliente para excluir.", "warn", false);
         return;
       }
-      var ok = await confirmModal("Excluir cliente", "Confirma a exclusão definitiva deste cliente? Essa ação não pode ser desfeita.");
+
+      // ── Literatura best-practice: soft-delete local + confirmação de senha para sync D1 ──
+      // Referências: Martin Fowler "Soft Delete" pattern; LGPD Art.16 (retenção para auditoria);
+      // OWASP Secure Coding - operações destrutivas exigem re-autenticação.
+      var ok = await confirmModal(
+        "Excluir cliente",
+        "Este cliente sera ocultado do sistema (soft-delete). Para apagar do banco central (D1), sera exigida a senha MASTER. Deseja continuar?"
+      );
       if(!ok) return;
 
       try{
         setEditState("SYNC", "Excluindo...");
-        await delById(state.db, STORE_CLIENTES, state.selectedId);
-        // registrar na outbox (DELETE)
         var now = new Date().toISOString();
-        await outboxEnqueue(state.db, "clientes", state.selectedId, "DELETE", { id: state.selectedId, deleted_at: now });
-        // limpar seleção e UI
+        var clienteId = state.selectedId;
+
+        // 1. Soft-delete LOCAL: marca deleted_at no IDB (mantém histórico)
+        var rec = null;
+        try{
+          rec = await new Promise(function(res, rej){
+            var tx = state.db.transaction([STORE_CLIENTES], "readonly");
+            var req = tx.objectStore(STORE_CLIENTES).get(clienteId);
+            req.onsuccess = function(){ res(req.result || null); };
+            req.onerror = function(){ rej(req.error); };
+          });
+        }catch(_){}
+
+        if(!rec){ toast("Cliente não encontrado.", "warn", false); return; }
+
+        var updated = Object.assign({}, rec, { deleted: true, deleted_at: now, updated_at: now });
+        await new Promise(function(res, rej){
+          var tx = state.db.transaction([STORE_CLIENTES], "readwrite");
+          var req = tx.objectStore(STORE_CLIENTES).put(updated);
+          req.onsuccess = function(){ res(); };
+          req.onerror = function(){ rej(req.error); };
+        });
+
+        // 2. Verificar se usuário é MASTER para propagar ao D1
+        var isMaster = false;
+        try{
+          await window.VSC_AUTH.requireRole("MASTER");
+          isMaster = true;
+        }catch(_){ isMaster = false; }
+
+        if(!isMaster){
+          // Exige senha MASTER para deletar do banco central (proteção D1)
+          var senha = window.prompt("Para apagar do banco central D1, informe a senha MASTER. Em branco = cancelar.");
+          if(senha){
+            // Verificar a senha MASTER
+            try{
+              var authOk = await (async function(){
+                if(!window.VSC_AUTH || typeof window.VSC_AUTH.login !== "function") return false;
+                // Tenta autenticar o usuário master com a senha fornecida
+                var currentUser = window.VSC_AUTH.getCurrentUser ? await window.VSC_AUTH.getCurrentUser() : null;
+                if(!currentUser) return false;
+                // Verificar senha via tentativa de login (sem criar sessão)
+                var masterUser = null;
+                try{
+                  var db = state.db;
+                  var users = await new Promise(function(res,rej){
+                    var tx = db.transaction(["auth_users"],"readonly");
+                    var req = tx.objectStore("auth_users").getAll();
+                    req.onsuccess=function(){ res(req.result||[]); };
+                    req.onerror=function(){ rej(req.error); };
+                  });
+                  masterUser = users.find(function(u){ return u && String(u.role||"").toUpperCase() === "MASTER"; });
+                }catch(_){}
+                if(!masterUser) return false;
+                // Verificar hash da senha (se disponível no auth module)
+                if(window.VSC_AUTH.verifyPassword && typeof window.VSC_AUTH.verifyPassword === "function"){
+                  return await window.VSC_AUTH.verifyPassword(masterUser, senha);
+                }
+                // Fallback: comparar diretamente (plain text legado)
+                return masterUser.password === senha || masterUser.password_hash === senha;
+              })();
+              if(authOk){
+                isMaster = true;
+              } else {
+                toast("Senha MASTER incorreta. Cliente ocultado localmente, NÃO removido do D1.", "warn", true);
+              }
+            }catch(e){
+              toast("Erro ao verificar senha: " + (e.message||e), "warn", true);
+            }
+          }
+        }
+
+        // 3. Propagar ao D1 somente se autenticado como MASTER
+        if(isMaster){
+          await outboxEnqueue(state.db, "clientes", clienteId, "DELETE", { id: clienteId, deleted_at: now });
+          toast("Cliente removido do sistema e do banco central.", "ok", false);
+        } else {
+          // Só oculto localmente - não entra na outbox
+          toast("Cliente ocultado localmente. Para remover do banco central, use uma conta MASTER.", "ok", false);
+        }
+
+        // 4. Limpar UI
         state.selectedId = null;
         state.editingId = null;
         try{ fillForm(null); }catch(_){}
         try{ setDetailVisible(false); }catch(_){}
         await reloadList();
         await refreshPendingCount();
-        toast("Cliente excluído.", "ok", false);
         setEditState("SALVO", "Excluído");
       }catch(err){
-        console.error(err);
-        toast("Falha ao excluir cliente.", "error", true);
+        console.error("[CLIENTES] deleteCliente error:", err);
+        toast("Falha ao excluir cliente: " + (err.message||"erro"), "error", true);
         setEditState("ERRO", "Erro");
       }finally{
         refreshDeleteUI();
