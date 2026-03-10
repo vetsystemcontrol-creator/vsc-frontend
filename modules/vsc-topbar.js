@@ -43,8 +43,14 @@ const VSC_TOPBAR = (() => {
     setButtonState('loading');
 
     try {
-      // ✅ Chama o motor de sync com tratamento de erro adequado
-      await VSC_CLOUD_SYNC.pullNow();
+      // ✅ Sync manual correto: push local -> cloud e depois pull cloud -> local
+      if (window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.manualSync === "function") {
+        await window.VSC_CLOUD_SYNC.manualSync();
+      } else if (window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.pullNow === "function") {
+        await window.VSC_CLOUD_SYNC.pullNow();
+      } else {
+        throw new Error("manual_sync_unavailable");
+      }
 
     } catch (err) {
       console.error('[VSC_TOPBAR] falha no sync manual:', err.message);

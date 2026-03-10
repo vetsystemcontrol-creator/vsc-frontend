@@ -25,7 +25,7 @@ try{
   }
 }catch(_){}
 const DB_NAME = "vsc_db";
-  const DB_VERSION = 35;// v35: adiciona fornecedores_master ausente para alinhar schema local/cloud no sync manual // v34: Sync hardening (op_id/device_id/revision metadata) // v32: Fechamentos/Faturamento em lote (STORE_FECHAMENTOS) // v30: Subscription/Billing control (tenant_subscription + billing_events) | v29: Estoque ledger/saldos/import_ledger | v26: Reprodução Equina | v25: Fornecedores | v24: Produtos Lotes | v23: Config + RBAC + Auditoria
+  const DB_VERSION = 35;// v35: fornecedores_master schema alignment for cloud snapshot sync | v34: Sync hardening (op_id/device_id/revision metadata) // v32: Fechamentos/Faturamento em lote (STORE_FECHAMENTOS) // v30: Subscription/Billing control (tenant_subscription + billing_events) | v29: Estoque ledger/saldos/import_ledger | v26: Reprodução Equina | v25: Fornecedores | v24: Produtos Lotes | v23: Config + RBAC + Auditoria
   const STORE_OUTBOX = "sync_queue";
 
   const STORE_FECHAMENTOS = "fechamentos";
@@ -637,19 +637,19 @@ req.onupgradeneeded = (e) => {
           st.createIndex("created_at", "created_at", { unique: false });
         }
 
-        // Clientes (canônico — continuidade)
-        if (!db.objectStoreNames.contains(STORE_CLIENTES_MASTER)) {
-          const st = db.createObjectStore(STORE_CLIENTES_MASTER, { keyPath: "id" });
-          st.createIndex("doc_digits", "doc_digits", { unique: false });
+        // Fornecedores (canônico — alinhamento com snapshot cloud)
+        if (!db.objectStoreNames.contains(STORE_FORNECEDORES_MASTER)) {
+          const st = db.createObjectStore(STORE_FORNECEDORES_MASTER, { keyPath: "id" });
+          st.createIndex("cnpj_digits", "cnpj_digits", { unique: false });
           st.createIndex("nome_norm", "nome_norm", { unique: false });
           st.createIndex("status", "status", { unique: false });
           st.createIndex("updated_at", "updated_at", { unique: false });
         }
 
-        // Fornecedores (canônico — alinhamento local/cloud para sync manual)
-        if (!db.objectStoreNames.contains(STORE_FORNECEDORES_MASTER)) {
-          const st = db.createObjectStore(STORE_FORNECEDORES_MASTER, { keyPath: "id" });
-          st.createIndex("cnpj_digits", "cnpj_digits", { unique: false });
+        // Clientes (canônico — continuidade)
+        if (!db.objectStoreNames.contains(STORE_CLIENTES_MASTER)) {
+          const st = db.createObjectStore(STORE_CLIENTES_MASTER, { keyPath: "id" });
+          st.createIndex("doc_digits", "doc_digits", { unique: false });
           st.createIndex("nome_norm", "nome_norm", { unique: false });
           st.createIndex("status", "status", { unique: false });
           st.createIndex("updated_at", "updated_at", { unique: false });
@@ -1732,6 +1732,7 @@ async function importBackupFromJson(jsonText, opts){
       produtos_master: STORE_PRODUTOS_MASTER,
       produtos_lotes: STORE_PRODUTOS_LOTES,
       clientes_master: STORE_CLIENTES_MASTER,
+      fornecedores_master: STORE_FORNECEDORES_MASTER,
       animais_master: STORE_ANIMAIS_MASTER,
 
       animais_racas: STORE_ANIMAIS_RACAS,
