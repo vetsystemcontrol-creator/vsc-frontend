@@ -319,7 +319,8 @@ function confirmModal(title, text){
     // Caminho preferencial: VSC_DB.upsertWithOutbox (atômico, op_id, ISO timestamp)
     if(vscDb && typeof vscDb.upsertWithOutbox === "function"){
       var storeName = STORE_CLIENTES;
-      // __origin vai apenas como metadado do outbox, NÃO no objeto salvo
+      // payload do outbox = objeto completo do cliente + metadado __origin
+      // O backend (cloud-store.js) usa op.payload para montar o registro no D1
       var outboxMeta = { __origin: "CADASTRO_MANUAL" };
       // Para DELETE não há objeto para dar upsert — enfileira diretamente via outboxEnqueue interno
       if(String(action).toUpperCase() === "DELETE"){
@@ -329,7 +330,7 @@ function confirmModal(title, text){
         return _outboxEnqueueFallback(entityId, action, payload);
       }
       // UPSERT: obj é o cliente puro (sem campos de outbox)
-      // outboxMeta vai como 5º param (payload do outbox), separado do obj
+      // payload do outbox = objeto completo do cliente (para o backend salvar no D1)
       var obj = Object.assign({}, payload || {});
       if(!obj.id) obj.id = entityId;
       // Garantir created_at ISO se ainda for número (registros legados)
@@ -339,7 +340,9 @@ function confirmModal(title, text){
       if(typeof obj.updated_at === "number"){
         obj.updated_at = new Date(obj.updated_at).toISOString();
       }
-      return vscDb.upsertWithOutbox(storeName, obj, "clientes", String(entityId), outboxMeta);
+      // outboxPayload = objeto completo do cliente + __origin (backend usa isso para salvar no D1)
+      var outboxPayload = Object.assign({}, obj, outboxMeta);
+      return vscDb.upsertWithOutbox(storeName, obj, "clientes", String(entityId), outboxPayload);
     }
     // Fallback caso VSC_DB não esteja disponível
     return _outboxEnqueueFallback(entityId, action, payload);
