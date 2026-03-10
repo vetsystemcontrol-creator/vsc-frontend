@@ -335,16 +335,50 @@
     snack("Anexos adicionados. Preencha as descrições e clique em Salvar.", "ok");
   }
 
-  function openAttachmentInNewTab(att){
-    if(!att || !att.dataUrl) return;
+  async function openAttachmentInNewTab(att){
+    if(!att) return;
+
+    // Se tem dataUrl local, abre direto
+    if(att.dataUrl){
+      _renderAttachWindow(att, att.dataUrl);
+      return;
+    }
+
+    // Sem dataUrl — busca do R2
+    if(!att.synced_to_r2){ snack("Anexo sem dados locais e não sincronizado com o servidor.", "err"); return; }
+    if(!ATD.atendimento_id){ snack("ID do atendimento não encontrado.", "err"); return; }
+
+    snack("Baixando anexo do servidor...", "ok");
+    try {
+      const base = (location.hostname==='127.0.0.1'||location.hostname==='localhost')
+        ? 'https://app.vetsystemcontrol.com.br' : '';
+      const tenant = localStorage.getItem('vsc_tenant') || 'tenant-default';
+      const url = `${base}/api/attachments?action=download&atendimento_id=${encodeURIComponent(ATD.atendimento_id)}&attachment_id=${encodeURIComponent(att.id)}`;
+      const res = await fetch(url, { headers: { 'X-VSC-Tenant': tenant } });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
+      // Salva localmente para próxima vez
+      att.dataUrl = dataUrl;
+      _renderAttachWindow(att, dataUrl);
+    } catch(e) {
+      snack("Erro ao baixar anexo: " + (e.message||"erro"), "err");
+    }
+  }
+
+  function _renderAttachWindow(att, dataUrl){
     const attWin = window.open("about:blank", "_blank");
     if(!attWin){ snack("Pop-up bloqueado. Libere pop-ups para visualizar anexos.", "warn"); return; }
     const title = esc(att.name || "Anexo");
     const isPdf = String(att.mime||"") === "application/pdf";
     const body = isPdf
-      ? `<embed src="${att.dataUrl}" type="application/pdf" style="width:100%;height:100vh;"/>`
-      : `<img src="${att.dataUrl}" style="max-width:100%;height:auto;display:block;margin:0 auto;"/>`;
-
+      ? `<embed src="${dataUrl}" type="application/pdf" style="width:100%;height:100vh;"/>`
+      : `<img src="${dataUrl}" style="max-width:100%;height:auto;display:block;margin:0 auto;"/>`;
     attWin.document.open();
     attWin.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="margin:0;padding:0;background:#111;color:#fff;">${body}</body></html>`);
     attWin.document.close();
