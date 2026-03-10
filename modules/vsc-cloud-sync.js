@@ -1,272 +1,253 @@
+// vsc-cloud-sync.js
+// Sync manual seguro: push manual (quando houver relay) + pull canônico do Cloudflare.
+// Regras:
+// - sem auto-sync ao voltar online
+// - fallback determinístico /api/sync/pull -> /api/state?action=pull
+// - aplica apenas stores compatíveis com o IndexedDB local atual
+// - expõe window.VSC_CLOUD_SYNC
 (() => {
   'use strict';
 
-  const SYNC_TS_KEY = 'vsc_last_sync_at';
-  const SYNC_REV_KEY = 'vsc_last_sync_revision';
-  const TENANT_KEY = 'vsc_tenant';
   const REMOTE_BASE = 'https://app.vetsystemcontrol.com.br';
-  const PULL_ENDPOINTS = [
-    '/api/sync/pull',
-    '/api/state?action=pull',
-  ];
+  const SYNC_KEY = 'vsc_last_sync';
   const RETRY_LIMIT = 3;
   const RETRY_DELAY_MS = 1200;
+  const DEFAULT_TENANT = 'tenant-default';
 
-  let isSyncing = false;
-  let lastError = null;
-  let lastTenant = 'tenant-default';
-  let lastRevision = 0;
-  let lastPulledAt = null;
+  let _running = false;
+  let _lastError = null;
+  let _lastPullAt = null;
+  let _lastSkippedStores = [];
 
-  function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  function sleep(ms){ return new Promise((r) => setTimeout(r, ms)); }
+  function nowIso(){ return new Date().toISOString(); }
+
+  function isLocalStaticMode(){
+    try {
+      const proto = String(location.protocol || '').toLowerCase();
+      const host = String(location.hostname || '').toLowerCase();
+      if (proto === 'file:') return true;
+      if (host === '127.0.0.1' || host === 'localhost') return true;
+    } catch (_) {}
+    return false;
   }
 
-  function notifyUI(status, message = '', extra = {}) {
-    try {
-      window.dispatchEvent(new CustomEvent('vsc:sync:status', {
-        detail: {
-          status,
-          message,
-          tenant: lastTenant,
-          revision: lastRevision,
-          timestamp: new Date().toISOString(),
-          ...extra,
-        },
-      }));
-    } catch (_) {}
+  function apiUrl(path){
+    return `${isLocalStaticMode() ? REMOTE_BASE : ''}${path}`;
   }
 
-  function getTenant() {
+  function readTenant(){
     try {
-      if (window.VSC_RELAY && typeof window.VSC_RELAY.status === 'function') {
-        const relayStatus = window.VSC_RELAY.status() || {};
-        const relayTenant = relayStatus?.capabilities?.body?.tenant || relayStatus?.tenant || '';
-        if (relayTenant) {
-          lastTenant = String(relayTenant).trim().slice(0, 120) || 'tenant-default';
-          return lastTenant;
-        }
-      }
-    } catch (_) {}
-
-    try {
-      const raw = localStorage.getItem(TENANT_KEY) || '';
-      if (raw) {
-        lastTenant = String(raw).trim().slice(0, 120) || 'tenant-default';
-        return lastTenant;
-      }
-    } catch (_) {}
-
-    return lastTenant;
+      const raw = localStorage.getItem('vsc_sync_tenant') || DEFAULT_TENANT;
+      return String(raw || DEFAULT_TENANT).trim() || DEFAULT_TENANT;
+    } catch (_) {
+      return DEFAULT_TENANT;
+    }
   }
 
-  function getUserLabel() {
+  function readUserLabel(){
     try {
-      const raw = localStorage.getItem('vsc_user') || sessionStorage.getItem('vsc_user') || 'null';
-      const user = JSON.parse(raw);
-      return String((user && (user.username || user.nome || user.name || user.id)) || 'anonymous').trim().slice(0, 120) || 'anonymous';
+      const raw = JSON.parse(localStorage.getItem('vsc_user') || 'null');
+      return String((raw && (raw.username || raw.nome || raw.name || raw.id)) || 'anonymous').slice(0, 120);
     } catch (_) {
       return 'anonymous';
     }
   }
 
-  function getToken() {
+  function emit(detail){
+    const safe = {
+      pending: Number(detail && detail.pending || 0) || 0,
+      running: !!(detail && detail.running),
+      error: detail && detail.error ? String(detail.error) : null,
+      local_static_mode: isLocalStaticMode(),
+      remote_sync_allowed: detail && typeof detail.remote_sync_allowed === 'boolean' ? detail.remote_sync_allowed : true,
+      lastPullAt: _lastPullAt,
+      skippedStores: Array.isArray(_lastSkippedStores) ? _lastSkippedStores.slice() : [],
+      ...detail,
+    };
     try {
-      return String(
-        localStorage.getItem('vsc_local_token') ||
-        sessionStorage.getItem('vsc_local_token') ||
-        localStorage.getItem('vsc_token') ||
-        sessionStorage.getItem('vsc_token') ||
-        ''
-      );
-    } catch (_) {
-      return '';
-    }
-  }
-
-  function isLocalStaticMode() {
-    try {
-      const proto = String(location.protocol || '').toLowerCase();
-      const host = String(location.hostname || '').toLowerCase();
-      if (proto === 'file:') return true;
-      if (host === '127.0.0.1' || host === 'localhost') {
-        const forced = String(localStorage.getItem('vsc_allow_local_sync_api') || '').toLowerCase();
-        return forced !== '1' && forced !== 'true' && forced !== 'yes';
-      }
+      window.dispatchEvent(new CustomEvent('vsc:sync-progress', { detail: safe }));
     } catch (_) {}
-    return false;
   }
 
-  function apiBase() {
-    return isLocalStaticMode() ? REMOTE_BASE : '';
-  }
-
-  function apiUrl(path) {
-    return `${apiBase()}${path}`;
-  }
-
-  async function withRetry(fn, label) {
+  async function withRetry(fn, label){
     let last = null;
-    for (let attempt = 1; attempt <= RETRY_LIMIT; attempt += 1) {
-      try {
-        return await fn(attempt);
-      } catch (err) {
+    for (let i = 1; i <= RETRY_LIMIT; i += 1) {
+      try { return await fn(); } catch (err) {
         last = err;
-        try { console.warn(`[VSC_CLOUD_SYNC] ${label} tentativa ${attempt}/${RETRY_LIMIT} falhou:`, err && err.message ? err.message : err); } catch (_) {}
-        if (attempt < RETRY_LIMIT) {
-          await sleep(RETRY_DELAY_MS * attempt);
-        }
+        try { console.warn(`[VSC_CLOUD_SYNC] ${label} tentativa ${i}/${RETRY_LIMIT} falhou`, err); } catch (_) {}
+        if (i < RETRY_LIMIT) await sleep(RETRY_DELAY_MS * i);
       }
     }
     throw last || new Error(`${label}_failed`);
   }
 
-  async function fetchSnapshot() {
-    const tenant = getTenant();
+  async function fetchPullSnapshot(){
+    const tenant = readTenant();
     const headers = {
-      Accept: 'application/json',
+      'Accept': 'application/json',
       'X-VSC-Tenant': tenant,
-      'X-VSC-User': getUserLabel(),
+      'X-VSC-User': readUserLabel(),
     };
-    const token = getToken();
-    if (token) headers['X-VSC-Token'] = token;
 
-    let lastFailure = null;
-    for (const endpoint of PULL_ENDPOINTS) {
+    const endpoints = [
+      apiUrl('/api/sync/pull'),
+      apiUrl('/api/state?action=pull'),
+    ];
+
+    let lastErr = null;
+    for (const url of endpoints) {
       try {
-        const res = await fetch(apiUrl(endpoint), {
-          method: 'GET',
-          headers,
-          cache: 'no-store',
-        });
+        const res = await fetch(url, { method: 'GET', headers, cache: 'no-store' });
         if (!res.ok) {
-          const txt = await res.text().catch(() => '');
-          throw new Error(`${endpoint} ${res.status} ${txt}`.trim());
+          const text = await res.text().catch(() => '');
+          throw new Error(`${url} -> ${res.status} ${text}`);
         }
-        const body = await res.json().catch(() => ({}));
+        const body = await res.json();
         if (body && body.ok === false) {
-          throw new Error(String(body.error || body.detail || `${endpoint} failed`));
+          throw new Error(body.detail || body.error || 'pull_failed');
         }
-        return body || {};
+        return body;
       } catch (err) {
-        lastFailure = err;
+        lastErr = err;
       }
     }
-    throw lastFailure || new Error('pull_failed');
+    throw lastErr || new Error('pull_failed');
   }
 
-  async function applySnapshot(snapshot) {
-    if (!window.VSC_DB || typeof window.VSC_DB.importDump !== 'function') {
-      throw new Error('local_import_unavailable');
+  async function getLocalStoreNames(){
+    if (!(window.VSC_DB && typeof window.VSC_DB.openDB === 'function')) {
+      throw new Error('vsc_db_unavailable');
     }
-    if (!snapshot || typeof snapshot !== 'object' || !snapshot.schema || !snapshot.data) {
-      throw new Error('invalid_snapshot');
-    }
-    return await window.VSC_DB.importDump(snapshot, { mode: 'replace_store' });
-  }
-
-  async function pullCanonicalSnapshot() {
-    if (!navigator.onLine) {
-      notifyUI('offline');
-      return { ok: false, error: 'offline' };
-    }
-
-    notifyUI('syncing', '', { phase: 'pull' });
-    const body = await withRetry(fetchSnapshot, 'pull');
-
-    if (body && body.snapshot && body.snapshot.schema && body.snapshot.data) {
-      await applySnapshot(body.snapshot);
-    }
-
-    const revision = Number(body?.revision || body?.meta?.state_revision || body?.snapshot?.meta?.state_revision || 0) || 0;
-    const pulledAt = new Date().toISOString();
-    lastRevision = revision;
-    lastPulledAt = pulledAt;
-    lastTenant = String(body?.tenant || getTenant()).trim().slice(0, 120) || 'tenant-default';
-    lastError = null;
+    const db = await window.VSC_DB.openDB();
     try {
-      localStorage.setItem(SYNC_TS_KEY, pulledAt);
-      localStorage.setItem(SYNC_REV_KEY, String(revision));
-      localStorage.setItem(TENANT_KEY, lastTenant);
-    } catch (_) {}
+      return Array.from(db.objectStoreNames || []);
+    } finally {
+      try { db.close(); } catch (_) {}
+    }
+  }
 
-    notifyUI('success', '', { phase: 'pull', revision, tenant: lastTenant, pulled_at: pulledAt });
+  function filterSnapshotToLocalStores(snapshot, localStoreNames){
+    const incoming = (snapshot && snapshot.data && typeof snapshot.data === 'object') ? snapshot.data : {};
+    const allowed = new Set(localStoreNames || []);
+    const filteredData = {};
+    const skipped = [];
+
+    Object.keys(incoming).forEach((storeName) => {
+      if (allowed.has(storeName)) {
+        filteredData[storeName] = Array.isArray(incoming[storeName]) ? incoming[storeName] : [];
+      } else {
+        skipped.push(storeName);
+      }
+    });
+
+    const originalSchemaStores = Array.isArray(snapshot && snapshot.schema && snapshot.schema.stores)
+      ? snapshot.schema.stores
+      : Object.keys(incoming);
+
+    const filteredSchemaStores = originalSchemaStores.filter((entry) => {
+      const storeName = typeof entry === 'string' ? entry : String(entry && entry.name || '');
+      return !!storeName && allowed.has(storeName);
+    });
+
+    return {
+      skipped,
+      dump: {
+        meta: snapshot && snapshot.meta ? { ...snapshot.meta } : { exported_at: nowIso() },
+        schema: {
+          ...(snapshot && snapshot.schema ? snapshot.schema : {}),
+          stores: filteredSchemaStores,
+        },
+        data: filteredData,
+      },
+    };
+  }
+
+  async function applySnapshot(snapshot){
+    const localStoreNames = await getLocalStoreNames();
+    const { skipped, dump } = filterSnapshotToLocalStores(snapshot, localStoreNames);
+    _lastSkippedStores = skipped.slice();
+
+    if (!(window.VSC_DB && typeof window.VSC_DB.importDump === 'function')) {
+      throw new Error('vsc_db_import_unavailable');
+    }
+
+    const result = await window.VSC_DB.importDump(dump, { mode: 'replace_store' });
+    try {
+      localStorage.setItem(SYNC_KEY, nowIso());
+    } catch (_) {}
+    return { result, skipped, importedStores: Object.keys(dump.data || {}) };
+  }
+
+  async function pullCanonicalSnapshot(){
+    const body = await withRetry(fetchPullSnapshot, 'pull');
+    const snapshot = body && body.snapshot ? body.snapshot : null;
+    if (!snapshot || typeof snapshot !== 'object') {
+      return { ok: true, exists: false, skipped: [], importedStores: [] };
+    }
+    const applied = await applySnapshot(snapshot);
+    _lastPullAt = nowIso();
     return {
       ok: true,
-      tenant: lastTenant,
-      revision,
-      pulled_at: pulledAt,
-      exists: !!body?.exists,
-      meta: body?.meta || null,
+      tenant: body.tenant || readTenant(),
+      revision: Number(body.revision || 0) || 0,
+      exists: !!body.exists,
+      ...applied,
     };
   }
 
-  async function manualSync() {
-    if (isSyncing) {
-      return {
-        ok: false,
-        error: 'sync_in_progress',
-        tenant: lastTenant,
-        revision: lastRevision,
-      };
+  async function pushPending(){
+    if (window.VSC_RELAY && typeof window.VSC_RELAY.syncNow === 'function') {
+      return await window.VSC_RELAY.syncNow();
     }
-    if (!navigator.onLine) {
-      notifyUI('offline');
-      return { ok: false, error: 'offline' };
-    }
+    return { ok: true, skipped: true, reason: 'relay_unavailable' };
+  }
 
-    isSyncing = true;
-    notifyUI('syncing', '', { phase: 'push-pull' });
-
+  async function manualSync(){
+    if (_running) return { ok: false, error: 'sync_already_running' };
+    _running = true;
+    _lastError = null;
+    emit({ running: true });
     try {
-      if (window.VSC_RELAY && typeof window.VSC_RELAY.syncNow === 'function') {
-        await window.VSC_RELAY.syncNow();
-        if (typeof window.VSC_RELAY.status === 'function') {
-          const st = window.VSC_RELAY.status() || {};
-          if (st.lastError || st.last_error) {
-            throw new Error(String(st.lastError || st.last_error));
-          }
-          if (Number(st.pending || 0) > 0) {
-            throw new Error('pending_operations_after_push');
-          }
-        }
-      }
-      return await pullCanonicalSnapshot();
+      const push = await pushPending();
+      const pull = await pullCanonicalSnapshot();
+      emit({
+        running: false,
+        error: null,
+        pending: (window.VSC_RELAY && window.VSC_RELAY.status) ? Number(window.VSC_RELAY.status().pending || 0) || 0 : 0,
+        skippedStores: pull.skipped || [],
+      });
+      return { ok: true, push, pull };
     } catch (err) {
-      lastError = String(err && (err.message || err) || 'sync_failed');
-      notifyUI('error', lastError, { phase: 'push-pull' });
+      _lastError = err;
+      emit({ running: false, error: String(err && (err.message || err) || 'sync_failed') });
       throw err;
     } finally {
-      isSyncing = false;
+      _running = false;
     }
   }
 
-  function status() {
-    return {
-      syncing: isSyncing,
-      isSyncing,
-      lastError,
-      tenant: lastTenant,
-      lastTenant,
-      lastRevision,
-      lastPulledAt,
-      last_sync_at: (() => {
-        try { return localStorage.getItem(SYNC_TS_KEY) || lastPulledAt; } catch (_) { return lastPulledAt; }
-      })(),
-      last_sync_revision: (() => {
-        try { return Number(localStorage.getItem(SYNC_REV_KEY) || lastRevision || 0) || 0; } catch (_) { return lastRevision || 0; }
-      })(),
-    };
-  }
-
-  window.VSC_CLOUD_SYNC = {
-    pullNow: pullCanonicalSnapshot,
-    pullCanonicalSnapshot,
+  const api = {
     manualSync,
     syncNow: manualSync,
-    status,
-    getLastSync() {
-      try { return localStorage.getItem(SYNC_TS_KEY) || null; } catch (_) { return null; }
+    pullNow: pullCanonicalSnapshot,
+    pullCanonicalSnapshot,
+    status(){
+      return {
+        running: _running,
+        error: _lastError ? String(_lastError.message || _lastError) : null,
+        last_sync: (() => { try { return localStorage.getItem(SYNC_KEY) || null; } catch (_) { return null; } })(),
+        last_pull_at: _lastPullAt,
+        skipped_stores: _lastSkippedStores.slice(),
+        tenant: readTenant(),
+        local_static_mode: isLocalStaticMode(),
+        remote_sync_allowed: true,
+      };
+    },
+    getLastSync(){
+      try { return localStorage.getItem(SYNC_KEY) || null; } catch (_) { return null; }
     },
   };
+
+  window.VSC_CLOUD_SYNC = api;
 })();

@@ -44,7 +44,7 @@ const VSC_TOPBAR = (() => {
 
     try {
       // ✅ Chama o motor de sync com tratamento de erro adequado
-      await VSC_CLOUD_SYNC.manualSync();
+      await VSC_CLOUD_SYNC.pullNow();
 
     } catch (err) {
       console.error('[VSC_TOPBAR] falha no sync manual:', err.message);

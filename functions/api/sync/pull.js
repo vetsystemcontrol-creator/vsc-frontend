@@ -36,8 +36,3 @@ export async function onRequestGet(context) {
     return json({ ok: false, error: 'sync_pull_failed', detail: String(error?.message || error || 'unknown_error') }, 500, request);
   }
 }
-
-
-export async function onRequestPost(context) {
-  return json({ ok: false, error: 'method_not_allowed', allow: ['GET', 'OPTIONS'] }, 405, context.request);
-}
