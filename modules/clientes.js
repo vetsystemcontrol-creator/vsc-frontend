@@ -312,19 +312,65 @@ function confirmModal(title, text){
     });
   }
 
-function outboxEnqueue(db, entity, entityId, action, payload){
-    var now = Date.now();
+  // outboxEnqueue: usa VSC_DB.upsertWithOutbox para garantir op_id, ISO timestamp,
+  // store correto e transação atômica — compatível com o relay e o backend D1.
+  function outboxEnqueue(db, entity, entityId, action, payload){
+    var vscDb = window.VSC_DB;
+    // Caminho preferencial: VSC_DB.upsertWithOutbox (atômico, op_id, ISO timestamp)
+    if(vscDb && typeof vscDb.upsertWithOutbox === "function"){
+      var storeName = STORE_CLIENTES;
+      var mergedPayload = Object.assign({ __origin: "CADASTRO_MANUAL", action: action }, payload || {});
+      // Para DELETE não há objeto para dar upsert — enfileira diretamente via outboxEnqueue interno
+      if(String(action).toUpperCase() === "DELETE"){
+        if(typeof vscDb.outboxEnqueue === "function"){
+          return vscDb.outboxEnqueue("clientes", "delete", entityId, mergedPayload);
+        }
+        // fallback: enfileira manualmente com formato correto
+        return _outboxEnqueueFallback(entityId, action, mergedPayload);
+      }
+      // UPSERT/CREATE/INATIVAR/REATIVAR: usa upsertWithOutbox com o objeto completo
+      // payload deve conter o objeto completo do cliente
+      var obj = payload || {};
+      if(!obj.id) obj.id = entityId;
+      return vscDb.upsertWithOutbox(storeName, obj, "clientes", String(entityId), mergedPayload);
+    }
+    // Fallback caso VSC_DB não esteja disponível
+    return _outboxEnqueueFallback(entityId, action, payload);
+  }
+
+  // Fallback com formato correto (ISO timestamp, op_id, store)
+  function _outboxEnqueueFallback(entityId, action, payload){
+    var now = new Date().toISOString();
     var evt = {
       id: uuidv4(),
-      entity: String(entity),
+      op_id: uuidv4(),
+      store: STORE_CLIENTES,
+      entity: "clientes",
       entity_id: String(entityId),
-      action: String(action),
+      action: String(action).toLowerCase(),
       payload: payload || {},
       status: "PENDING",
       created_at: now,
-      updated_at: now
+      updated_at: now,
+      device_id: (navigator && navigator.userAgent ? navigator.userAgent.slice(0,40) : "unknown"),
+      base_revision: 0,
+      entity_revision: 1,
+      dedupe_key: ["clientes_master", String(entityId), String(action).toLowerCase(), "0", "1"].join(":")
     };
-    return put(db, STORE_OUTBOX, evt);
+    return new Promise(function(resolve, reject){
+      try{
+        var req2 = indexedDB.open(window.VSC_DB_NAME || "vsc_db");
+        req2.onsuccess = function(){
+          var database = req2.result;
+          var tx2 = database.transaction(STORE_OUTBOX, "readwrite");
+          var st2 = tx2.objectStore(STORE_OUTBOX);
+          var r2 = st2.put(evt);
+          r2.onsuccess = function(){ database.close(); resolve(evt); };
+          r2.onerror = function(){ database.close(); reject(r2.error); };
+        };
+        req2.onerror = function(){ reject(req2.error); };
+      }catch(e){ reject(e); }
+    });
   }
 
   function countPendingOutbox(db){
@@ -1096,7 +1142,7 @@ try{
   // (Neste módulo: mantém compat, mas usa VSC_DB como fonte do DB)
   // -----------------------------
   function buildClienteForSave(form){
-    var now = Date.now();
+    var now = new Date().toISOString();
     var id = state.editingId || uuidv4();
 
     var docDigits = onlyDigits(form.doc);
@@ -1128,7 +1174,7 @@ try{
 
       status: (form.status || "ATIVO"),
 
-            created_at: 0, // será definido apenas no CREATE (imutável)
+            created_at: "", // será definido apenas no CREATE (imutável)
       updated_at: now,
       last_sync: 0
     };
@@ -1136,7 +1182,7 @@ try{
   }
 
   function mergeForUpdate(oldObj, newObj){
-    var now = Date.now();
+    var now = new Date().toISOString();
     var out = Object.assign({}, oldObj || {});
     // created_at imutável:
     // - UPDATE: preserva o created_at antigo
@@ -1207,10 +1253,7 @@ return Promise.resolve(false);
       var obj = mergeForUpdate(old, base);
 
       return put(state.db, STORE_CLIENTES, obj).then(function(){
-        return outboxEnqueue(state.db, "clientes", obj.id, (old ? "UPSERT" : "CREATE"), {
-          id: obj.id,
-          updated_at: obj.updated_at
-        });
+        return outboxEnqueue(state.db, "clientes", obj.id, "upsert", obj);
       }).then(function(){
         state.editingId = obj.id;
 state.selectedId = obj.id; // FIORI-like: mantém highlight no Master após salvar
@@ -1237,16 +1280,12 @@ if(rel) rel.style.display = "grid";
       if(!c) return false;
       if(c.status === newStatus) return true;
 
-      var now = Date.now();
+      var now = new Date().toISOString();
       c.status = newStatus;
       c.updated_at = now;
 
       return put(state.db, STORE_CLIENTES, c).then(function(){
-        return outboxEnqueue(state.db, "clientes", c.id, (newStatus==="INATIVO" ? "INATIVAR" : "REATIVAR"), {
-          id: c.id,
-          status: c.status,
-          updated_at: c.updated_at
-        });
+        return outboxEnqueue(state.db, "clientes", c.id, "upsert", c);
       }).then(function(){
         toast((newStatus==="INATIVO" ? "Cliente inativado." : "Cliente reativado.") , "success");
         return refreshPendingCount().then(function(){ return reloadList(); }).then(function(){ return true; });
