@@ -1354,7 +1354,7 @@ if(rel) rel.style.display = "grid";
             }
             var s = document.createElement("script");
             s.id = id;
-            s.src = "modules/vsc-outbox-relay.js?v=20260225";
+            s.src = "modules/vsc-outbox-relay.js?v=20260310";
             s.defer = true;
             s.onload = function(){
               if(window.VSC_RELAY && typeof window.VSC_RELAY.kick === "function") return resolve(window.VSC_RELAY);
