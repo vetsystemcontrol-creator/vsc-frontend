@@ -3669,6 +3669,60 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     try {
       const payload = buildPayload();
       await idbPut(db, "atendimentos_master", payload);
+
+      // ── SYNC: envia metadados ao D1 (sem attachments) e anexos ao R2 ──
+      try {
+        if (window.VSC_DB && typeof window.VSC_DB.upsertWithOutbox === "function") {
+          // Payload para D1: sem dataUrl dos attachments (muito grande)
+          const payloadD1 = Object.assign({}, payload, {
+            attachments: (payload.attachments || []).map(a => ({
+              id: a.id,
+              name: a.name || a.filename || "",
+              mime: a.mime || a.mime_type || "",
+              size: a.size || 0,
+              descricao: a.descricao || "",
+              created_at: a.created_at || "",
+              synced_to_r2: true
+              // dataUrl removido intencionalmente
+            })),
+            __origin: "UI_EDIT"
+          });
+          await window.VSC_DB.upsertWithOutbox(
+            "atendimentos_master",
+            payloadD1,
+            "atendimentos",
+            String(payload.id),
+            payloadD1
+          );
+        }
+
+        // Envia attachments com dataUrl diretamente para R2
+        const BASE_R2 = (location.hostname === "127.0.0.1" || location.hostname === "localhost")
+          ? "https://app.vetsystemcontrol.com.br" : "";
+        const tenant = localStorage.getItem("vsc_tenant") || "tenant-default";
+        for (const att of (payload.attachments || [])) {
+          if (!att || !att.id || !att.dataUrl) continue;
+          fetch(`${BASE_R2}/api/attachments?action=upload`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-VSC-Tenant": tenant },
+            body: JSON.stringify({
+              atendimento_id: payload.id,
+              attachment_id: att.id,
+              filename: att.name || att.id,
+              mime_type: att.mime || "application/octet-stream",
+              data_base64: att.dataUrl,
+              descricao: att.descricao || "",
+              created_at: att.created_at || isoNow()
+            })
+          }).then(r => {
+            if (!r.ok) console.warn("[ATD] R2 upload falhou:", att.name, r.status);
+            else console.log("[ATD] R2 upload ok:", att.name);
+          }).catch(e => console.warn("[ATD] R2 upload erro:", att.name, e));
+        }
+      } catch (_syncErr) {
+        // sync nunca bloqueia o save local
+        console.warn("[ATENDIMENTOS] sync error (não crítico):", _syncErr);
+      }
       if(hasStore(db, "animal_vaccines") && Array.isArray(ATD.vaccine_events)){
         for(const ev of ATD.vaccine_events){
           try{ await idbPut(db, "animal_vaccines", ev); }catch(_e){}
