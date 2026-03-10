@@ -12,16 +12,14 @@
   }
 
   async function runManualSync() {
-    if (window.VSC_RELAY && typeof window.VSC_RELAY.syncNow === 'function') {
-      const push = await window.VSC_RELAY.syncNow();
-      if (window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.pullNow === 'function') await window.VSC_CLOUD_SYNC.pullNow();
-      return push;
-    }
     if (window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.manualSync === 'function') {
       return await window.VSC_CLOUD_SYNC.manualSync();
     }
     if (window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.syncNow === 'function') {
       return await window.VSC_CLOUD_SYNC.syncNow();
+    }
+    if (window.VSC_RELAY && typeof window.VSC_RELAY.syncNow === 'function') {
+      return await window.VSC_RELAY.syncNow();
     }
     throw new Error('manual_sync_unavailable');
   }
