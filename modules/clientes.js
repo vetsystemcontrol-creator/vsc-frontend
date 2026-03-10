@@ -319,20 +319,27 @@ function confirmModal(title, text){
     // Caminho preferencial: VSC_DB.upsertWithOutbox (atômico, op_id, ISO timestamp)
     if(vscDb && typeof vscDb.upsertWithOutbox === "function"){
       var storeName = STORE_CLIENTES;
-      var mergedPayload = Object.assign({ __origin: "CADASTRO_MANUAL", action: action }, payload || {});
+      // __origin vai apenas como metadado do outbox, NÃO no objeto salvo
+      var outboxMeta = { __origin: "CADASTRO_MANUAL" };
       // Para DELETE não há objeto para dar upsert — enfileira diretamente via outboxEnqueue interno
       if(String(action).toUpperCase() === "DELETE"){
         if(typeof vscDb.outboxEnqueue === "function"){
-          return vscDb.outboxEnqueue("clientes", "delete", entityId, mergedPayload);
+          return vscDb.outboxEnqueue("clientes", "delete", entityId, Object.assign({}, payload || {}, outboxMeta));
         }
-        // fallback: enfileira manualmente com formato correto
-        return _outboxEnqueueFallback(entityId, action, mergedPayload);
+        return _outboxEnqueueFallback(entityId, action, payload);
       }
-      // UPSERT/CREATE/INATIVAR/REATIVAR: usa upsertWithOutbox com o objeto completo
-      // payload deve conter o objeto completo do cliente
-      var obj = payload || {};
+      // UPSERT: obj é o cliente puro (sem campos de outbox)
+      // outboxMeta vai como 5º param (payload do outbox), separado do obj
+      var obj = Object.assign({}, payload || {});
       if(!obj.id) obj.id = entityId;
-      return vscDb.upsertWithOutbox(storeName, obj, "clientes", String(entityId), mergedPayload);
+      // Garantir created_at ISO se ainda for número (registros legados)
+      if(typeof obj.created_at === "number"){
+        obj.created_at = new Date(obj.created_at).toISOString();
+      }
+      if(typeof obj.updated_at === "number"){
+        obj.updated_at = new Date(obj.updated_at).toISOString();
+      }
+      return vscDb.upsertWithOutbox(storeName, obj, "clientes", String(entityId), outboxMeta);
     }
     // Fallback caso VSC_DB não esteja disponível
     return _outboxEnqueueFallback(entityId, action, payload);

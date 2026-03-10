@@ -120,8 +120,21 @@
     return false;
   }
 
+  function _isLocalWithRemoteForced() {
+    try {
+      const host = String(location.hostname || '').toLowerCase();
+      if (host === '127.0.0.1' || host === 'localhost') {
+        const forced = String(localStorage.getItem('vsc_allow_local_sync_api') || '').toLowerCase();
+        return forced === '1' || forced === 'true' || forced === 'yes';
+      }
+    } catch (_) {}
+    return false;
+  }
+
   function _apiBase() {
-    return _isLocalStaticMode() ? REMOTE_BASE : '';
+    if (_isLocalStaticMode()) return REMOTE_BASE;
+    if (_isLocalWithRemoteForced()) return REMOTE_BASE;
+    return '';
   }
 
   function _apiUrl(path) {
