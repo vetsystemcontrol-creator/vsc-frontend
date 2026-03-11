@@ -1,119 +1,120 @@
-/*! 
- * VSC-OUTBOX-RELAY — Transactional Outbox Message Relay (Premium)
- * ============================================================
- */
+/* ============================================================
+   VSC_OUTBOX_RELAY — Sincronização de Outbox (Offline-First)
+   ============================================================ */
+
 (() => {
-  'use strict';
+  "use strict";
 
-  const DB_NAME      = (window.VSC_DB_NAME || 'vsc_db');
-  const STORE_OUTBOX = 'sync_queue';
-  const REMOTE_BASE  = 'https://app.vetsystemcontrol.com.br';
+  const SYNC_INTERVAL_MS = 5000; // Tenta sincronizar a cada 5 segundos
+  const MAX_RETRIES = 5;         // Número máximo de tentativas para um item da outbox
+  const BATCH_SIZE = 10;         // Quantos itens enviar por vez
 
-  const ACTIVE_TICK_MS = 500;
-  const IDLE_TICK_MS   = 30000;
-  const MAX_BATCH      = 100;
+  let _isSyncing = false;
+  let _syncTimer = null;
 
-  let _enabled = true;
-  let _running = false;
-  let _stopRequested = false;
-  let _inFlight = null;
-
-  function _now() { return Date.now(); }
-  function _getToken() { return localStorage.getItem('vsc_local_token') || sessionStorage.getItem('vsc_local_token') || ''; }
-
-  function _apiBase() {
-    const host = String(location.hostname || '').toLowerCase();
-    if (location.protocol === 'file:' || host === '127.0.0.1' || host === 'localhost') return REMOTE_BASE;
-    return '';
-  }
-
-  async function _openDB() {
-    if (window.VSC_DB && typeof window.VSC_DB.openDB === 'function') {
-      return await window.VSC_DB.openDB();
+  async function openDB() {
+    if (!window.VSC_DB || typeof window.VSC_DB.openDB !== "function") {
+      console.error("[VSC_OUTBOX_RELAY] VSC_DB não carregado ou openDB não disponível.");
+      throw new Error("VSC_DB não pronto para sincronização.");
     }
-    return await new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME);
-      req.onerror = () => reject(req.error);
-      req.onsuccess = () => resolve(req.result);
-    });
+    return await window.VSC_DB.openDB();
   }
 
-  async function _pushBatch(batch) {
-    const token = _getToken();
-    const res = await fetch(`${_apiBase()}/api/sync/push`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-VSC-Token': token,
-        'X-VSC-Tenant': localStorage.getItem('vsc_tenant_id') || 'default',
-      },
-      body: JSON.stringify({ operations: batch }),
-    });
-    if (!res.ok) throw new Error(`Push failed: ${res.status}`);
-    return await res.json();
-  }
+  async function processOutbox() {
+    if (_isSyncing) return;
+    _isSyncing = true;
+    console.log("[VSC_OUTBOX_RELAY] Iniciando processamento da outbox...");
 
-  async function _drainLoop() {
-    if (_inFlight) return;
-    _inFlight = (async () => {
-      _running = true;
-      try {
-        while (_enabled && !_stopRequested) {
-          const db = await _openDB();
-          try {
-            const tx = db.transaction([STORE_OUTBOX], 'readwrite');
-            const store = tx.objectStore(STORE_OUTBOX);
-            
-            // Busca itens pendentes
-            const pending = await new Promise(r => {
-              const req = store.openCursor();
-              const out = [];
-              req.onsuccess = (e) => {
-                const cursor = e.target.result;
-                if(cursor && out.length < MAX_BATCH) {
-                  if(cursor.value.status === 'PENDING') out.push(cursor.value);
-                  cursor.continue();
-                } else { r(out); }
-              };
-            });
+    try {
+      const db = await openDB();
+      const tx = db.transaction([window.VSC_DB.STORES.SYNC_QUEUE], "readwrite");
+      const store = tx.objectStore(window.VSC_DB.STORES.SYNC_QUEUE);
 
-            if (pending.length === 0) {
-              db.close();
-              await new Promise(r => setTimeout(r, IDLE_TICK_MS));
-              continue;
-            }
+      const pendingItems = await store.index("status").getAll("PENDING");
+      const itemsToSend = pendingItems.slice(0, BATCH_SIZE);
 
-            // Envia para o servidor
-            await _pushBatch(pending);
+      if (itemsToSend.length === 0) {
+        console.log("[VSC_OUTBOX_RELAY] Outbox vazia. Nenhuma sincronização pendente.");
+        _isSyncing = false;
+        return;
+      }
 
-            // Marca como enviado
-            for (const item of pending) {
-              item.status = 'DONE';
-              item.done_at = _now();
-              store.put(item);
-            }
+      console.log(`[VSC_OUTBOX_RELAY] Processando ${itemsToSend.length} itens da outbox.`);
 
-            await new Promise(r => {
-              tx.oncomplete = () => r();
-              tx.onerror = () => r();
-            });
+      // Simula envio para o servidor (substituir por fetch real)
+      const results = await Promise.all(itemsToSend.map(async (item) => {
+        try {
+          // Aqui você faria a chamada real para o seu backend
+          // Ex: const response = await fetch(\'/api/sync\', { method: \'POST\', body: JSON.stringify(item) });
+          // const data = await response.json();
 
-          } finally { if(db && db.close) db.close(); }
-          await new Promise(r => setTimeout(r, ACTIVE_TICK_MS));
+          // Simulação de sucesso/falha
+          const success = Math.random() > 0.1; // 90% de chance de sucesso
+          if (success) {
+            console.log(`[VSC_OUTBOX_RELAY] Item ${item.op_id} (${item.operation} ${item.entity_type}) enviado com sucesso.`);
+            return { op_id: item.op_id, status: "SENT" };
+          } else {
+            throw new Error("Simulated network error");
+          }
+        } catch (error) {
+          console.warn(`[VSC_OUTBOX_RELAY] Falha ao enviar item ${item.op_id}: ${error.message}`);
+          return { op_id: item.op_id, status: "FAILED", error: error.message };
         }
-      } catch (err) {
-        console.error("[VSC_RELAY] Erro na sincronização:", err);
-        await new Promise(r => setTimeout(r, 5000));
-      } finally { _running = false; _inFlight = null; }
-    })();
+      }));
+
+      for (const result of results) {
+        const item = itemsToSend.find(i => i.op_id === result.op_id);
+        if (item) {
+          if (result.status === "SENT") {
+            await store.delete(item.op_id); // Remove da outbox se enviado com sucesso
+          } else {
+            item.retries = (item.retries || 0) + 1;
+            if (item.retries >= MAX_RETRIES) {
+              item.status = "PERMANENT_FAILURE";
+              console.error(`[VSC_OUTBOX_RELAY] Item ${item.op_id} atingiu o limite de retries e falhou permanentemente.`);
+            } else {
+              item.status = "PENDING"; // Mantém como pendente para tentar novamente
+            }
+            await store.put(item);
+          }
+        }
+      }
+      await tx.oncomplete;
+
+    } catch (error) {
+      console.error("[VSC_OUTBOX_RELAY] Erro crítico no processamento da outbox:", error);
+    } finally {
+      _isSyncing = false;
+      console.log("[VSC_OUTBOX_RELAY] Processamento da outbox finalizado.");
+    }
   }
 
-  window.VSC_RELAY = {
-    start() { _enabled = true; _stopRequested = false; _drainLoop(); return true; },
-    stop() { _stopRequested = true; _enabled = false; return true; },
-    status() { return { enabled: _enabled, running: _running }; }
+  function startSync() {
+    if (_syncTimer) clearInterval(_syncTimer);
+    _syncTimer = setInterval(processOutbox, SYNC_INTERVAL_MS);
+    console.log("[VSC_OUTBOX_RELAY] Sincronização automática iniciada.");
+    processOutbox(); // Executa uma vez imediatamente
+  }
+
+  function stopSync() {
+    if (_syncTimer) clearInterval(_syncTimer);
+    _syncTimer = null;
+    console.log("[VSC_OUTBOX_RELAY] Sincronização automática parada.");
+  }
+
+  // Expõe a API VSC_OUTBOX_RELAY globalmente
+  window.VSC_OUTBOX_RELAY = {
+    start: startSync,
+    stop: stopSync,
+    process: processOutbox // Para forçar uma sincronização
   };
 
-  // Auto-start
-  setTimeout(() => window.VSC_RELAY.start(), 2000);
+  // Inicia a sincronização quando o VSC_DB estiver pronto
+  if (window.__VSC_DB_READY_FIRED) {
+    startSync();
+  } else {
+    window.addEventListener("VSC_DB_READY", startSync);
+  }
+
+  console.log("[VSC_OUTBOX_RELAY] Módulo carregado.");
 })();
