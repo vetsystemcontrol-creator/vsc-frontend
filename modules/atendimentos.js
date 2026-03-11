@@ -997,7 +997,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 }
   `;
 
-  const rowsFinanceiro = itens.length ? itens.map(it=>{
+    const rowsFinanceiro = itens.length ? itens.map(it=>{
     const sub = (Number(it.qtd||0)*Number(it.vu||0));
     return `<tr>
       <td>${esc(it.tipo||"")}</td>
@@ -1007,6 +1007,9 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       <td class="right">${esc(fmtBRL(sub))}</td>
     </tr>`;
   }).join("") : `<tr><td colspan="5" class="muted">Nenhum item lançado.</td></tr>`;
+
+    const descValue = totals.desconto_calc || 0;
+    const descStyle = descValue > 0 ? 'style="color:#dc2626; font-weight:900;"' : '';
 
   const rowsClinico = itens.length ? itens.map(it=>{
     return `<tr>
@@ -1175,7 +1178,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       <div class="box">
         <div class="grid">
           <div><div class="lbl">Itens</div><div class="val">${esc(fmtBRL(totals.total_itens||0))}</div></div>
-          <div><div class="lbl">Desconto</div><div class="val">${esc(fmtBRL(totals.desconto_calc||0))}</div></div>
+          <div><div class="lbl">Desconto</div><div class="val" ${descStyle}>${esc(fmtBRL(totals.desconto_calc||0))}</div></div>
           <div><div class="lbl">Deslocamento</div><div class="val">${esc(fmtBRL(totals.deslocamento||0))}</div></div>
           <div><div class="lbl">Total Geral</div><div class="val">${esc(fmtBRL(totals.total_geral||0))}</div></div>
         </div>
@@ -2400,7 +2403,9 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     const resumo = $("uiResumoFinanceiro");
     const resumoBox = $("uiResumoFinanceiroBox");
     const heroFinanceiro = $("uiHeroFinanceiro");
-    const total = fmtBRL(Math.max(0, itensSubtotal() - calcDesconto(itensSubtotal()) + (ATD.deslocamento||0)));
+    const base = itensSubtotal();
+    const desc = calcDesconto(base);
+    const total = fmtBRL(Math.max(0, base - desc + (ATD.deslocamento||0)));
     const itensCount = String((ATD.itens||[]).length || 0);
     $("uiResumoItens") && ($("uiResumoItens").textContent = itensCount);
     $("uiResumoTotal") && ($("uiResumoTotal").textContent = total);
@@ -2855,7 +2860,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   }
 
   function vitalsReadFromUI() {
-    return {
+    const v = {
       temp: toNumPt($("v_temp")?.value),
       fc: toNumPt($("v_fc")?.value),
       fr: toNumPt($("v_fr")?.value),
@@ -2866,6 +2871,10 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       dor: String($("v_dor")?.value || ""),
       updated_at: isoNow()
     };
+    // Sincronizar com o objeto global ATD para garantir persistência ao salvar o atendimento
+    const aid = getActiveAnimalIdForVitals();
+    if(aid) ATD.vitals_by_animal[aid] = v;
+    return v;
   }
 
   function vitalsWriteToUI(v) {
@@ -2943,6 +2952,15 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           recorded_at: isoNow(),
           user_id: ATD.responsavel_user_id || null
         }, v));
+      }
+      // Enterprise: Atualizar peso no cadastro mestre do animal para consulta rápida
+      if(v.peso > 0 && hasStore(db, "animais_master")){
+        const animal = await idbGet(db, "animais_master", aid);
+        if(animal){
+          animal.peso_atual = v.peso;
+          animal.ultimo_peso_em = isoNow();
+          await idbPut(db, "animais_master", animal);
+        }
       }
       const hist = await fetchVitalsHistory(db, aid);
       renderVitalsHistoryUI(hist);
@@ -3602,6 +3620,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       payment_preference: ATD.financeiro_preferencia_pagamento || "definir_depois",
       settlement_mode: ATD.financeiro_baixa_modo || "manual",
       installments: Math.max(1, Number(ATD.financeiro_parcelas || 1)),
+      payment_method: ATD.financeiro_preferencia_pagamento || "definir_depois",
       obs: ((ATD.financeiro_observacao || "") ? ("Gerado automaticamente pelo módulo de atendimentos. " + ATD.financeiro_observacao) : "Gerado automaticamente pelo módulo de atendimentos."),
       cancelado: false,
       recebimentos: [],
@@ -3776,6 +3795,40 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       }
     }
 
+    // ── REABRIR / ALTERAR FINALIZADO (ENTERPRISE RBAC)
+    if (statusAtual === "finalizado" && novoStatus !== "cancelado" && !force) {
+      const user = ATD._currentUser || {};
+      const isMaster = user.role === "MASTER";
+      const isAdmin = user.role === "ADMIN";
+
+      if (!isMaster && !isAdmin) {
+        snack("Apenas administradores podem alterar atendimentos finalizados.", "err");
+        return;
+      }
+
+      // Verificar se o financeiro já foi pago
+      if (ATD.cr_id) {
+        const cr = await idbGet(db, "contas_receber", ATD.cr_id);
+        if (cr && cr.status === "PAGO") {
+          if (!isMaster) {
+            snack("Título financeiro já PAGO. Apenas usuários MASTER podem alterar.", "err");
+            return;
+          }
+          const ok = await confirm("Atenção: Título Pago", "O financeiro deste atendimento já consta como PAGO. Alterar o atendimento irá estornar o título atual e gerar um novo. Deseja continuar?");
+          if (!ok) return;
+        }
+      }
+
+      const ok = await confirm("Reabrir Atendimento", "Este atendimento já foi finalizado. Deseja reabri-lo para edições? O financeiro será reconfigurado após a nova gravação.");
+      if (!ok) return;
+
+      // Cancelar financeiro anterior se existir para re-gerar depois
+      if (ATD.financeiro_gerado) {
+        await cancelarContasAReceber(db);
+        ATD.financeiro_gerado = false;
+      }
+    }
+
     // ── QUALQUER → CANCELADO: estornar estoque e cancelar C/R
     if (novoStatus === "cancelado") {
       const ok = await confirm("Cancelar atendimento", "Esta ação irá estornar o estoque (se movimentado) e cancelar o título financeiro.\nNão pode ser desfeita. Confirmar?");
@@ -3876,6 +3929,18 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     try {
       const payload = buildPayload();
       await idbPut(db, "atendimentos_master", payload);
+
+      // ── RE-GERAR FINANCEIRO SE FINALIZADO E PENDENTE (ENTERPRISE RE-SYNC)
+      if (ATD.status === "finalizado" && !ATD.financeiro_gerado && ATD.financeiro_fechamento_modo === "gerar_agora") {
+        const resCR = await gerarContasAReceber(db);
+        if (resCR.ok) {
+          ATD.financeiro_gerado = true;
+          // Atualiza o payload com o novo status financeiro antes do sync
+          payload.financeiro_gerado = true;
+          payload.cr_id = ATD.cr_id;
+          await idbPut(db, "atendimentos_master", payload);
+        }
+      }
 
       // ── SYNC: envia metadados ao D1 (sem attachments) e anexos ao R2 ──
       try {
@@ -4086,12 +4151,23 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   
   // ─── FLOORPLAN ENTERPRISE: LISTA → DETALHE (como clientes) ───────────────
   function setCmdActionsEnabled(enabled){
+    const user = ATD._currentUser || {};
+    const isPrivileged = user.role === "ADMIN" || user.role === "MASTER";
+    const isFinalized = ATD.status === "finalizado";
+
     ["btnSalvarTop","btnAprovarTop","btnFinalizarTop","btnSalvar","btnAprovar","btnFinalizar","btnCancelarAtd","btnAnexosTop","btnImprimirTop","btnAnexos","btnImprimir"].forEach(id=>{
       const b = $(id);
       if(!b) return;
-      b.disabled = !enabled;
-      b.style.opacity = enabled ? "1" : "0.45";
-      b.style.pointerEvents = enabled ? "auto" : "none";
+      
+      // Se estiver finalizado, apenas Admin/Master podem habilitar os botões de ação (Salvar/Finalizar/Cancelar)
+      let canEnable = enabled;
+      if (isFinalized && ["btnSalvarTop", "btnSalvar", "btnFinalizarTop", "btnFinalizar", "btnCancelarAtd"].includes(id)) {
+        canEnable = enabled && isPrivileged;
+      }
+
+      b.disabled = !canEnable;
+      b.style.opacity = canEnable ? "1" : "0.45";
+      b.style.pointerEvents = canEnable ? "auto" : "none";
     });
   }
 
