@@ -1,8 +1,11 @@
 (function(){
   "use strict";
 
-  const DB_NAME = "vsc_fiscal_db";
-  const DB_VERSION = 2;
+  // [FIX C-07] Banco fiscal migrado de vsc_fiscal_db para VSC_DB principal.
+  // nfe_docs agora vive em VSC_DB (DB_VERSION 37) e sincroniza via outbox.
+  // DB_NAME e DB_VERSION locais mantidos apenas para leitura de dados legados na migração.
+  const DB_NAME_LEGACY = "vsc_fiscal_db";
+  const DB_VERSION_LEGACY = 2;
   const STORE_DOCS = "nfe_docs";
 
   const $ = (id) => document.getElementById(id);
@@ -269,9 +272,14 @@
     $("btnEnviar").disabled = true;
   }
 
+  // [FIX C-07] openDB agora usa VSC_DB principal (não mais banco isolado)
   function openDB(){
+    if(window.VSC_DB && typeof window.VSC_DB.openDB === "function"){
+      return window.VSC_DB.openDB();
+    }
+    // Fallback legado — não deve ser atingido em produção
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      const req = indexedDB.open(DB_NAME_LEGACY, DB_VERSION_LEGACY);
       req.onupgradeneeded = () => {
         const db = req.result;
         let st;
@@ -289,12 +297,36 @@
     });
   }
 
+  // [FIX C-07] dbPutDoc usa VSC_DB.outboxEnqueue para garantir sync offline
   async function dbPutDoc(doc){
+    if(window.VSC_DB && typeof window.VSC_DB.outboxEnqueue === "function"){
+      try{
+        // Persistir no IDB via upsertWithOutbox se disponível
+        if(typeof window.VSC_DB.upsertWithOutbox === "function"){
+          await window.VSC_DB.upsertWithOutbox(STORE_DOCS, doc, STORE_DOCS, doc.id, doc);
+          return true;
+        }
+        // Fallback: put direto + enqueue manual
+        const db = await openDB();
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction([STORE_DOCS], "readwrite");
+          tx.objectStore(STORE_DOCS).put(normalizeDoc(doc));
+          tx.oncomplete = () => resolve(true);
+          tx.onerror = () => reject(tx.error);
+        });
+        await window.VSC_DB.outboxEnqueue(STORE_DOCS, "upsert", doc.id, doc);
+        return true;
+      }catch(e){
+        console.error("[fiscal] dbPutDoc falhou:", e);
+        return false;
+      }
+    }
+    // Fallback legado (sem VSC_DB)
     const db = await openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction([STORE_DOCS], "readwrite");
       tx.objectStore(STORE_DOCS).put(normalizeDoc(doc));
-      tx.oncomplete = () => { db.close(); resolve(true); };
+      tx.oncomplete = () => { try{ db.close(); }catch(_){} resolve(true); };
       tx.onerror = () => { const err = tx.error; try{ db.close(); }catch(_){} reject(err); };
     });
   }

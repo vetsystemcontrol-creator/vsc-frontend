@@ -109,9 +109,15 @@
       const tx = db.transaction([store, "sync_queue", "sys_meta"], "readwrite");
       tx.objectStore(store).put(rec);
       // outbox
+      const _sqId1 = uuid();
       tx.objectStore("sync_queue").add({
-        id: uuid(), store, record_id: rec.id, op: "upsert",
-        payload: rec, ts: now(), synced: false
+        id: _sqId1, op_id: _sqId1,
+        store, entity: store,
+        entity_id: rec.id || _sqId1,
+        op: "upsert", action: "upsert",
+        payload: rec,
+        created_at: now(), updated_at: now(),
+        status: "PENDING"
       });
       tx.oncomplete = () => res(rec);
       tx.onerror = () => rej(tx.error);
@@ -123,8 +129,15 @@
     return new Promise((res, rej) => {
       const tx = db.transaction([store, "sync_queue"], "readwrite");
       tx.objectStore(store).delete(id);
+      const _sqId2 = uuid();
       tx.objectStore("sync_queue").add({
-        id: uuid(), store, record_id: id, op: "delete", ts: now(), synced: false
+        id: _sqId2, op_id: _sqId2,
+        store, entity: store,
+        entity_id: id,
+        op: "delete", action: "delete",
+        payload: { id },
+        created_at: now(), updated_at: now(),
+        status: "PENDING"
       });
       tx.oncomplete = () => res();
       tx.onerror = () => rej(tx.error);

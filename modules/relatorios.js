@@ -551,6 +551,9 @@
       var all = await idbGetAll(fonte);
       if(!Array.isArray(all)) all = [];
 
+      // [FIX C-10] Excluir registros marcados como deletados — evita distorção nos relatórios
+      all = all.filter(function(r){ return !r.deleted_at && !r.deleted && r.status !== "EXCLUIDO"; });
+
       STATE.itemsAll = all;
       STATE.fields = collectFields(all);
       STATE.campoData = guessDateField(all);
@@ -915,6 +918,8 @@ generate = async function(){
 
     var all = await idbGetAll(fonte);
     if(!Array.isArray(all)) all = [];
+    // [FIX C-10] Excluir registros marcados como deletados
+    all = all.filter(function(r){ return !r.deleted_at && !r.deleted && r.status !== "EXCLUIDO"; });
     STATE.itemsAll = all;
 
     STATE.fields = collectFields(all);

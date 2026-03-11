@@ -57,9 +57,17 @@ const VSC_CLOUD_SYNC = (() => {
     const db = await window.VSC_DB.openDB();
     try {
       const localStores = Array.from(db.objectStoreNames || []);
+      // Stores protegidas: não sobrescrever dados locais de auth e sessão
+      const PROTECTED = new Set([
+        'auth_users', 'auth_sessions', 'auth_audit_log',
+        'auth_role_permissions', 'auth_roles',
+        'backup_events', 'db_backups', 'attachments_queue'
+      ]);
       const filteredData = {};
       for (const [store, rows] of Object.entries(snapshot.data || {})) {
-        if (localStores.includes(store)) filteredData[store] = Array.isArray(rows) ? rows : [];
+        if (localStores.includes(store) && !PROTECTED.has(store)) {
+          filteredData[store] = Array.isArray(rows) ? rows : [];
+        }
       }
 
       const filteredSchema = {
@@ -138,3 +146,5 @@ const VSC_CLOUD_SYNC = (() => {
     getLastSync: () => localStorage.getItem(SYNC_KEY) || null
   };
 })();
+
+window.VSC_CLOUD_SYNC = VSC_CLOUD_SYNC;

@@ -312,75 +312,23 @@ function confirmModal(title, text){
     });
   }
 
-  // outboxEnqueue: usa VSC_DB.upsertWithOutbox para garantir op_id, ISO timestamp,
-  // store correto e transação atômica — compatível com o relay e o backend D1.
-  function outboxEnqueue(db, entity, entityId, action, payload){
-    var vscDb = window.VSC_DB;
-    // Caminho preferencial: VSC_DB.upsertWithOutbox (atômico, op_id, ISO timestamp)
-    if(vscDb && typeof vscDb.upsertWithOutbox === "function"){
-      var storeName = STORE_CLIENTES;
-      // payload do outbox = objeto completo do cliente + metadado __origin
-      // O backend (cloud-store.js) usa op.payload para montar o registro no D1
-      var outboxMeta = { __origin: "CADASTRO_MANUAL" };
-      // Para DELETE não há objeto para dar upsert — enfileira diretamente via outboxEnqueue interno
-      if(String(action).toUpperCase() === "DELETE"){
-        if(typeof vscDb.outboxEnqueue === "function"){
-          return vscDb.outboxEnqueue("clientes", "delete", entityId, Object.assign({}, payload || {}, outboxMeta));
-        }
-        return _outboxEnqueueFallback(entityId, action, payload);
-      }
-      // UPSERT: obj é o cliente puro (sem campos de outbox)
-      // payload do outbox = objeto completo do cliente (para o backend salvar no D1)
-      var obj = Object.assign({}, payload || {});
-      if(!obj.id) obj.id = entityId;
-      // Garantir created_at ISO se ainda for número (registros legados)
-      if(typeof obj.created_at === "number"){
-        obj.created_at = new Date(obj.created_at).toISOString();
-      }
-      if(typeof obj.updated_at === "number"){
-        obj.updated_at = new Date(obj.updated_at).toISOString();
-      }
-      // outboxPayload = objeto completo do cliente + __origin (backend usa isso para salvar no D1)
-      var outboxPayload = Object.assign({}, obj, outboxMeta);
-      return vscDb.upsertWithOutbox(storeName, obj, "clientes", String(entityId), outboxPayload);
-    }
-    // Fallback caso VSC_DB não esteja disponível
-    return _outboxEnqueueFallback(entityId, action, payload);
-  }
-
-  // Fallback com formato correto (ISO timestamp, op_id, store)
-  function _outboxEnqueueFallback(entityId, action, payload){
+function outboxEnqueue(db, entity, entityId, action, payload){
     var now = new Date().toISOString();
+    var opId = uuidv4();
     var evt = {
-      id: uuidv4(),
-      op_id: uuidv4(),
-      store: STORE_CLIENTES,
-      entity: "clientes",
+      id: opId,
+      op_id: opId,
+      store: "clientes_master",
+      entity: String(entity),
       entity_id: String(entityId),
-      action: String(action).toLowerCase(),
+      op: action === "DELETE" ? "delete" : "upsert",
+      action: String(action),
       payload: payload || {},
       status: "PENDING",
       created_at: now,
-      updated_at: now,
-      device_id: (navigator && navigator.userAgent ? navigator.userAgent.slice(0,40) : "unknown"),
-      base_revision: 0,
-      entity_revision: 1,
-      dedupe_key: ["clientes_master", String(entityId), String(action).toLowerCase(), "0", "1"].join(":")
+      updated_at: now
     };
-    return new Promise(function(resolve, reject){
-      try{
-        var req2 = indexedDB.open(window.VSC_DB_NAME || "vsc_db");
-        req2.onsuccess = function(){
-          var database = req2.result;
-          var tx2 = database.transaction(STORE_OUTBOX, "readwrite");
-          var st2 = tx2.objectStore(STORE_OUTBOX);
-          var r2 = st2.put(evt);
-          r2.onsuccess = function(){ database.close(); resolve(evt); };
-          r2.onerror = function(){ database.close(); reject(r2.error); };
-        };
-        req2.onerror = function(){ reject(req2.error); };
-      }catch(e){ reject(e); }
-    });
+    return put(db, STORE_OUTBOX, evt);
   }
 
   function countPendingOutbox(db){
@@ -1152,7 +1100,7 @@ try{
   // (Neste módulo: mantém compat, mas usa VSC_DB como fonte do DB)
   // -----------------------------
   function buildClienteForSave(form){
-    var now = new Date().toISOString();
+    var now = Date.now();
     var id = state.editingId || uuidv4();
 
     var docDigits = onlyDigits(form.doc);
@@ -1184,7 +1132,7 @@ try{
 
       status: (form.status || "ATIVO"),
 
-            created_at: "", // será definido apenas no CREATE (imutável)
+            created_at: 0, // será definido apenas no CREATE (imutável)
       updated_at: now,
       last_sync: 0
     };
@@ -1192,7 +1140,7 @@ try{
   }
 
   function mergeForUpdate(oldObj, newObj){
-    var now = new Date().toISOString();
+    var now = Date.now();
     var out = Object.assign({}, oldObj || {});
     // created_at imutável:
     // - UPDATE: preserva o created_at antigo
@@ -1263,7 +1211,10 @@ return Promise.resolve(false);
       var obj = mergeForUpdate(old, base);
 
       return put(state.db, STORE_CLIENTES, obj).then(function(){
-        return outboxEnqueue(state.db, "clientes", obj.id, "upsert", obj);
+        return outboxEnqueue(state.db, "clientes", obj.id, (old ? "UPSERT" : "CREATE"), {
+          id: obj.id,
+          updated_at: obj.updated_at
+        });
       }).then(function(){
         state.editingId = obj.id;
 state.selectedId = obj.id; // FIORI-like: mantém highlight no Master após salvar
@@ -1290,12 +1241,16 @@ if(rel) rel.style.display = "grid";
       if(!c) return false;
       if(c.status === newStatus) return true;
 
-      var now = new Date().toISOString();
+      var now = Date.now();
       c.status = newStatus;
       c.updated_at = now;
 
       return put(state.db, STORE_CLIENTES, c).then(function(){
-        return outboxEnqueue(state.db, "clientes", c.id, "upsert", c);
+        return outboxEnqueue(state.db, "clientes", c.id, (newStatus==="INATIVO" ? "INATIVAR" : "REATIVAR"), {
+          id: c.id,
+          status: c.status,
+          updated_at: c.updated_at
+        });
       }).then(function(){
         toast((newStatus==="INATIVO" ? "Cliente inativado." : "Cliente reativado.") , "success");
         return refreshPendingCount().then(function(){ return reloadList(); }).then(function(){ return true; });
@@ -1357,7 +1312,7 @@ if(rel) rel.style.display = "grid";
             }
             var s = document.createElement("script");
             s.id = id;
-            s.src = "modules/vsc-outbox-relay.js?v=20260310";
+            s.src = "modules/vsc-outbox-relay.js?v=20260225";
             s.defer = true;
             s.onload = function(){
               if(window.VSC_RELAY && typeof window.VSC_RELAY.kick === "function") return resolve(window.VSC_RELAY);
@@ -1961,9 +1916,8 @@ if(inat){
     }
 
     async function deleteCliente(){
-      // Requer pelo menos ADMIN para iniciar
       try{
-        await window.VSC_AUTH.requireRole("ADMIN");
+        await window.VSC_AUTH.requireRole("ADMIN"); // ADMIN ou MASTER
       }catch(e){
         toast(e && e.message ? e.message : "Acesso negado.", "warn", true);
         return;
@@ -1972,111 +1926,54 @@ if(inat){
         toast("Selecione um cliente para excluir.", "warn", false);
         return;
       }
-
-      // ── Literatura best-practice: soft-delete local + confirmação de senha para sync D1 ──
-      // Referências: Martin Fowler "Soft Delete" pattern; LGPD Art.16 (retenção para auditoria);
-      // OWASP Secure Coding - operações destrutivas exigem re-autenticação.
-      var ok = await confirmModal(
-        "Excluir cliente",
-        "Este cliente sera ocultado do sistema (soft-delete). Para apagar do banco central (D1), sera exigida a senha MASTER. Deseja continuar?"
-      );
+      var ok = await confirmModal("Excluir cliente", "Confirma a exclusão definitiva deste cliente? Essa ação não pode ser desfeita.");
       if(!ok) return;
 
       try{
         setEditState("SYNC", "Excluindo...");
+
+        // [FIX C-06] Verificar vínculos com animais antes de excluir
+        const animais = await getAll(state.db, "animais_master");
+        const temAnimais = animais.some(a => String(a.cliente_id || "") === String(state.selectedId) && !a.deleted_at && !a.deleted);
+        if(temAnimais){
+          toast("Não é possível excluir: cliente possui animais vinculados. Exclua ou transfira os animais primeiro.", "warn", true);
+          setEditState("IDLE", "");
+          return;
+        }
+
+        // [FIX C-06] Verificar vínculos com atendimentos ativos
+        const atendimentos = await getAll(state.db, "atendimentos_master");
+        const temAtd = atendimentos.some(a => String(a.cliente_id || "") === String(state.selectedId) && !a.deleted_at && String(a.status || "") !== "cancelado");
+        if(temAtd){
+          toast("Não é possível excluir: cliente possui atendimentos vinculados.", "warn", true);
+          setEditState("IDLE", "");
+          return;
+        }
+
+        // [FIX C-06] Soft delete — preserva histórico e sincroniza via outbox
         var now = new Date().toISOString();
-        var clienteId = state.selectedId;
-
-        // 1. Soft-delete LOCAL: marca deleted_at no IDB (mantém histórico)
-        var rec = null;
-        try{
-          rec = await new Promise(function(res, rej){
-            var tx = state.db.transaction([STORE_CLIENTES], "readonly");
-            var req = tx.objectStore(STORE_CLIENTES).get(clienteId);
-            req.onsuccess = function(){ res(req.result || null); };
-            req.onerror = function(){ rej(req.error); };
-          });
-        }catch(_){}
-
-        if(!rec){ toast("Cliente não encontrado.", "warn", false); return; }
-
-        var updated = Object.assign({}, rec, { deleted: true, deleted_at: now, updated_at: now });
-        await new Promise(function(res, rej){
-          var tx = state.db.transaction([STORE_CLIENTES], "readwrite");
-          var req = tx.objectStore(STORE_CLIENTES).put(updated);
-          req.onsuccess = function(){ res(); };
-          req.onerror = function(){ rej(req.error); };
-        });
-
-        // 2. Verificar se usuário é MASTER para propagar ao D1
-        var isMaster = false;
-        try{
-          await window.VSC_AUTH.requireRole("MASTER");
-          isMaster = true;
-        }catch(_){ isMaster = false; }
-
-        if(!isMaster){
-          // Exige senha MASTER para deletar do banco central (proteção D1)
-          var senha = window.prompt("Para apagar do banco central D1, informe a senha MASTER. Em branco = cancelar.");
-          if(senha){
-            // Verificar a senha MASTER
-            try{
-              var authOk = await (async function(){
-                if(!window.VSC_AUTH || typeof window.VSC_AUTH.login !== "function") return false;
-                // Tenta autenticar o usuário master com a senha fornecida
-                var currentUser = window.VSC_AUTH.getCurrentUser ? await window.VSC_AUTH.getCurrentUser() : null;
-                if(!currentUser) return false;
-                // Verificar senha via tentativa de login (sem criar sessão)
-                var masterUser = null;
-                try{
-                  var db = state.db;
-                  var users = await new Promise(function(res,rej){
-                    var tx = db.transaction(["auth_users"],"readonly");
-                    var req = tx.objectStore("auth_users").getAll();
-                    req.onsuccess=function(){ res(req.result||[]); };
-                    req.onerror=function(){ rej(req.error); };
-                  });
-                  masterUser = users.find(function(u){ return u && String(u.role||"").toUpperCase() === "MASTER"; });
-                }catch(_){}
-                if(!masterUser) return false;
-                // Verificar hash da senha (se disponível no auth module)
-                if(window.VSC_AUTH.verifyPassword && typeof window.VSC_AUTH.verifyPassword === "function"){
-                  return await window.VSC_AUTH.verifyPassword(masterUser, senha);
-                }
-                // Fallback: comparar diretamente (plain text legado)
-                return masterUser.password === senha || masterUser.password_hash === senha;
-              })();
-              if(authOk){
-                isMaster = true;
-              } else {
-                toast("Senha MASTER incorreta. Cliente ocultado localmente, NÃO removido do D1.", "warn", true);
-              }
-            }catch(e){
-              toast("Erro ao verificar senha: " + (e.message||e), "warn", true);
-            }
-          }
+        const cli = await getById(state.db, STORE_CLIENTES, state.selectedId);
+        if(!cli){
+          toast("Cliente não encontrado.", "warn", false);
+          setEditState("IDLE", "");
+          return;
         }
+        const updated = { ...cli, status: "EXCLUIDO", deleted_at: now, updated_at: now };
+        await put(state.db, STORE_CLIENTES, updated);
+        await outboxEnqueue(state.db, "clientes", state.selectedId, "UPDATE", updated);
 
-        // 3. Propagar ao D1 somente se autenticado como MASTER
-        if(isMaster){
-          await outboxEnqueue(state.db, "clientes", clienteId, "DELETE", { id: clienteId, deleted_at: now });
-          toast("Cliente removido do sistema e do banco central.", "ok", false);
-        } else {
-          // Só oculto localmente - não entra na outbox
-          toast("Cliente ocultado localmente. Para remover do banco central, use uma conta MASTER.", "ok", false);
-        }
-
-        // 4. Limpar UI
+        // limpar seleção e UI
         state.selectedId = null;
         state.editingId = null;
         try{ fillForm(null); }catch(_){}
         try{ setDetailVisible(false); }catch(_){}
         await reloadList();
         await refreshPendingCount();
+        toast("Cliente excluído.", "ok", false);
         setEditState("SALVO", "Excluído");
       }catch(err){
-        console.error("[CLIENTES] deleteCliente error:", err);
-        toast("Falha ao excluir cliente: " + (err.message||"erro"), "error", true);
+        console.error(err);
+        toast("Falha ao excluir cliente.", "error", true);
         setEditState("ERRO", "Erro");
       }finally{
         refreshDeleteUI();

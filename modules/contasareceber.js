@@ -154,6 +154,14 @@ return;
   }
 
   async function upsertTitulo(input) {
+    // [FIX C-09] Verificar papel de usuário — apenas ADMIN ou MASTER podem lançar contas a receber manualmente
+    if (window.VSC_AUTH && typeof window.VSC_AUTH.requireRole === "function") {
+      try {
+        await window.VSC_AUTH.requireRole("ADMIN");
+      } catch(e) {
+        throw new Error(e && e.message ? e.message : "Acesso negado: requer papel ADMIN ou MASTER para lançar contas a receber.");
+      }
+    }
     const t = normalizeTitulo(input);
     t.updated_at = nowISO();
     t.status     = computeStatus(t);

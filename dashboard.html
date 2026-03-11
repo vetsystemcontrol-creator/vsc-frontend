@@ -1587,14 +1587,17 @@
         const mesStr   = mesFmt();
 
         /* ── KPIs ─────────────────────────────────────────────── */
+        // [FIX C-11] Base de atendimentos sem cancelados/excluídos para KPIs corretos
+        const atdAtivos = atendimentos.filter(a => a && !a.deleted_at && a.status !== "cancelado");
+
         // Atendimentos hoje
-        const atdHoje = atendimentos.filter(a => a?.created_at?.slice(0, 10) === todayStr);
+        const atdHoje = atdAtivos.filter(a => a?.created_at?.slice(0, 10) === todayStr);
         const atdHojeF = atdHoje.filter(a => a.status === "finalizado" || a.status === "faturado");
         set("kpiAtdHoje", atdHoje.length);
         set("kpiAtdHojeSub", `${atdHojeF.length} finalizado(s) hoje`);
 
         // Atendimentos no mês
-        const atdMes = atendimentos.filter(a => a?.created_at?.slice(0, 7) === mesStr);
+        const atdMes = atdAtivos.filter(a => a?.created_at?.slice(0, 7) === mesStr);
         set("kpiAtdMes", atdMes.length);
         set("kpiAtdMesSub", `${atdMes.filter(a => a.status === "finalizado" || a.status === "faturado").length} finalizados`);
 
