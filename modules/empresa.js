@@ -308,6 +308,114 @@ function normalizePix(tipo, chave){
     }catch(e){ return {}; }
   }
 
+  // =========================
+  // IDB — persistência offline-first (empresa)
+  // Usa VSC_DB canônico (vsc_db / store "empresa")
+  // keyPath id = "empresa_local" (registro único por instalação)
+  // =========================
+  var IDB_STORE = "empresa";
+  var IDB_KEY   = "empresa_local";
+
+  async function _saveEmpresaToIDB(o){
+    try{
+      var vscDb = _getVSC_DB();
+      if(!vscDb || typeof vscDb.openDB !== "function") return false;
+      var db = await vscDb.openDB();
+      try{
+        await new Promise(function(resolve, reject){
+          try{
+            var t = db.transaction([IDB_STORE], "readwrite");
+            var st = t.objectStore(IDB_STORE);
+            var rec = Object.assign({}, o, {
+              id: IDB_KEY,
+              updated_at: new Date().toISOString()
+            });
+            var r = st.put(rec);
+            r.onsuccess = function(){ resolve(true); };
+            r.onerror   = function(){ reject(r.error || new Error("IDB put error")); };
+          }catch(e){ reject(e); }
+        });
+        return true;
+      }finally{ try{ db.close(); }catch(_){} }
+    }catch(e){
+      console.warn("[EMPRESA] _saveEmpresaToIDB erro:", e);
+      return false;
+    }
+  }
+
+  async function _loadEmpresaFromIDB(){
+    try{
+      var vscDb = _getVSC_DB();
+      if(!vscDb || typeof vscDb.openDB !== "function") return null;
+      var db = await vscDb.openDB();
+      try{
+        return await new Promise(function(resolve, reject){
+          try{
+            var t = db.transaction([IDB_STORE], "readonly");
+            var st = t.objectStore(IDB_STORE);
+            var r = st.get(IDB_KEY);
+            r.onsuccess = function(){ resolve(r.result || null); };
+            r.onerror   = function(){ reject(r.error || new Error("IDB get error")); };
+          }catch(e){ reject(e); }
+        });
+      }finally{ try{ db.close(); }catch(_){} }
+    }catch(e){
+      console.warn("[EMPRESA] _loadEmpresaFromIDB erro:", e);
+      return null;
+    }
+  }
+
+
+  function _getVSC_DB() {
+    if (window.VSC_DB && typeof window.VSC_DB.openDB === 'function') return window.VSC_DB;
+    // Tentar pegar do iframe topbar
+    try {
+      const frames = Array.from(document.querySelectorAll('iframe'));
+      for (const f of frames) {
+        const w = f.contentWindow;
+        if (w && w.VSC_DB && typeof w.VSC_DB.openDB === 'function') return w.VSC_DB;
+      }
+    } catch(_) {}
+    // Tentar window.top e window.parent
+    try { if (window.top && window.top.VSC_DB) return window.top.VSC_DB; } catch(_) {}
+    try { if (window.parent && window.parent.VSC_DB) return window.parent.VSC_DB; } catch(_) {}
+    return null;
+  }
+
+  async function _enqueueEmpresaSync(o) {
+    try {
+      const vscDb = _getVSC_DB();
+      if (!vscDb || typeof vscDb.openDB !== 'function') return;
+      var db = await vscDb.openDB();
+      try {
+        await new Promise(function(resolve, reject) {
+          try {
+            var t = db.transaction(['sync_queue'], 'readwrite');
+            var st = t.objectStore('sync_queue');
+            var opId = 'empresa_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+            var op = {
+              id: opId,
+              op_id: opId,
+              store: 'empresa',
+              entity: 'empresa',
+              entity_id: IDB_KEY,
+              op: 'upsert',
+              operation: 'upsert',
+              payload: Object.assign({}, o, { id: IDB_KEY }),
+              created_at: new Date().toISOString(),
+              status: 'PENDING'
+            };
+            var r = st.put(op);
+            r.onsuccess = function() { resolve(true); };
+            r.onerror   = function() { reject(r.error); };
+          } catch(e) { reject(e); }
+        });
+      } finally { try { db.close(); } catch(_) {} }
+    } catch(e) {
+      console.warn('[EMPRESA] _enqueueEmpresaSync erro:', e);
+    }
+  }
+
   function setStoredEmpresa(o){
     try{
       var meta = { version: 1, savedAt: new Date().toISOString() };
@@ -317,6 +425,8 @@ function normalizePix(tipo, chave){
       try { localStorage.setItem("empresa_configurada", "1"); } catch (e) { /* ignora */ }
       // Persiste também no IDB (offline-first) para não perder dados quando browser limpar localStorage
       _saveEmpresaToIDB(o || {}).catch(function(e){ console.warn("[EMPRESA] IDB save warn:", e); });
+      // Enfileira para sync remoto
+      _enqueueEmpresaSync(o || {}).catch(function(e){ console.warn("[EMPRESA] enqueue sync warn:", e); });
       return true;
     }catch(e){ return false; }
   }

@@ -322,6 +322,15 @@ tx.oncomplete = function(){ resolve(out); };
 
         try{
           stP.put(rec);
+          // Enfileirar para sync
+          const _vscDb = (() => {
+            if (window.VSC_DB && typeof window.VSC_DB.outboxEnqueue === 'function') return window.VSC_DB;
+            try { for (const f of document.querySelectorAll('iframe')) { const w = f.contentWindow; if (w && w.VSC_DB) return w.VSC_DB; } } catch(_) {}
+            return null;
+          })();
+          if (_vscDb && typeof _vscDb.outboxEnqueue === 'function') {
+            _vscDb.outboxEnqueue('config_params', 'upsert', rec.id, rec).catch(()=>{});
+          }
           stA.add({
             id: uuid(),
             when: nowISO(),

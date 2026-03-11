@@ -440,6 +440,31 @@
     };
   }
 
+
+
+  function _getVSC_DB() {
+    if (window.VSC_DB && typeof window.VSC_DB.openDB === 'function') return window.VSC_DB;
+    try {
+      const frames = Array.from(document.querySelectorAll('iframe'));
+      for (const f of frames) {
+        const w = f.contentWindow;
+        if (w && w.VSC_DB && typeof w.VSC_DB.openDB === 'function') return w.VSC_DB;
+      }
+    } catch(_) {}
+    return null;
+  }
+
+  // ── Sync outbox helper ─────────────────────────────────────────────
+  function _outboxEnqueueFechamento(store, entity, entityId, payload) {
+    try {
+      const vscDb = _getVSC_DB();
+      if (vscDb && typeof vscDb.upsertWithOutbox === 'function') {
+        return vscDb.upsertWithOutbox(store, Object.assign({}, payload), entity, String(entityId), payload);
+      }
+    } catch(_) {}
+    return Promise.resolve();
+  }
+
   async function criarRascunho(){
     if(!ST.cliente.id){ toast("Selecione um cliente.", "err"); return; }
     if(!ST.selecionados.size){ toast("Selecione ao menos 1 atendimento.", "err"); return; }
@@ -448,6 +473,7 @@
     try{
       await idbPut(ST.db, "fechamentos", draft);
       ST.fechamento = draft;
+      _outboxEnqueueFechamento("fechamentos", "fechamentos", draft.id, draft).catch(()=>{});
       statusBadge();
       renderKpis();
       toast("Rascunho criado.", "ok");
@@ -545,6 +571,8 @@
       await txDone(tx);
 
       ST.fechamento = f;
+      _outboxEnqueueFechamento("fechamentos", "fechamentos", f.id, f).catch(()=>{});
+      _outboxEnqueueFechamento("contas_receber", "contas_receber", titulo.id, titulo).catch(()=>{});
       statusBadge();
       renderKpis();
       toast("Fechamento emitido e AR gerado.", "ok");
