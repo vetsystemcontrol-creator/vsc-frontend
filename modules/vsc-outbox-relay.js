@@ -110,30 +110,27 @@
   function _isLocalStaticMode() {
     try {
       const proto = String(location.protocol || '').toLowerCase();
-      const host = String(location.hostname || '').toLowerCase();
       if (proto === 'file:') return true;
-      if (host === '127.0.0.1' || host === 'localhost') {
-        const forced = String(localStorage.getItem('vsc_allow_local_sync_api') || '').toLowerCase();
-        return forced !== '1' && forced !== 'true' && forced !== 'yes';
-      }
     } catch (_) {}
     return false;
   }
 
-  function _isLocalWithRemoteForced() {
+  function _isWranglerDev() {
     try {
       const host = String(location.hostname || '').toLowerCase();
-      if (host === '127.0.0.1' || host === 'localhost') {
-        const forced = String(localStorage.getItem('vsc_allow_local_sync_api') || '').toLowerCase();
-        return forced === '1' || forced === 'true' || forced === 'yes';
-      }
+      const proto = String(location.protocol || '').toLowerCase();
+      // wrangler pages dev serve via http em 127.0.0.1 ou localhost com porta
+      return proto === 'http:' && (host === '127.0.0.1' || host === 'localhost');
     } catch (_) {}
     return false;
   }
 
   function _apiBase() {
+    // file:// não tem servidor — aponta direto pro remoto
     if (_isLocalStaticMode()) return REMOTE_BASE;
-    if (_isLocalWithRemoteForced()) return REMOTE_BASE;
+    // wrangler pages dev — usa rotas relativas (proxy via Pages Functions)
+    if (_isWranglerDev()) return '';
+    // produção — rotas relativas (mesmo domínio)
     return '';
   }
 

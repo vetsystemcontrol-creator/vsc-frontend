@@ -25,11 +25,13 @@ try{
   }
 }catch(_){}
 const DB_NAME = "vsc_db";
-  const DB_VERSION = 36;// v36: empresa cadastral/fiscal store (CNPJ, Razão Social, IE, IM, CNAE, endereço) | v35: fornecedores_master schema alignment for cloud snapshot sync | v34: Sync hardening (op_id/device_id/revision metadata) // v32: Fechamentos/Faturamento em lote (STORE_FECHAMENTOS) // v30: Subscription/Billing control (tenant_subscription + billing_events) | v29: Estoque ledger/saldos/import_ledger | v26: Reprodução Equina | v25: Fornecedores | v24: Produtos Lotes | v23: Config + RBAC + Auditoria
+  const DB_VERSION = 37;// v37: nfe_docs migrada para VSC_DB — sync fiscal ativado [FIX C-07] | v36: empresa cadastral/fiscal store (CNPJ, Razão Social, IE, IM, CNAE, endereço) | v35: fornecedores_master schema alignment for cloud snapshot sync | v34: Sync hardening (op_id/device_id/revision metadata) // v32: Fechamentos/Faturamento em lote (STORE_FECHAMENTOS) // v30: Subscription/Billing control (tenant_subscription + billing_events) | v29: Estoque ledger/saldos/import_ledger | v26: Reprodução Equina | v25: Fornecedores | v24: Produtos Lotes | v23: Config + RBAC + Auditoria
+  window.VSC_DB_VERSION = DB_VERSION; // [FIX C-01] expõe para relay e outros módulos — impede VersionError em fresh install
   const STORE_OUTBOX = "sync_queue";
 
   // Empresa (cadastro fiscal/legal) — v36
-  const STORE_EMPRESA = "empresa";
+  const STORE_EMPRESA   = "empresa";
+  const STORE_NFE_DOCS  = "nfe_docs"; // [FIX C-07] NF-e docs — migrado de vsc_fiscal_db para VSC_DB
 
   const STORE_FECHAMENTOS = "fechamentos";
   const STORE_SYS_META = "sys_meta";
@@ -841,6 +843,16 @@ req.onupgradeneeded = (e) => {
           st.createIndex("cnpj_digits", "cnpj_digits", { unique: false });
           st.createIndex("razao_social_norm", "razao_social_norm", { unique: false });
           st.createIndex("updated_at", "updated_at", { unique: false });
+        }
+
+        // NF-e DOCS — v37 [FIX C-07]
+        // Migrado de banco isolado vsc_fiscal_db para VSC_DB principal.
+        // Permite sync via outbox (sync_queue) como todos os demais módulos.
+        // =========================
+        if (!db.objectStoreNames.contains(STORE_NFE_DOCS)) {
+          const st = db.createObjectStore(STORE_NFE_DOCS, { keyPath: "id" });
+          st.createIndex("by_updated", "updated_at", { unique: false });
+          st.createIndex("by_status",  "status",     { unique: false });
         }
 
       };
@@ -1795,7 +1807,8 @@ async function importBackupFromJson(jsonText, opts){
       billing_events: STORE_BILLING_EVENTS,
 
       // Empresa cadastral/fiscal (v36)
-      empresa: STORE_EMPRESA
+      empresa: STORE_EMPRESA,
+      nfe_docs: STORE_NFE_DOCS     // [FIX C-07]
     }
   };
 

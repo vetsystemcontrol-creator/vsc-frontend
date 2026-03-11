@@ -27,10 +27,20 @@ const VSC_CLOUD_SYNC = (() => {
     };
   }
 
+  function _apiBase() {
+    try {
+      const proto = String(location.protocol || '').toLowerCase();
+      if (proto === 'file:') return 'https://app.vetsystemcontrol.com.br';
+    } catch (_) {}
+    // wrangler pages dev e produção: rotas relativas (proxy via Pages Functions)
+    return '';
+  }
+
   async function fetchSnapshot() {
+    const base = _apiBase();
     const urls = [
-      'https://app.vetsystemcontrol.com.br/api/sync/pull',
-      'https://app.vetsystemcontrol.com.br/api/state?action=pull'
+      `${base}/api/sync/pull`,
+      `${base}/api/state?action=pull`
     ];
 
     let lastErr = null;
