@@ -112,6 +112,13 @@ const VSC_CLOUD_SYNC = (() => {
     notifyUI('syncing');
     try {
       const payload = await fetchSnapshot();
+      
+      // SGQT 8.5 - Validação de Schema (Snapshot)
+      // Garante que o payload recebido do servidor é um objeto válido antes de aplicar.
+      if (!payload || typeof payload.snapshot !== 'object') {
+        throw new Error('Snapshot inválido recebido do servidor.');
+      }
+      
       const applied = await applySnapshot(payload.snapshot);
       localStorage.setItem(SYNC_KEY, nowIso());
       notifyUI('success');

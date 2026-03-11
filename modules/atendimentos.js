@@ -335,16 +335,50 @@
     snack("Anexos adicionados. Preencha as descrições e clique em Salvar.", "ok");
   }
 
-  function openAttachmentInNewTab(att){
-    if(!att || !att.dataUrl) return;
+  async function openAttachmentInNewTab(att){
+    if(!att) return;
+
+    // Se tem dataUrl local, abre direto
+    if(att.dataUrl){
+      _renderAttachWindow(att, att.dataUrl);
+      return;
+    }
+
+    // Sem dataUrl — busca do R2
+    if(!att.synced_to_r2){ snack("Anexo sem dados locais e não sincronizado com o servidor.", "err"); return; }
+    if(!ATD.atendimento_id){ snack("ID do atendimento não encontrado.", "err"); return; }
+
+    snack("Baixando anexo do servidor...", "ok");
+    try {
+      const base = (location.hostname==='127.0.0.1'||location.hostname==='localhost')
+        ? 'https://app.vetsystemcontrol.com.br' : '';
+      const tenant = localStorage.getItem('vsc_tenant') || 'tenant-default';
+      const url = `${base}/api/attachments?action=download&atendimento_id=${encodeURIComponent(ATD.atendimento_id)}&attachment_id=${encodeURIComponent(att.id)}`;
+      const res = await fetch(url, { headers: { 'X-VSC-Tenant': tenant } });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
+      // Salva localmente para próxima vez
+      att.dataUrl = dataUrl;
+      _renderAttachWindow(att, dataUrl);
+    } catch(e) {
+      snack("Erro ao baixar anexo: " + (e.message||"erro"), "err");
+    }
+  }
+
+  function _renderAttachWindow(att, dataUrl){
     const attWin = window.open("about:blank", "_blank");
     if(!attWin){ snack("Pop-up bloqueado. Libere pop-ups para visualizar anexos.", "warn"); return; }
     const title = esc(att.name || "Anexo");
     const isPdf = String(att.mime||"") === "application/pdf";
     const body = isPdf
-      ? `<embed src="${att.dataUrl}" type="application/pdf" style="width:100%;height:100vh;"/>`
-      : `<img src="${att.dataUrl}" style="max-width:100%;height:auto;display:block;margin:0 auto;"/>`;
-
+      ? `<embed src="${dataUrl}" type="application/pdf" style="width:100%;height:100vh;"/>`
+      : `<img src="${dataUrl}" style="max-width:100%;height:auto;display:block;margin:0 auto;"/>`;
     attWin.document.open();
     attWin.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="margin:0;padding:0;background:#111;color:#fff;">${body}</body></html>`);
     attWin.document.close();
@@ -467,19 +501,59 @@ async function loadEmpresaSnapshot(db){
         };
       }
     }
-    // fallback: config_params
+    // Fallback canônico: config_params (empresa.js persiste aqui via IDB)
     if(hasStore(db,"config_params")){
       const rows = await idbGetAll(db,"config_params");
-      function getKey(k){ const r = rows.find(x=>String(x.key||x.nome||"")==k); return r? String(r.value||""):""; }
+      function getKey(k){ const r = rows.find(x=>String(x.key||x.nome||x.id||"")===k); return r ? String(r.value||"") : ""; }
+
+      // Tenta ler o snapshot completo (salvo pelo empresa.js como JSON)
+      const snapRaw = getKey("vsc_empresa_v1");
+      if(snapRaw){
+        try{
+          const snap = JSON.parse(snapRaw);
+          if(snap && snap.nome){
+            const logoAKey = getKey("vsc_empresa_logo_a") || snap.__logoA || "";
+            const logoBKey = getKey("vsc_empresa_logo_b") || snap.__logoB || "";
+            return {
+              nome:     snap.nome || snap.razao_social || snap.fantasia || "",
+              cnpj:     snap.cnpj || "",
+              endereco: snap.endereco || "",
+              cidade:   snap.cidade || "",
+              uf:       snap.uf || "",
+              cep:      snap.cep || "",
+              telefone: snap.telefone || snap.celular || "",
+              email:    snap.email || "",
+              site:     snap.site || "",
+              crmv:     snap.crmv || "",
+              __logoA:  logoAKey || (await getEmpresaLogoAFromLocalStorage()),
+              __logoB:  logoBKey || "",
+              pix_tipo:       snap.pix_tipo || "",
+              pix_chave:      snap.pix_chave || (await getEmpresaPixFromLocalStorage()),
+              pix_chave_norm: snap.pix_chave_norm || "",
+              pix_nome:       snap.pix_nome || "",
+            };
+          }
+        }catch(_){}
+      }
+
+      // Fallback por chaves individuais legacy
       return {
-        nome: getKey("empresa_nome") || getKey("razao_social") || "",
-        cnpj: getKey("empresa_cnpj") || getKey("cnpj") || "",
+        nome:     getKey("empresa_nome") || getKey("razao_social") || "",
+        cnpj:     getKey("empresa_cnpj") || getKey("cnpj") || "",
         endereco: getKey("empresa_endereco") || getKey("endereco") || "",
         telefone: getKey("empresa_telefone") || getKey("telefone") || "",
-        email: getKey("empresa_email") || getKey("email") || "",
-        __logoA: getKey("empresa_logo_a") || getKey("logo_a") || (await getEmpresaLogoAFromLocalStorage()),
+        email:    getKey("empresa_email") || getKey("email") || "",
+        __logoA:  getKey("empresa_logo_a") || getKey("logo_a") || (await getEmpresaLogoAFromLocalStorage()),
         pix_chave: getKey("pix_chave") || getKey("chave_pix") || getKey("pix") || (await getEmpresaPixFromLocalStorage()),
       };
+    }
+    // Último recurso: só localStorage
+    const lsRaw = localStorage.getItem("vsc_empresa_v1");
+    if(lsRaw){
+      try{
+        const ls = JSON.parse(lsRaw);
+        if(ls && ls.nome) return Object.assign({ __logoA:"", pix_chave:"" }, ls);
+      }catch(_){}
     }
     return { nome:"", cnpj:"", endereco:"", telefone:"", email:"" };
   }
@@ -719,6 +793,14 @@ async function openPrintWindow(payload, docType){
   const ui = ensurePrintPreviewModal();
   ui.setState("loading", "Gerando PDF premium (incluindo anexos)…");
 
+  // Anexos: usa apenas o que já está em memória local (dataUrl).
+  // NÃO faz download em tempo de impressão — evita travamento da UI.
+  // Arquivos apenas no servidor aparecem com aviso no documento impresso.
+  if(doc.atendimento && Array.isArray(doc.atendimento.attachments)){
+    const sem = doc.atendimento.attachments.filter(a => a && !a.dataUrl && a.synced_to_r2);
+    if(sem.length) console.info('[PRINT] ' + sem.length + ' anexo(s) só no servidor (exibidos como referência no doc):', sem.map(a=>a.name));
+  }
+
   let r;
   try{
     r = await fetch("/api/atendimentos/print-pack", {
@@ -730,16 +812,16 @@ async function openPrintWindow(payload, docType){
   }catch(e){
     console.error("[SGQT-PRINT][NET] erro:", e);
     ui.setState("loading", "Backend indisponível. Gerando impressão local...");
-    return openPrintWindowClient(payload, docType, { openPreview:true });
+    return openPrintWindowClient(doc, docType, { openPreview:true });
   }
 
   if(!r.ok){
     let detail = "";
     try{ detail = await r.text(); }catch(_){ }
     console.error("[SGQT-PRINT][HTTP] status:", r.status, detail);
-    if(r.status === 404 || r.status === 501){
+    if(r.status === 404 || r.status === 405 || r.status === 501){
       ui.setState("loading", "Backend de impressão ausente. Gerando impressão local...");
-      return openPrintWindowClient(payload, docType, { openPreview:true });
+      return openPrintWindowClient(doc, docType, { openPreview:true });
     }
     ui.setState("error", "Backend retornou erro ("+r.status+").");
     if(r.status === 413){
@@ -842,8 +924,8 @@ body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:
 .sysSub{font-size:11px;color:var(--muted);font-weight:800;}
 .logoA{width:54px;height:54px;object-fit:contain;border:none;border-radius:0;margin:0;}
 .hdr h1{font-size:16px;margin:0;font-weight:900;letter-spacing:-.02em;}
-.small{font-size:12px;color:var(--muted);line-height:1.35;}
-.box{border:1px solid var(--bd);border-radius:12px;padding:12px 14px;margin:12px 0;}
+.small{font-size:11px;color:var(--muted);line-height:1.4;}
+.box{border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin:10px 0;}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
 .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700;}
 .val{font-size:13px;font-weight:800;margin-top:2px;}
@@ -858,6 +940,10 @@ th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06
 img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid var(--bd);border-radius:10px;}
 .pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
 .muted{color:var(--muted);}
+.att{margin:14px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:10px;break-inside:avoid;}
+.att-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:#334155;margin-bottom:6px;}
+.att-desc{font-size:12px;color:var(--muted);margin-top:6px;font-style:italic;}
+.att-nodata{font-size:12px;color:#b45309;background:#fef3c7;padding:8px 10px;border-radius:6px;margin-top:6px;}
 
 /* Marca d'água (somente relatório) */
 .wmLocal{
@@ -901,12 +987,13 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   .footer{
     display:block;
     position:fixed; left:0; right:0; bottom:0;
-    padding:4mm 12mm 3mm;
-    font-size:10px; color:var(--muted);
+    border-top:1px solid var(--bd);
+    padding:3mm 12mm 3mm;
+    font-size:9px; color:var(--muted);
     background:#fff;
   }
-  .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:flex-end;}
-  .pnum:before{content:"Página " counter(page) " de " counter(pages);} 
+  .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:center;}
+  /* counter(pages) não funciona no Chrome para about:blank - JS preenche .pnum */
 }
   `;
 
@@ -943,27 +1030,43 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     atts.length ? atts.map((a, idx)=>{
       const isPdf = String(a.mime||"")==="application/pdf";
       const name = esc(a.name||("Anexo "+(idx+1)));
+      const hasData = !!a.dataUrl;
+      const sizeKb = a.size ? Math.round(a.size/1024) + " KB" : "";
+      if(!hasData){
+        // Sem dataUrl — mostra referência (arquivo está no servidor)
+        return `
+          <section class="att">
+            <div class="att-title">${name} ${isPdf ? "• PDF" : "• Imagem"} ${sizeKb ? "• "+sizeKb : ""}</div>
+            ${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ""}
+            <div class="att-nodata">⚠ Arquivo disponível no servidor (${sizeKb}). Abra o atendimento para visualizar.</div>
+          </section>
+        `;
+      }
       if(isPdf){
         return `
           <section class="att">
-            <div class="att-title">${name} • PDF</div>
+            <div class="att-title">${name} • PDF ${sizeKb ? "• "+sizeKb : ""}</div>
             <div class="no-print small"><a href="${a.dataUrl}" target="_blank" rel="noopener">Abrir PDF em nova aba</a></div>
             <div class="pdf-block att-media" data-idx="${idx}">
               <div class="pdf-loading">Renderizando PDF para impressão…</div>
               <div class="pdf-pages" data-name="${name}" data-dataurl="${a.dataUrl}"></div>
             </div>
-            ${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ``}
+            ${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ""}
           </section>
         `;
       }
+      // Imagem — usa canvas para redimensionar antes de imprimir (evita travamento com imagens grandes)
       return `
         <section class="att">
-          <div class="att-title">${name} • Imagem</div>
-          <div class="att-media"><img src="${a.dataUrl}" alt="${name}"/></div>${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ``}
+          <div class="att-title">${name} • Imagem ${sizeKb ? "• "+sizeKb : ""}</div>
+          <div class="att-media">
+            <canvas class="att-img-canvas" data-src="${a.dataUrl}" style="max-width:100%;display:block;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;"></canvas>
+          </div>
+          ${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ""}
         </section>
       `;
     }).join("")
-    : `<div class="small muted">Nenhum anexo.</div>`
+    : `<div class="small muted">Nenhum anexo clínico registrado.</div>`
   ) : "";
 
   const vitalsHtml = (animais.length ? animais : (Array.isArray(atd.animal_ids) ? atd.animal_ids.map(id=>({id, nome:id})) : [])).map(a=>{
@@ -1135,27 +1238,34 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         ${(docType === "clinico" && logoB) ? `<div class="wmLocal"><img src="${logoB}" alt="Marca d'água"/></div>` : ``}
         <div class="sheetContent">
           <div class="hdr">
-            <div class="hdr-left">
-              <div class="sysBrand">
-                <div class="sysIcon">${SYSTEM_LOGO_SVG}</div>
-                <div class="sysName">
-                  <div class="sysMain">Vet System Control</div>
-                  <div class="sysSub">| Equine</div>
-                </div>
-              </div>
-              ${logoA ? `<img class="logoA" src="${logoA}" alt="Logo A"/>` : ``}
-              <div>
-                <h1>${esc(DOC_LABEL)}</h1>
-                <div class="small">
-                  <div><strong>Nº:</strong> <span class="muted">${esc(atd.numero||"—")}</span></div>
-                  <div><strong>Status:</strong> <span class="muted">${esc(atd.status||"—")}</span></div>
-                  <div><strong>Gerado em:</strong> <span class="muted">${esc(fmtDate(R.gerado_em))}</span></div>
-                </div>
-              </div>
+            <!-- Logo empresa (destaque, lado esquerdo) -->
+            <div class="hdr-logos">
+              ${logoA ? `<img class="logoA" src="${logoA}" alt="Logo"/>` : `<div style="width:56px;height:56px;border-radius:4px;background:linear-gradient(135deg,#16a34a,#0369a1);display:flex;align-items:center;justify-content:center;">${SYSTEM_LOGO_SVG}</div>`}
             </div>
-            <div class="small" style="text-align:right;">
-              <div style="font-weight:900;color:#0b1220;">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"")}</div>
-              ${empLine ? `<div>${empLine}</div>`:""}
+            <!-- Dados da empresa (centro) -->
+            <div class="hdr-empresa">
+              <div class="emp-nome">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa")}</div>
+              ${empresa.razao_social && (empresa.razao_social !== empresa.nome) ? `<div class="emp-sub">${esc(empresa.razao_social)}</div>` : ""}
+              <div class="emp-dados">${[
+                empresa.cnpj ? "CNPJ: "+empresa.cnpj : "",
+                empresa.crmv ? "CRMV: "+empresa.crmv : "",
+                empresa.endereco||"",
+                [empresa.cidade, empresa.uf].filter(Boolean).join("/"),
+                [empresa.telefone, empresa.email].filter(Boolean).join("  •  ")
+              ].filter(Boolean).join("<br/>")}</div>
+            </div>
+            <!-- Identificação do documento (direita) -->
+            <div class="hdr-doc">
+              <div class="doc-tipo">${esc(DOC_LABEL)}</div>
+              <div class="doc-num"><strong>Nº:</strong> ${esc(atd.numero||"—")}</div>
+              <div class="doc-status"><strong>Status:</strong> ${esc(atd.status||"—")}</div>
+              <div class="doc-data"><strong>Data:</strong> ${esc(fmtDate(R.gerado_em))}</div>
+            </div>
+            <!-- Crédito sistema (rodapé do cabeçalho) -->
+            <div class="sys-credit">
+              ${SYSTEM_LOGO_SVG}
+              <span class="sysMain">Vet System Control</span>
+              <span class="sysSub">| Equine — Sistema de Gestão Veterinária</span>
             </div>
           </div>
 
@@ -1280,7 +1390,42 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           }catch(_e){}
         }
 
+        // Renderiza imagens grandes via canvas (evita travamento)
+        async function renderCanvasImages(){
+          var canvases = Array.from(document.querySelectorAll('.att-img-canvas'));
+          for(var cv of canvases){
+            var src = cv.getAttribute('data-src');
+            if(!src) continue;
+            try{
+              var MAX_W = 900, MAX_H = 1200;
+              var img = new Image();
+              await new Promise(function(res,rej){ img.onload=res; img.onerror=rej; img.src=src; });
+              var w = img.naturalWidth, h = img.naturalHeight;
+              var scale = Math.min(1, MAX_W/w, MAX_H/h);
+              cv.width = Math.floor(w*scale);
+              cv.height = Math.floor(h*scale);
+              var ctx = cv.getContext('2d');
+              ctx.drawImage(img, 0, 0, cv.width, cv.height);
+            }catch(e){ cv.style.display='none'; }
+          }
+        }
+
+        // Preenche número de páginas no rodapé (Chrome não suporta counter(pages) em about:blank)
+        function fillPageNumbers(){
+          try{
+            var body = document.body;
+            var pageH = 1122; // altura aproximada A4 a 96dpi (297mm)
+            var total = Math.max(1, Math.ceil(body.scrollHeight / pageH));
+            document.querySelectorAll('.pnum').forEach(function(el, i){
+              el.textContent = 'Página ' + (i+1) + ' de ' + total;
+            });
+          }catch(_){}
+        }
+
         window.addEventListener('load', async function(){
+          // 0) Renderizar imagens via canvas (redimensiona grandes)
+          try{ await renderCanvasImages(); } catch(e){}
+
           // 1) Renderizar PDFs (se houver) e inserir como imagens (efeito "escaneado")
           try{ await renderAllPdfs(); } catch(e){}
 
@@ -1344,6 +1489,9 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
           try{ await waitForImages(12000); }catch(_){}
 
+          // Preenche "Página X de Y"
+          try{ fillPageNumbers(); }catch(_){}
+
           await new Promise(function(r){ requestAnimationFrame(function(){ requestAnimationFrame(r); }); });
 
           // 5) Imprimir somente após anexos prontos
@@ -1361,6 +1509,11 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   w.document.open();
   w.document.write(html);
   w.document.close();
+
+  // Auto-abre diálogo de impressão após carregar (inclui opção "Salvar como PDF")
+  w.addEventListener("load", () => {
+    setTimeout(() => { try{ w.print(); }catch(_){} }, 800);
+  });
 }
 
   async function imprimirAtendimento(db, docType){
@@ -1705,22 +1858,15 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       try {
         const tx = db.transaction([STORE], "readwrite");
         const st = tx.objectStore(STORE);
-        // config_params keyPath = "id" (não "key") — precisamos varrer e filtrar por .key
-        const rqAll = st.getAll();
-        rqAll.onsuccess = () => {
-          const all = rqAll.result || [];
-          const existing = all.find(r => String(r.key || r.nome || "") === KEY) || null;
-          const current = existing
-            ? { ...existing }
-            : { id: KEY, key: KEY, value: 0, year: year };
+        const rq = st.get(KEY);
+        rq.onsuccess = () => {
+          const current = rq.result || { key: KEY, value: 0, year: year };
           // Resetar se virou ano
           if (Number(current.year || 0) !== year) {
             current.value = 0;
             current.year = year;
           }
           const next = (Number(current.value || 0)) + 1;
-          current.id  = KEY;   // garante keyPath correto
-          current.key = KEY;
           current.value = next;
           current.year = year;
           current.updated_at = isoNow();
@@ -1731,7 +1877,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           };
           tx.onerror = () => resolve(`ATD-${year}-${Date.now().toString().slice(-5)}`);
         };
-        rqAll.onerror = () => resolve(`ATD-${year}-${Date.now().toString().slice(-5)}`);
+        rq.onerror = () => resolve(`ATD-${year}-${Date.now().toString().slice(-5)}`);
       } catch (_) {
         resolve(`ATD-${year}-${Date.now().toString().slice(-5)}`);
       }
@@ -2044,7 +2190,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     // Anexos
     ATD.attachments = Array.isArray(rec.attachments) ? [...rec.attachments] : [];
     ATD.vaccine_events = Array.isArray(rec.vaccine_events) ? [...rec.vaccine_events] : [];
-    ATD.animais_snapshot = Array.isArray(rec.animais_snapshot) ? [...rec.animais_snapshot] : [];
     renderAttachPills();
 
 
@@ -2493,7 +2638,8 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     $("vscAnimalModalStepAsk")?.classList.remove("hidden");
     $("vscAnimalModalStepPick")?.classList.add("hidden");
     m.classList.remove("hidden"); m.setAttribute("aria-hidden", "false");
-    m._getDb = getDb;  // ref salva no elemento modal para callbacks
+    $("vscAnimalModalAskGetDb") && delete $("vscAnimalModalAskGetDb");
+    m._getDb = getDb;
   }
 
   function VSC_ATD_closeAnimalModal() {
@@ -2790,29 +2936,13 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     try{
       const db = await window.VSC_DB.openDB();
       if(hasStore(db, "animal_vitals_history")){
-        const vhRec = Object.assign({
+        await idbPut(db, "animal_vitals_history", Object.assign({
           id: uuidv4(),
           animal_id: aid,
           atendimento_id: ATD.atendimento_id || null,
           recorded_at: isoNow(),
           user_id: ATD.responsavel_user_id || null
-        }, v);
-        await idbPut(db, "animal_vitals_history", vhRec);
-        // Enfileirar sync
-        if(hasStore(db, "sync_queue")){
-          try{
-            const sqId = uuidv4();
-            const sqTx = db.transaction("sync_queue", "readwrite");
-            sqTx.objectStore("sync_queue").add({
-              id: sqId, op_id: sqId,
-              store: "animal_vitals_history", entity: "animal_vitals_history",
-              entity_id: vhRec.id, op: "upsert", action: "upsert",
-              payload: vhRec,
-              created_at: isoNow(), updated_at: isoNow(),
-              status: "PENDING"
-            });
-          }catch(_){}
-        }
+        }, v));
       }
       const hist = await fetchVitalsHistory(db, aid);
       renderVitalsHistoryUI(hist);
@@ -3032,21 +3162,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     try{
       const db = await window.VSC_DB.openDB();
       if(hasStore(db, "animal_vaccines")) await idbPut(db, "animal_vaccines", ev);
-      // Enfileirar sync
-      if(hasStore(db, "sync_queue")){
-        try{
-          const sqId = uuidv4();
-          const sqTx = db.transaction("sync_queue", "readwrite");
-          sqTx.objectStore("sync_queue").add({
-            id: sqId, op_id: sqId,
-            store: "animal_vaccines", entity: "animal_vaccines",
-            entity_id: ev.id, op: "upsert", action: "upsert",
-            payload: ev,
-            created_at: isoNow(), updated_at: isoNow(),
-            status: "PENDING"
-          });
-        }catch(_){}
-      }
       try{ db.close(); }catch(_){}
     }catch(_){ }
     closeVaccineModal();
@@ -3364,96 +3479,92 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     if (!produtosItens.length) return { ok: true, movs: 0 };
     if (!hasStore(db, "produtos_master")) return { ok: false, msg: "Store produtos_master não encontrada." };
 
+    // Usa VSC_ESTOQUE (estoque_core.js) quando disponível — garante ledger correto
+    if (window.VSC_ESTOQUE && typeof window.VSC_ESTOQUE.registrarSaida === "function") {
+      let movs = 0;
+      for (const it of produtosItens) {
+        if (!it.catalog_id || Number(it.qtd||0) <= 0) continue;
+        try {
+          const fn = sentido === "baixar" ? window.VSC_ESTOQUE.registrarSaida : window.VSC_ESTOQUE.registrarEntrada;
+          await fn({
+            produto_id: it.catalog_id,
+            produto_nome: it.desc || "",
+            qtd: Number(it.qtd || 0),
+            origem: "ATENDIMENTO",
+            ref_id: ATD.atendimento_id,
+            ref_numero: ATD.numero || "",
+            responsavel_user_id: ATD.responsavel_user_id || null,
+            custo_unit_cents: Number(it.custo_cents || 0)
+          });
+          movs++;
+        } catch(e) { console.warn("[ATD] VSC_ESTOQUE erro:", it.catalog_id, e); }
+      }
+      _catalogCache["PRODUTO"] = null;
+      return { ok: true, movs };
+    }
+
     let movs = 0;
+    const now = isoNow();
+    const tipoMov = sentido === "baixar" ? "SAIDA" : "ENTRADA";
+
     for (const it of produtosItens) {
       try {
         const prod = await idbGet(db, "produtos_master", it.catalog_id);
         if (!prod) continue;
-        const saldoAtual = Number(prod.saldo_estoque || 0);
         const qty = Number(it.qtd || 0);
-        prod.saldo_estoque = sentido === "baixar"
-          ? Math.max(0, saldoAtual - qty)
-          : saldoAtual + qty;
-        prod.updated_at = isoNow();
+        if (qty <= 0) continue;
+
+        // 1. Atualiza saldo_estoque no produto (cache denormalizado)
+        const saldoAtual = Number(prod.saldo_estoque || 0);
+        const novoSaldo = sentido === "baixar" ? Math.max(0, saldoAtual - qty) : saldoAtual + qty;
+        prod.saldo_estoque = novoSaldo;
+        prod.updated_at = now;
         await idbPut(db, "produtos_master", prod);
-        // Enfileirar sync de saldo de estoque (produtos_master)
-        if(hasStore(db, "sync_queue")){
-          try{
-            const sqId = uuidv4();
-            const sqTx = db.transaction("sync_queue", "readwrite");
-            sqTx.objectStore("sync_queue").add({
-              id: sqId, op_id: sqId,
-              store: "produtos_master", entity: "produtos_master",
-              entity_id: String(prod.produto_id || prod.id || it.catalog_id),
-              op: "upsert", action: "upsert",
-              payload: prod,
-              created_at: isoNow(), updated_at: isoNow(),
-              status: "PENDING"
-            });
-          }catch(_){}
-        }
-        // Atualizar estoque_saldos (fonte canônica lida por VSC_ESTOQUE.getStockMap)
-        if(hasStore(db, "estoque_saldos")){
-          try{
-            const pid = String(prod.produto_id || it.catalog_id);
-            const saldoKey = pid + "::sem-lote";
-            const saldoAtual = await idbGet(db, "estoque_saldos", saldoKey);
-            const saldoAnterior = Number((saldoAtual && saldoAtual.saldo) || 0);
-            const delta = sentido === "baixar" ? -Number(it.qtd || 0) : Number(it.qtd || 0);
-            const novoSaldo = Math.max(0, saldoAnterior + delta);
-            const saldoObj = Object.assign({}, saldoAtual || {}, {
+
+        // 2. Atualiza estoque_saldos (fonte canônica, alinhado com importacaoxml)
+        if (hasStore(db, "estoque_saldos")) {
+          try {
+            const saldoKey = String(it.catalog_id) + ":sem-lote";
+            const saldoRec = await idbGet(db, "estoque_saldos", saldoKey);
+            const saldoBase = Number((saldoRec && saldoRec.saldo) || saldoAtual || 0);
+            const novoSaldoRec = sentido === "baixar" ? Math.max(0, saldoBase - qty) : saldoBase + qty;
+            await idbPut(db, "estoque_saldos", Object.assign({}, saldoRec || {}, {
               id: saldoKey,
-              produto_id: pid,
-              produto_lote: null,
-              saldo: novoSaldo,
-              updated_at: isoNow(),
+              produto_id: it.catalog_id,
+              lote_id: null,
+              saldo: novoSaldoRec,
+              updated_at: now,
               _origem: "atendimento"
-            });
-            await idbPut(db, "estoque_saldos", saldoObj);
-            // Sync de estoque_saldos
-            if(hasStore(db, "sync_queue")){
-              try{
-                const sqId2 = uuidv4();
-                const sqTx2 = db.transaction("sync_queue", "readwrite");
-                sqTx2.objectStore("sync_queue").add({
-                  id: sqId2, op_id: sqId2,
-                  store: "estoque_saldos", entity: "estoque_saldos",
-                  entity_id: saldoKey,
-                  op: "upsert", action: "upsert",
-                  payload: saldoObj,
-                  created_at: isoNow(), updated_at: isoNow(),
-                  status: "PENDING"
-                });
-              }catch(_){}
-            }
-          }catch(_){}
+            }));
+          } catch(_) {}
         }
+
+        // 3. Registra movimento individual em estoque_movimentos (store canonico)
+        if (hasStore(db, "estoque_movimentos")) {
+          try {
+            const movItem = {
+              id: uuidv4(),
+              produto_id: it.catalog_id,
+              produto_nome: it.desc || "",
+              tipo: tipoMov,
+              origem: "ATENDIMENTO",
+              ref_id: ATD.atendimento_id,
+              ref_numero: ATD.numero || "",
+              responsavel_user_id: ATD.responsavel_user_id || null,
+              qtd_delta: sentido === "baixar" ? -qty : qty,
+              saldo_delta: novoSaldo - saldoAtual,
+              custo_unit_cents: Number(it.custo_cents || 0),
+              custo_total_cents: Math.round(Number(it.custo_cents || 0) * qty),
+              created_at: now,
+              updated_at: now,
+              _origem: "atendimento"
+            };
+            await idbPut(db, "estoque_movimentos", movItem);
+          } catch(_) {}
+        }
+
         movs++;
       } catch (e) { console.warn("[ATD] estoque mov erro item:", it.catalog_id, e); }
-    }
-
-    // Registrar em estoque_movimentacoes se store existir
-    if (hasStore(db, "estoque_movimentos")) {
-      try {
-        const mov = {
-          id: uuidv4(),
-          // campos canônicos (estoque_core v29)
-          tipo: sentido === "baixar" ? "SAIDA" : "ENTRADA",
-          kind: sentido === "baixar" ? "SAIDA" : "ENTRADA",
-          reason_code: "ATENDIMENTO",
-          source_type: "atendimento",
-          source_id: ATD.atendimento_id,
-          // campos de contexto
-          origem: "atendimento",
-          ref_id: ATD.atendimento_id,
-          ref_numero: ATD.numero,
-          responsavel_user_id: ATD.responsavel_user_id || null,
-          responsavel_snapshot: ATD.responsavel_snapshot || null,
-          itens: produtosItens,
-          created_at: isoNow()
-        };
-        await idbPut(db, "estoque_movimentos", mov);
-      } catch (_) { }
     }
 
     // Limpar cache de catálogo para forçar releitura
@@ -3478,14 +3589,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       id: crId,
       documento: ATD.numero,
       cliente_nome: ATD.cliente_label || ATD._cliente_nome || "—",
-      cliente_doc: (() => {
-        // Busca síncrona no cache LOOKUP_CACHE (já carregado)
-        if (Array.isArray(LOOKUP_CACHE)) {
-          const c = LOOKUP_CACHE.find(x => x.id === ATD.cliente_id);
-          if (c && c.doc) return c.doc;
-        }
-        return "";
-      })(),
+      cliente_doc: "",
       competencia: todayYMD().slice(0, 7),
       vencimento: ATD.financeiro_vencimento || todayYMD(),
       valor_original_centavos: totalCents,
@@ -3504,9 +3608,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       created_at: isoNow(),
       updated_at: isoNow()
     };
-    // Calcular status (igual ao que contasareceber.js faz em normalizeTitulo)
-    // "aberto" se não vencido e sem recebimentos, "vencido" se vcto < hoje
-    titulo.status = (titulo.vencimento && titulo.vencimento < todayYMD()) ? "vencido" : "aberto";
 
     // Tentar via VSC_AR primeiro
     if (window.VSC_AR && typeof window.VSC_AR.upsertTitulo === "function") {
@@ -3521,21 +3622,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     // Fallback: gravar diretamente no store contas_receber
     if (hasStore(db, "contas_receber")) {
       await idbPut(db, "contas_receber", titulo);
-      // Enfileirar sync
-      if(hasStore(db, "sync_queue")){
-        try{
-          const sqId = uuidv4();
-          const sqTx = db.transaction("sync_queue", "readwrite");
-          sqTx.objectStore("sync_queue").add({
-            id: sqId, op_id: sqId,
-            store: "contas_receber", entity: "contas_receber",
-            entity_id: titulo.id, op: "upsert", action: "upsert",
-            payload: titulo,
-            created_at: isoNow(), updated_at: isoNow(),
-            status: "PENDING"
-          });
-        }catch(_){}
-      }
       return { ok: true, via: "IDB_direto" };
     }
 
@@ -3550,7 +3636,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       rec.cancelado = true;
       rec.cancelado_at = isoNow();
       rec.cancelado_motivo = "Atendimento cancelado.";
-      rec.status = "cancelado";
       rec.updated_at = isoNow();
       if (window.VSC_AR && typeof window.VSC_AR.upsertTitulo === "function") {
         await window.VSC_AR.upsertTitulo(rec);
@@ -3751,10 +3836,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           return a ? String(a.nome || id) : String(id);
         });
       })(),
-      animais_snapshot: (ATD.animal_ids || []).map(id => {
-        const a = MODAL_ALL.find(x => String(x.id) === String(id));
-        return a ? { id: String(a.id), nome: String(a.nome || id), foto_data: String(a.foto_data || '') } : { id: String(id), nome: String(id), foto_data: '' };
-      }),
       vitals_by_animal: ATD.vitals_by_animal || {},
       vitals_active_animal_id: ATD.vitals_active_animal_id || "",
       observacoes: String($("observacoes")?.value || ""),
@@ -3791,18 +3872,94 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   async function salvar(db, showMsg) {
     if (!ATD.atendimento_id) { snack("Inicie um novo atendimento primeiro.", "err"); return; }
     if (!hasStore(db, "atendimentos_master")) { snack("Store atendimentos_master não encontrada.", "err"); return; }
-    if (!ATD.cliente_id && showMsg !== false) {
-      snack("⚠️ Salvo sem cliente vinculado. Vincule um cliente antes de finalizar.", "warn");
-    }
 
     try {
       const payload = buildPayload();
       await idbPut(db, "atendimentos_master", payload);
+
+      // ── SYNC: envia metadados ao D1 (sem attachments) e anexos ao R2 ──
+      try {
+        if (window.VSC_DB && typeof window.VSC_DB.upsertWithOutbox === "function") {
+          // Payload para D1: sem dataUrl dos attachments (muito grande)
+          const payloadD1 = Object.assign({}, payload, {
+            attachments: (payload.attachments || []).map(a => ({
+              id: a.id,
+              name: a.name || a.filename || "",
+              mime: a.mime || a.mime_type || "",
+              size: a.size || 0,
+              descricao: a.descricao || "",
+              created_at: a.created_at || "",
+              synced_to_r2: true
+              // dataUrl removido intencionalmente
+            })),
+            __origin: "UI_EDIT"
+          });
+          await window.VSC_DB.upsertWithOutbox(
+            "atendimentos_master",
+            payloadD1,
+            "atendimentos",
+            String(payload.id),
+            payloadD1
+          );
+        }
+
+        // Envia attachments com dataUrl diretamente para R2
+        const BASE_R2 = (location.hostname === "127.0.0.1" || location.hostname === "localhost")
+          ? "https://app.vetsystemcontrol.com.br" : "";
+        const tenant = localStorage.getItem("vsc_tenant") || "tenant-default";
+        for (const att of (payload.attachments || [])) {
+          if (!att || !att.id || !att.dataUrl) continue;
+          fetch(`${BASE_R2}/api/attachments?action=upload`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-VSC-Tenant": tenant },
+            body: JSON.stringify({
+              atendimento_id: payload.id,
+              attachment_id: att.id,
+              filename: att.name || att.id,
+              mime_type: att.mime || "application/octet-stream",
+              data_base64: att.dataUrl,
+              descricao: att.descricao || "",
+              created_at: att.created_at || isoNow()
+            })
+          }).then(r => {
+            if (!r.ok) console.warn("[ATD] R2 upload falhou:", att.name, r.status);
+            else console.log("[ATD] R2 upload ok:", att.name);
+          }).catch(e => console.warn("[ATD] R2 upload erro:", att.name, e));
+        }
+      } catch (_syncErr) {
+        // sync nunca bloqueia o save local
+        console.warn("[ATENDIMENTOS] sync error (não crítico):", _syncErr);
+      }
       if(hasStore(db, "animal_vaccines") && Array.isArray(ATD.vaccine_events)){
         for(const ev of ATD.vaccine_events){
           try{ await idbPut(db, "animal_vaccines", ev); }catch(_e){}
         }
       }
+
+      // SGQT 8.7 - Persistência de Dados Vitais (Atendimento -> Animal)
+      // Garante que o peso e sinais vitais sejam gravados no histórico do animal (animal_vitals_history).
+      if (hasStore(db, "animal_vitals_history") && ATD.vitals_by_animal) {
+        for (const animalId in ATD.vitals_by_animal) {
+          const v = ATD.vitals_by_animal[animalId];
+          if (v && (v.peso || v.temp || v.fc || v.fr)) {
+            try {
+              const vitalRecord = {
+                id: uuidv4(),
+                animal_id: String(animalId),
+                atendimento_id: String(ATD.atendimento_id),
+                data: ATD.data_atendimento || todayYMD(),
+                peso: Number(v.peso) || null,
+                temp: Number(v.temp) || null,
+                fc: Number(v.fc) || null,
+                fr: Number(v.fr) || null,
+                created_at: isoNow()
+              };
+              await idbPut(db, "animal_vitals_history", vitalRecord);
+            } catch (_e) { console.warn("[ATD] Falha ao salvar vitais:", _e); }
+          }
+        }
+      }
+
       if (showMsg !== false) {
         const st = ATD.status;
         let msg = "";
@@ -3843,9 +4000,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     ATD.financeiro_vencimento = ATD.data_atendimento || todayYMD();
     ATD.financeiro_parcelas = 1;
     ATD.cr_id = null;
-    ATD.attachments = [];
     ATD.vaccine_events = [];
-    _catalogCache = {};  // força releitura de preços ao abrir novo atendimento
 
     // Responsável (default): médico logado
     try{
@@ -4116,14 +4271,11 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     });
 
 
-    // Status dropdown — redireciona para mudarStatus() para garantir guardrails de estoque/financeiro
-    $("status")?.addEventListener("change", async (ev) => {
-      const novoStatus = String(ev.target.value || "orcamento");
-      if (novoStatus === ATD.status) return;
-      // Reverter visualmente enquanto mudarStatus() decide
-      ev.target.value = ATD.status;
-      await salvar(db, false);
-      await mudarStatus(db, novoStatus);
+    // Status dropdown manual (só informativo — não dispara movimentação automática)
+    $("status")?.addEventListener("change", () => {
+      const v = String($("status")?.value || "orcamento");
+      ATD.status = v;
+      updateStatusBadges(v);
     });
   }
 

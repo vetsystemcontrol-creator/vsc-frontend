@@ -206,12 +206,25 @@
       await loadScript(src);
     }
 
-    // Gate: garantir core pronto antes de liberar UI
-    if(!(window.VSC_DB && typeof window.VSC_DB.openDB === "function")){
-      throw new Error("VSC_DB não inicializou corretamente (openDB ausente).");
+    // SGQT 8.4 - Hardening de Inicialização (Enterprise)
+    // Implementa polling/retry para garantir que os módulos foram expostos no window
+    // Útil em conexões instáveis onde o script baixa mas o parser demora.
+    async function waitForModules(timeoutMs = 5000) {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        const dbOk = (window.VSC_DB && typeof window.VSC_DB.openDB === "function");
+        const authOk = (window.VSC_AUTH && typeof window.VSC_AUTH.bootstrap === "function");
+        if (dbOk && authOk) return true;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      return false;
     }
-    if(!(window.VSC_AUTH && typeof window.VSC_AUTH.bootstrap === "function")){
-      throw new Error("VSC_AUTH não inicializou corretamente (bootstrap ausente).");
+
+    const ready = await waitForModules();
+    if (!ready) {
+      const dbStatus = (window.VSC_DB ? "CARREGADO" : "AUSENTE");
+      const authStatus = (window.VSC_AUTH ? "CARREGADO" : "AUSENTE");
+      throw new Error(`Falha na prontidão dos módulos (DB: ${dbStatus}, AUTH: ${authStatus}).`);
     }
 
     removeOverlay();
