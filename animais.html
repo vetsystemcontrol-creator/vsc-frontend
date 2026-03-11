@@ -253,12 +253,7 @@
     .filtersMeta{ display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:10px; flex-wrap:wrap; }
     .filtersCount{ font-size:12px; color:#334155; font-weight:800; }
     .listEmpty{ padding:22px 18px; color:#64748b; font-size:14px; }
-    .tableShell{ margin-top:14px; overflow-x:auto; border:1px solid #edf2f7; border-radius:12px; }
-    .col-actions{ position:sticky; right:0; background:#fff; box-shadow:-2px 0 6px rgba(0,0,0,.06); z-index:1; }
-    thead .col-actions{ background:#f8fafc; }
-    @media (max-width:1400px){ .col-hide-xl{ display:none; } }
-    @media (max-width:1100px){ .col-hide-lg{ display:none; } }
-    @media (max-width:780px){ .col-hide-md{ display:none; } }
+    .tableShell{ margin-top:14px; overflow:auto; border:1px solid #edf2f7; border-radius:12px; }
     @media (max-width: 980px){ .filtersGrid{ grid-template-columns:1fr 1fr; } }
     @media (max-width: 560px){ .filtersGrid{ grid-template-columns:1fr; } .modal{ width:min(100vw,100vw); max-height:100vh; border-radius:0; } .bd{ padding:0; } .mBody{ max-height:calc(100vh - 120px); } }
 
@@ -530,17 +525,17 @@
           <table>
             <thead>
               <tr>
-                <th style="min-width:180px">ANIMAL</th>
-                <th style="min-width:140px">TUTOR</th>
-                <th style="min-width:80px" class="col-hide-md">IDADE</th>
-                <th style="min-width:80px" class="col-hide-md">PESO</th>
-                <th style="min-width:110px" class="col-hide-lg">ÚLT. ATEND.</th>
-                <th style="min-width:110px" class="col-hide-lg">STATUS CLÍNICO</th>
-                <th style="min-width:100px" class="col-hide-lg">RAÇA</th>
-                <th style="min-width:100px" class="col-hide-xl">PELAGEM</th>
-                <th style="min-width:110px" class="col-hide-xl">MICROCHIP</th>
-                <th style="min-width:110px" class="col-hide-xl">PASSAPORTE</th>
-                <th style="min-width:190px" class="col-actions">AÇÕES</th>
+                <th style="min-width:210px">ANIMAL</th>
+                <th style="min-width:180px">TUTOR</th>
+                <th style="min-width:110px">IDADE</th>
+                <th style="min-width:120px">PESO</th>
+                <th style="min-width:140px">ÚLT. ATEND.</th>
+                <th style="min-width:140px">STATUS CLÍNICO</th>
+                <th style="min-width:140px">RAÇA</th>
+                <th style="min-width:140px">PELAGEM</th>
+                <th style="min-width:140px">MICROCHIP</th>
+                <th style="min-width:140px">PASSAPORTE</th>
+                <th style="min-width:260px">AÇÕES</th>
               </tr>
             </thead>
             <tbody id="tb"></tbody>
