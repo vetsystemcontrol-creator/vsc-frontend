@@ -857,9 +857,11 @@ function openPrintWindowClient(payload, docType, opts){
 
   const R = payload || {};
   const empresa = R.empresa || {};
-    const logoA = empresa.__logoA || empresa.logoA || empresa.logo_a || empresa.logo_a_dataurl || empresa.logo_a_dataUrl || empresa.logo_a_dataURL || empresa.logo_data_url || empresa.logoDataUrl || empresa.logoCliente || empresa.logo_cliente || "";
-  const pixKey = empresa.pix_chave || empresa.chave_pix || empresa.pixKey || empresa.pix || empresa.pix_chave_copia_cola || "";
-  const logoB = empresa.__logoB || empresa.logoB || empresa.logo_b || empresa.logo_b_dataurl || empresa.logo_b_dataUrl || empresa.logo_b_dataURL || "";
+    // Logo oficial do sistema (enviada pelo usuário)
+    const SYSTEM_LOGO_URL = "https://raw.githubusercontent.com/vetsystemcontrol-creator/vsc-frontend/main/vsc-logo-horizontal.png";
+    const logoA = empresa.__logoA || empresa.logoA || empresa.logo_a || empresa.logo_a_dataurl || empresa.logo_a_dataUrl || empresa.logo_a_dataURL || empresa.logo_data_url || empresa.logoDataUrl || empresa.logoCliente || empresa.logo_cliente || SYSTEM_LOGO_URL;
+    const pixKey = empresa.pix_chave || empresa.chave_pix || empresa.pixKey || empresa.pix || empresa.pix_chave_copia_cola || "";
+    const logoB = empresa.__logoB || empresa.logoB || empresa.logo_b || empresa.logo_b_dataurl || empresa.logo_b_dataUrl || empresa.logo_b_dataURL || "";
   const atd = R.atendimento || {};
   const cli = R.cliente || {};
   const animais = Array.isArray(R.animais) ? R.animais : [];
@@ -909,21 +911,20 @@ function openPrintWindowClient(payload, docType, opts){
   ].filter(Boolean).join(" — ");
 
 	  const css = `
-:root{--text:#0f172a;--muted:#64748b;--bd:#e2e8f0;--primary:#16a34a;}
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--text);margin:0;background:#fff;line-height:1.5;}
-.page{max-width:920px;margin:0 auto;padding:24px 26px 36px;}
+:root{--text:#0f172a;--muted:#64748b;--bd:#cbd5e1;--primary:#16a34a;--secondary:#0369a1;}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--text);margin:0;background:#fff;line-height:1.4;}
+.page{max-width:920px;margin:0 auto;padding:20px;}
 .sheet{position:relative;}
-.sheet + .sheet{margin-top:18px;}
-.hdr{display:flex;justify-content:space-between;gap:16px;align-items:center;border-bottom:2px solid var(--primary);padding-bottom:14px;margin-bottom:20px;}
-.hdr-logos{display:flex;align-items:center;gap:12px;}
-.logoA{width:80px;height:80px;object-fit:contain;margin:0;}
-.hdr-empresa{flex:1;text-align:center;}
-.emp-nome{font-size:18px;font-weight:900;color:var(--primary);text-transform:uppercase;}
-.emp-sub{font-size:12px;font-weight:700;color:var(--muted);}
-.emp-dados{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.3;}
-.hdr-doc{text-align:right;min-width:180px;}
-.doc-tipo{font-size:14px;font-weight:900;color:var(--text);text-transform:uppercase;margin-bottom:4px;}
-.doc-num, .doc-status, .doc-data{font-size:11px;color:var(--muted);}
+.sheet + .sheet{margin-top:24px;}
+.hdr{display:flex;justify-content:space-between;gap:20px;align-items:center;border-bottom:3px solid var(--primary);padding-bottom:15px;margin-bottom:20px;}
+.hdr-logos{width:220px;}
+.logoA{width:220px;height:auto;max-height:85px;object-fit:contain;display:block;}
+.hdr-empresa{flex:1;text-align:center;padding:0 10px;}
+.emp-nome{font-size:16px;font-weight:900;color:var(--secondary);text-transform:uppercase;margin-bottom:2px;}
+.emp-dados{font-size:10px;color:var(--muted);line-height:1.4;}
+.hdr-doc{text-align:right;width:220px;}
+.doc-tipo{font-size:15px;font-weight:900;color:var(--primary);text-transform:uppercase;margin-bottom:4px;}
+.doc-num, .doc-status, .doc-data{font-size:11px;color:var(--text);font-weight:700;}
 
 .section-title{margin-top:24px;margin-bottom:8px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.1em;color:var(--primary);border-left:4px solid var(--primary);padding-left:8px;}
 .box{border:1px solid var(--bd);border-radius:8px;padding:12px;margin:12px 0;background:#f8fafc;}
@@ -1195,44 +1196,34 @@ td{padding:10px 12px;font-size:12px;border-bottom:1px solid var(--bd);color:#334
         Padrão hospitalar: documentos separados. O diálogo de impressão abrirá automaticamente.
       </div>
 
-      <div class="sheet sheet--main">
-        ${(docType === "clinico" && logoB) ? `<div class="wmLocal"><img src="${logoB}" alt="Marca d'água"/></div>` : ``}
-        <div class="sheetContent">
-          <div class="hdr">
-            <!-- Logo empresa (destaque, lado esquerdo) -->
-            <div class="hdr-logos">
-              ${logoA ? `<img class="logoA" src="${logoA}" alt="Logo"/>` : `<div style="width:56px;height:56px;border-radius:4px;background:linear-gradient(135deg,#16a34a,#0369a1);display:flex;align-items:center;justify-content:center;">${SYSTEM_LOGO_SVG}</div>`}
-            </div>
-            <!-- Dados da empresa (centro) -->
-            <div class="hdr-empresa">
-              <div class="emp-nome">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa")}</div>
-              ${empresa.razao_social && (empresa.razao_social !== empresa.nome) ? `<div class="emp-sub">${esc(empresa.razao_social)}</div>` : ""}
-              <div class="emp-dados">${[
-                empresa.cnpj ? "CNPJ: "+empresa.cnpj : "",
-                empresa.crmv ? "CRMV: "+empresa.crmv : "",
-                empresa.endereco||"",
-                [empresa.cidade, empresa.uf].filter(Boolean).join("/"),
-                [empresa.telefone, empresa.email].filter(Boolean).join("  •  ")
-              ].filter(Boolean).join("<br/>")}</div>
-            </div>
-            <!-- Identificação do documento (direita) -->
-            <div class="hdr-doc">
-              <div class="doc-tipo">${esc(DOC_LABEL)}</div>
-              <div class="doc-num"><strong>Nº:</strong> ${esc(atd.numero||"—")}</div>
-              <div class="doc-status"><strong>Status:</strong> ${esc(atd.status||"—")}</div>
-              <div class="doc-data"><strong>Data:</strong> ${esc(fmtDate(R.gerado_em))}</div>
-            </div>
-            <!-- Crédito sistema (rodapé do cabeçalho) -->
-            <div class="sys-credit">
-              ${SYSTEM_LOGO_SVG}
-              <span class="sysMain">Vet System Control</span>
-              <span class="sysSub">| Equine — Sistema de Gestão Veterinária</span>
-            </div>
-          </div>
-
-          ${(docType === "financeiro") ? bodyFinanceiro : (docType === "prescricao") ? bodyPrescricao : (docType === "clinico_financeiro") ? bodyClinicoFinanceiro : bodyClinicoMain}
-        </div>
-      </div>
+	      <div class="sheet sheet--main">
+	        ${(docType === "clinico" && logoB) ? `<div class="wmLocal"><img src="${logoB}" alt="Marca d'água"/></div>` : ``}
+	        <div class="sheetContent">
+	          <div class="hdr">
+	            <div class="hdr-logos">
+	              <img class="logoA" src="${logoA}" alt="Logo"/>
+	            </div>
+	            <div class="hdr-empresa">
+	              <div class="emp-nome">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa")}</div>
+	              <div class="emp-dados">${[
+	                empresa.cnpj ? "CNPJ: "+empresa.cnpj : "",
+	                empresa.crmv ? "CRMV: "+empresa.crmv : "",
+	                empresa.endereco||"",
+	                [empresa.cidade, empresa.uf].filter(Boolean).join("/"),
+	                [empresa.telefone, empresa.email].filter(Boolean).join("  •  ")
+	              ].filter(Boolean).join("<br/>")}</div>
+	            </div>
+	            <div class="hdr-doc">
+	              <div class="doc-tipo">${esc(DOC_LABEL)}</div>
+	              <div class="doc-num">Nº ${esc(atd.atendimento_id_label || atd.atendimento_id || "—")}</div>
+	              <div class="doc-status">Status: ${esc(String(atd.status||"").toUpperCase())}</div>
+	              <div class="doc-data">Emissão: ${esc(fmtDate(atd.created_at))}</div>
+	            </div>
+	          </div>
+	
+	          ${(docType === "financeiro") ? bodyFinanceiro : (docType === "prescricao") ? bodyPrescricao : (docType === "clinico_financeiro") ? bodyClinicoFinanceiro : bodyClinicoMain}
+	        </div>
+	      </div>
 
       ${(((docType === "clinico") || (docType === "clinico_financeiro")) && atts.length) ? `
         <div class="sheet sheet--attachments">

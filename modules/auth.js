@@ -161,75 +161,50 @@ return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c)=>{
     return diff === 0;
   }
 
-  // ============================================================
-// HARDENING — Ordem de carregamento determinística (anti-race)
-// Problema observado: auth.js pode iniciar bootstrap antes de vsc_db.js
-// expor window.VSC_DB.openDB (corrida em alguns loads/caches).
-// Solução enterprise: aguardar dependência com timeout (fail-closed com log).
-// ============================================================
-async function waitForVSC_DBOpenDB(timeoutMs){
-  const timeout = Number(timeoutMs||8000);
-  const step = 50;
-  const start = Date.now();
-  while(true){
-    try{
-      if(window.VSC_DB && typeof window.VSC_DB.openDB === "function") return true;
-    }catch(_){}
-    if(Date.now() - start >= timeout) return false;
-    await new Promise(r=>setTimeout(r, step));
-  }
-}
-
-// ============================================================
-// ESOS 5.2 — DB READY (event/promise) — anti-timeout
-// Preferir aguardar o sinal de pronto do vsc_db.js:
-// window.__VSC_DB_READY (Promise) ou evento "VSC_DB_READY".
-// ============================================================
-async function waitForDBReady(timeoutMs){
-  const timeout = Number(timeoutMs||30000);
-  const start = Date.now();
-
-  // Se houver Promise global, aguarda (com timeout)
-  try{
-    if(window.__VSC_DB_READY && typeof window.__VSC_DB_READY.then === "function"){
-      const race = await Promise.race([
-        window.__VSC_DB_READY,
-        new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")), timeout))
-      ]);
-      if(race === true || race === undefined) return true;
+  // [Mover para fora da IIFE para visibilidade global no bootstrap]
+  window.waitForVSC_DBOpenDB = async function(timeoutMs){
+    const timeout = Number(timeoutMs||8000);
+    const step = 50;
+    const start = Date.now();
+    while(true){
+      try{
+        if(window.VSC_DB && typeof window.VSC_DB.openDB === "function") return true;
+      }catch(_){}
+      if(Date.now() - start >= timeout) return false;
+      await new Promise(r=>setTimeout(r, step));
     }
-  }catch(_){}
+  };
 
-  // Fallback: polling + evento
-  let done = false;
-  function mark(){ done = true; }
-  try{ window.addEventListener("VSC_DB_READY", mark, { once:true }); }catch(_){}
-
-  while(true){
+  window.waitForDBReady = async function(timeoutMs){
+    const timeout = Number(timeoutMs||30000);
+    const start = Date.now();
     try{
-      if(window.VSC_DB && typeof window.VSC_DB.openDB === "function"){
-        // openDB exposta -> considera OK (mas ainda pode estar abrindo internamente)
-        // o evento/promise cobre o "pronto".
-        if(window.__VSC_DB_READY_FIRED === true) return true;
+      if(window.__VSC_DB_READY && typeof window.__VSC_DB_READY.then === "function"){
+        const race = await Promise.race([
+          window.__VSC_DB_READY,
+          new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")), timeout))
+        ]);
+        if(race === true || race === undefined) return true;
       }
     }catch(_){}
-    if(done) return true;
-    if(Date.now() - start >= timeout) return false;
-    await new Promise(r=>setTimeout(r, 50));
-  }
-}
+    let done = false;
+    function mark(){ done = true; }
+    try{ window.addEventListener("VSC_DB_READY", mark, { once:true }); }catch(_){}
+    while(true){
+      try{
+        if(window.VSC_DB && typeof window.VSC_DB.openDB === "function"){
+          if(window.__VSC_DB_READY_FIRED === true) return true;
+        }
+      }catch(_){}
+      if(done) return true;
+      if(Date.now() - start >= timeout) return false;
+      await new Promise(r=>setTimeout(r, 50));
+    }
+  };
 
-
-// ============================================================
-// COMPAT ALIASES (anti-regressão)
-// JavaScript é case-sensitive; qualquer divergência de caixa no
-// nome da função quebra o bootstrap (ReferenceError).
-// Mantemos aliases para tolerar variações antigas/typos sem
-// reintroduzir corrida/timeout.
-// ============================================================
-function waitforVSC_DBopenDB(timeoutMs){ return waitForVSC_DBOpenDB(timeoutMs); }
-function waitforVSC_DBOpenDB(timeoutMs){ return waitForVSC_DBOpenDB(timeoutMs); }
-function waitForVSC_DBopenDB(timeoutMs){ return waitForVSC_DBOpenDB(timeoutMs); }
+  window.waitforVSC_DBopenDB = window.waitForVSC_DBOpenDB;
+  window.waitforVSC_DBOpenDB = window.waitForVSC_DBOpenDB;
+  window.waitForVSC_DBopenDB = window.waitForVSC_DBOpenDB;
 
 async function openDB(){
   const ok = await waitForDBReady(30000);
@@ -1617,51 +1592,46 @@ async function adminSetUserLockUntil(userId, lockUntilISO, reason){
   // Bootstrap automático (fail-closed: só prepara RBAC/MASTER, não loga ninguém)
   // Não derruba o app se falhar; registra no console.
   (async () => {
-  // Bootstrap automático determinístico:
-  // - Não depende só de "openDB existir"
-  // - Aguarda DB pronto (event/promise) e, como fallback, tenta abrir o DB
-  // - Evita abortar por corrida de carregamento/cache
-  try {
-    // 1) Preferência: aguardar sinal de DB pronto (quando existir)
-    let ok = await waitForDBReady(120000);
+    // Bootstrap automático determinístico:
+    // - Não depende só de "openDB existir"
+    // - Aguarda DB pronto (event/promise) e, como fallback, tenta abrir o DB
+    // - Evita abortar por corrida de carregamento/cache
+    try {
+      // 1) Preferência: aguardar sinal de DB pronto (quando existir)
+      let ok = await waitForDBReady(120000);
 
-    // 2) Fallback: se o sinal não existir/for falho, tenta abrir o DB de fato (retry curto)
-    let lastErr = null;
-    if(!ok){
-      const start = Date.now();
-      while(Date.now() - start < 120000){
-        try{
-          if(window.VSC_DB && typeof window.VSC_DB.openDB === "function"){
-            const db = await window.VSC_DB.openDB();
-            try{ db && db.close && db.close(); }catch(_){}
-            ok = true;
-            break;
+      // 2) Fallback: se o sinal não existir/for falho, tenta abrir o DB de fato (retry curto)
+      let lastErr = null;
+      if(!ok){
+        const start = Date.now();
+        while(Date.now() - start < 120000){
+          try{
+            if(window.VSC_DB && typeof window.VSC_DB.openDB === "function"){
+              const db = await window.VSC_DB.openDB();
+              try{ db && db.close && db.close(); }catch(_){}
+              ok = true;
+              break;
+            }
+          }catch(e1){
+            lastErr = e1;
+            const msg = String(e1 && (e1.message||e1));
+            if(msg.toLowerCase().includes("bloqueado") || msg.toLowerCase().includes("blocked")){
+              console.error("[VSC_AUTH] IndexedDB bloqueado. Feche outras abas/janelas do ERP e recarregue (F5).", e1);
+              break;
+            }
           }
-        }catch(e1){
-          lastErr = e1;
-          const msg = String(e1 && (e1.message||e1));
-          if(msg.toLowerCase().includes("bloqueado") || msg.toLowerCase().includes("blocked")){
-            console.error("[VSC_AUTH] IndexedDB bloqueado. Feche outras abas/janelas do ERP e recarregue (F5).", e1);
-            break;
-          }
+          await new Promise(r=>setTimeout(r, 250));
         }
-        await new Promise(r=>setTimeout(r, 250));
       }
-    }
 
-    if(!ok){
-      console.error("[VSC_AUTH] bootstrap abortado: DB indisponível (timeout).", lastErr || "");
-      return;
-    }
+      if(!ok){
+        console.error("[VSC_AUTH] bootstrap abortado: DB indisponível (timeout).", lastErr || "");
+        return;
+      }
 
-    if(!ok){
-      console.error("[VSC_AUTH] bootstrap abortado: DB indisponível após timeout (60s).");
-      return;
+      await bootstrap();
+    } catch (e) {
+      console.error("[VSC_AUTH] bootstrap error:", e);
+      try { await audit("BOOTSTRAP_ERROR", null, String(e && (e.message||e))); } catch(_){}
     }
-
-    await bootstrap();
-  } catch (e) {
-    console.error("[VSC_AUTH] bootstrap error:", e);
-    try { await audit("BOOTSTRAP_ERROR", null, String(e && (e.message||e))); } catch(_){}
-  }
-})();
+  })();

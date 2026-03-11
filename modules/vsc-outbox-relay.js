@@ -491,5 +491,47 @@
 
     stop() {
       _stopRequested = true;
-      _enabled = 
-(Content truncated due to size limit. Use line ranges to read remaining content)
+      _enabled = false;
+      return true;
+    },
+
+    syncNow() {
+      // Forced drain until idle once (useful for manual button)
+      _enabled = true;
+      return _drainLoop({ force: true });
+    },
+
+    // Compatibilidade retroativa: módulos legados ainda chamam relay.kick()
+    kick() {
+      return this.syncNow();
+    },
+
+    status() {
+      const lastError = _lastError ? String(_lastError) : null;
+      return {
+        enabled: _enabled,
+        running: _running,
+        lastError,
+        last_error: lastError,
+        lastCycleAt: _lastCycleAt,
+        last_run: _lastCycleAt,
+        last_sent: Number(_stats.acked || _stats.sent || 0) || 0,
+        pending: Number(_stats.pending || 0) || 0,
+        sent: Number(_stats.sent || 0) || 0,
+        acked: Number(_stats.acked || 0) || 0,
+        last_batch: Number(_stats.lastBatchSize || 0) || 0,
+        last_batch_size: Number(_stats.lastBatchSize || 0) || 0,
+        last_duration_ms: Number(_stats.lastDurationMs || 0) || 0,
+        local_static_mode: !!(_capabilities && _capabilities.local_static_mode),
+        remote_sync_allowed: !!(_capabilities && _capabilities.remote_sync_allowed),
+        capabilities: _capabilities ? { ..._capabilities } : null,
+        stats: { ..._stats },
+      };
+    },
+  };
+
+  window.VSC_RELAY = VSC_RELAY;
+
+  // Auto-start desabilitado: sincronização somente por clique manual.
+
+})();
