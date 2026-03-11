@@ -908,92 +908,50 @@ function openPrintWindowClient(payload, docType, opts){
     (vet.crmv_uf && vet.crmv_num) ? ("CRMV-"+vet.crmv_uf+" Nº "+vet.crmv_num) : ""
   ].filter(Boolean).join(" — ");
 
-  const css = `
-:root{--text:#0f172a;--muted:#64748b;--bd:#e2e8f0;}
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--text);margin:0;background:#fff;}
+	  const css = `
+:root{--text:#0f172a;--muted:#64748b;--bd:#e2e8f0;--primary:#16a34a;}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--text);margin:0;background:#fff;line-height:1.5;}
 .page{max-width:920px;margin:0 auto;padding:24px 26px 36px;}
 .sheet{position:relative;}
 .sheet + .sheet{margin-top:18px;}
-.hdr{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;border-bottom:2px solid var(--bd);padding-bottom:14px;margin-bottom:16px;}
-.hdr-left{display:flex;gap:14px;align-items:flex-start;}
+.hdr{display:flex;justify-content:space-between;gap:16px;align-items:center;border-bottom:2px solid var(--primary);padding-bottom:14px;margin-bottom:20px;}
+.hdr-logos{display:flex;align-items:center;gap:12px;}
+.logoA{width:80px;height:80px;object-fit:contain;margin:0;}
+.hdr-empresa{flex:1;text-align:center;}
+.emp-nome{font-size:18px;font-weight:900;color:var(--primary);text-transform:uppercase;}
+.emp-sub{font-size:12px;font-weight:700;color:var(--muted);}
+.emp-dados{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.3;}
+.hdr-doc{text-align:right;min-width:180px;}
+.doc-tipo{font-size:14px;font-weight:900;color:var(--text);text-transform:uppercase;margin-bottom:4px;}
+.doc-num, .doc-status, .doc-data{font-size:11px;color:var(--muted);}
 
-.sysBrand{display:flex;gap:8px;align-items:center;}
-.sysIcon svg{height:34px;width:auto;display:block;}
-.sysName{line-height:1.05}
-.sysMain{font-size:13px;font-weight:900;letter-spacing:-.02em;}
-.sysSub{font-size:11px;color:var(--muted);font-weight:800;}
-.logoA{width:54px;height:54px;object-fit:contain;border:none;border-radius:0;margin:0;}
-.hdr h1{font-size:16px;margin:0;font-weight:900;letter-spacing:-.02em;}
-.small{font-size:11px;color:var(--muted);line-height:1.4;}
-.box{border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin:10px 0;}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-.lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700;}
-.val{font-size:13px;font-weight:800;margin-top:2px;}
-.pre{white-space:pre-wrap;font-weight:600;}
-table{width:100%;border-collapse:collapse;margin-top:8px;}
-th,td{border-bottom:1px solid var(--bd);padding:8px 10px;font-size:12.5px;vertical-align:top;}
-th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:left;}
+.section-title{margin-top:24px;margin-bottom:8px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.1em;color:var(--primary);border-left:4px solid var(--primary);padding-left:8px;}
+.box{border:1px solid var(--bd);border-radius:8px;padding:12px;margin:12px 0;background:#f8fafc;}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700;}
+.val{font-size:13px;font-weight:700;margin-top:2px;color:#1e293b;}
+.pre{white-space:pre-wrap;font-size:12px;color:#334155;}
+
+table{width:100%;border-collapse:collapse;margin:12px 0;}
+th{background:#f1f5f9;color:var(--muted);font-size:10px;text-transform:uppercase;padding:8px 12px;text-align:left;border-bottom:2px solid var(--bd);}
+td{padding:10px 12px;font-size:12px;border-bottom:1px solid var(--bd);color:#334155;}
 .right{text-align:right;}
-.tot{display:flex;justify-content:flex-end;margin-top:10px;}
-.tot .box{min-width:320px;}
-.section-title{margin-top:18px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.08em;color:#0b1220;}
-img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid var(--bd);border-radius:10px;}
-.pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
-.muted{color:var(--muted);}
-.att{margin:14px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:10px;break-inside:avoid;}
-.att-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:#334155;margin-bottom:6px;}
-.att-desc{font-size:12px;color:var(--muted);margin-top:6px;font-style:italic;}
-.att-nodata{font-size:12px;color:#b45309;background:#fef3c7;padding:8px 10px;border-radius:6px;margin-top:6px;}
+.tot{display:flex;justify-content:flex-end;margin-top:16px;}
+.tot .box{min-width:300px;background:#f1f5f9;border:2px solid var(--bd);}
 
-/* Marca d'água (somente relatório) */
-.wmLocal{
-  position:absolute; inset:0;
-  display:flex; align-items:center; justify-content:center;
-  pointer-events:none; user-select:none;
-  z-index:0;
-}
-.wmLocal img{
-  width:62%;
-  max-width:560px;
-  border:none !important;
-  border-radius:0 !important;
-  margin:0 !important;
-  opacity:.08;
-  filter:grayscale(1);
-  object-fit:contain;
-}
-.sheetContent{position:relative; z-index:1;}
-
-.footer{display:none;}
+.att{margin:20px 0;break-inside:avoid;page-break-inside:avoid;}
+.att-title{font-size:12px;font-weight:900;color:var(--text);margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--bd);}
+.att-media{background:#000;border-radius:8px;overflow:hidden;box-shadow:0 4px 6px -1px rgb(0 0 0 / 0.1);}
+.att-media img, .att-media canvas{display:block;width:100%;height:auto;max-height:90vh;object-fit:contain;}
+.att-desc{font-size:12px;color:var(--muted);margin-top:8px;padding:8px;background:#f8fafc;border-left:3px solid var(--bd);font-style:italic;}
 
 @media print{
-  @page{ size:A4; margin:12mm 12mm 30mm 12mm; } /* reserva espaço p/ rodapé fixo */
+  @page{ size:A4; margin:15mm; }
   .no-print{display:none !important;}
-  body{margin:0;}
+  body{background:none;}
   .page{max-width:none;padding:0;}
-  .box{break-inside:avoid;}
-  .attachments{break-inside:auto;}
-  .att{break-inside:avoid;}
-  .att-media{break-inside:avoid;}
-  .att-media img{max-height:250mm;}
-  .pdf-pages img{break-inside:avoid; break-after:page;}
-  .pdf-pages img:last-child{break-after:auto;}
-
-  table{break-inside:auto;}
-  tr{break-inside:avoid;}
-  img{break-inside:avoid;}
-  .sheet{padding:0;}
-  .sheet + .sheet{break-before:page; margin-top:0;}
-  .footer{
-    display:block;
-    position:fixed; left:0; right:0; bottom:0;
-    border-top:1px solid var(--bd);
-    padding:3mm 12mm 3mm;
-    font-size:9px; color:var(--muted);
-    background:#fff;
-  }
-  .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:center;}
-  /* counter(pages) não funciona no Chrome para about:blank - JS preenche .pnum */
+  .att-media{box-shadow:none;border:1px solid #000;}
+  .sheet--attachments{break-before:page;}
 }
   `;
 
@@ -1058,14 +1016,14 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           </section>
         `;
       }
-      // Imagem — usa canvas para redimensionar antes de imprimir (evita travamento com imagens grandes)
+      // Imagem — Premium Scanner View
       return `
         <section class="att">
-          <div class="att-title">${name} • Imagem ${sizeKb ? "• "+sizeKb : ""}</div>
+          <div class="att-title">${name} • Registro Fotográfico ${sizeKb ? "• "+sizeKb : ""}</div>
           <div class="att-media">
-            <canvas class="att-img-canvas" data-src="${a.dataUrl}" style="max-width:100%;display:block;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;"></canvas>
+            <img src="${a.dataUrl}" alt="${name}" style="width:100%;" />
           </div>
-          ${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ""}
+          ${a.descricao ? `<div class="att-desc"><b>Descrição Clínica:</b> ${esc(a.descricao)}</div>` : ""}
         </section>
       `;
     }).join("")
@@ -1321,15 +1279,22 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           var frag = document.createDocumentFragment();
           for(var p=1; p<=pdf.numPages; p++){
             var page = await pdf.getPage(p);
-            var viewport = page.getViewport({ scale: 1.6 });
+            // Escala 2.0 para qualidade de scanner (alta definição)
+            var viewport = page.getViewport({ scale: 2.0 });
             var canvas = document.createElement('canvas');
             canvas.width = Math.floor(viewport.width);
             canvas.height = Math.floor(viewport.height);
             var ctx = canvas.getContext('2d', { alpha: false });
+            // Preencher fundo branco para evitar transparência no PDF
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
             await page.render({ canvasContext: ctx, viewport: viewport }).promise;
             var img = document.createElement('img');
             img.alt = 'PDF página ' + p;
-            img.src = canvas.toDataURL('image/png');
+            img.src = canvas.toDataURL('image/jpeg', 0.9); // JPEG para melhor compressão e compatibilidade de impressão
+            img.style.width = '100%';
+            img.style.display = 'block';
+            img.style.marginBottom = '10px';
             frag.appendChild(img);
           }
           container.innerHTML = '';
@@ -4000,31 +3965,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           try{ await idbPut(db, "animal_vaccines", ev); }catch(_e){}
         }
       }
-
-      // SGQT 8.7 - Persistência de Dados Vitais (Atendimento -> Animal)
-      // Garante que o peso e sinais vitais sejam gravados no histórico do animal (animal_vitals_history).
-      if (hasStore(db, "animal_vitals_history") && ATD.vitals_by_animal) {
-        for (const animalId in ATD.vitals_by_animal) {
-          const v = ATD.vitals_by_animal[animalId];
-          if (v && (v.peso || v.temp || v.fc || v.fr)) {
-            try {
-              const vitalRecord = {
-                id: uuidv4(),
-                animal_id: String(animalId),
-                atendimento_id: String(ATD.atendimento_id),
-                data: ATD.data_atendimento || todayYMD(),
-                peso: Number(v.peso) || null,
-                temp: Number(v.temp) || null,
-                fc: Number(v.fc) || null,
-                fr: Number(v.fr) || null,
-                created_at: isoNow()
-              };
-              await idbPut(db, "animal_vitals_history", vitalRecord);
-            } catch (_e) { console.warn("[ATD] Falha ao salvar vitais:", _e); }
-          }
-        }
-      }
-
       if (showMsg !== false) {
         const st = ATD.status;
         let msg = "";
@@ -4151,23 +4091,12 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   
   // ─── FLOORPLAN ENTERPRISE: LISTA → DETALHE (como clientes) ───────────────
   function setCmdActionsEnabled(enabled){
-    const user = ATD._currentUser || {};
-    const isPrivileged = user.role === "ADMIN" || user.role === "MASTER";
-    const isFinalized = ATD.status === "finalizado";
-
     ["btnSalvarTop","btnAprovarTop","btnFinalizarTop","btnSalvar","btnAprovar","btnFinalizar","btnCancelarAtd","btnAnexosTop","btnImprimirTop","btnAnexos","btnImprimir"].forEach(id=>{
       const b = $(id);
       if(!b) return;
-      
-      // Se estiver finalizado, apenas Admin/Master podem habilitar os botões de ação (Salvar/Finalizar/Cancelar)
-      let canEnable = enabled;
-      if (isFinalized && ["btnSalvarTop", "btnSalvar", "btnFinalizarTop", "btnFinalizar", "btnCancelarAtd"].includes(id)) {
-        canEnable = enabled && isPrivileged;
-      }
-
-      b.disabled = !canEnable;
-      b.style.opacity = canEnable ? "1" : "0.45";
-      b.style.pointerEvents = canEnable ? "auto" : "none";
+      b.disabled = !enabled;
+      b.style.opacity = enabled ? "1" : "0.45";
+      b.style.pointerEvents = enabled ? "auto" : "none";
     });
   }
 
@@ -4272,6 +4201,14 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         ev.preventDefault();
         await salvar(db, false);
         await mudarStatus(db, "finalizado");
+      });
+    });
+
+    // Reabrir (Enterprise RBAC)
+    ["btnReabrirTop", "btnReabrir"].forEach(id => {
+      $(id)?.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        await mudarStatus(db, "em_atendimento");
       });
     });
 
@@ -4440,10 +4377,24 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
 
   function setCmdActionsVisible(visible){
-    ["btnSalvarTop","btnAprovarTop","btnFinalizarTop","btnSalvar","btnAprovar","btnFinalizar","btnCancelarAtd","btnAnexosTop","btnImprimirTop","btnAnexos","btnImprimir"].forEach(id=>{
+    const user = ATD._currentUser || {};
+    const isPrivileged = user.role === "ADMIN" || user.role === "MASTER";
+    const isFinalized = ATD.status === "finalizado";
+
+    ["btnSalvarTop","btnAprovarTop","btnFinalizarTop","btnSalvar","btnAprovar","btnFinalizar","btnCancelarAtd","btnAnexosTop","btnImprimirTop","btnAnexos","btnImprimir","btnReabrirTop","btnReabrir"].forEach(id=>{
       const b = $(id);
       if(!b) return;
-      b.style.display = visible ? "" : "none";
+      
+      if (id === "btnReabrirTop" || id === "btnReabrir") {
+        // O botão REABRIR só aparece se estiver FINALIZADO e for ADMIN/MASTER
+        b.style.display = (visible && isFinalized && isPrivileged) ? "" : "none";
+      } else if (["btnSalvarTop", "btnSalvar", "btnFinalizarTop", "btnFinalizar", "btnAprovarTop", "btnAprovar", "btnCancelarAtd"].includes(id)) {
+        // Botões de ação normais SOMENTE aparecem se NÃO estiver finalizado OU se for ADMIN/MASTER
+        b.style.display = (visible && (!isFinalized || isPrivileged)) ? "" : "none";
+      } else {
+        // Outros botões (Imprimir, Anexos) aparecem sempre que visível
+        b.style.display = visible ? "" : "none";
+      }
     });
   }
 })();
