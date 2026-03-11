@@ -168,17 +168,7 @@
           break;
         }
       }
-      var result = await idbUpsert(db, "config_params", rec);
-      // Enfileirar para sync
-      if (result) {
-        const _vscDb = (() => {
-          if (window.VSC_DB && typeof window.VSC_DB.outboxEnqueue === 'function') return window.VSC_DB;
-          try { for (const f of document.querySelectorAll('iframe')) { const w = f.contentWindow; if (w && w.VSC_DB) return w.VSC_DB; } } catch(_) {}
-          return null;
-        })();
-        if (_vscDb) _vscDb.outboxEnqueue('config_params', 'upsert', rec.id, rec).catch(()=>{});
-      }
-      return result;
+      return await idbUpsert(db, "config_params", rec);
     }catch(_e){ return false; }
   }
 

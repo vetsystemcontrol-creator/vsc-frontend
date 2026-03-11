@@ -43,13 +43,6 @@
     return p === "/login" || p === "/login.html" || p.endsWith("/login/") || p.endsWith("/login.html");
   }
 
-  // [FIX C-02] Lista de páginas públicas (não requerem sessão)
-  const PUBLIC_PAGES = ["login", "offline", "404", "index"];
-  function isPublicPage() {
-    const p = path().toLowerCase();
-    return PUBLIC_PAGES.some(pp => p === "/" + pp || p === "/" + pp + ".html" || p.endsWith("/" + pp + "/") || p.endsWith("/" + pp + ".html") || p === "/");
-  }
-
   function isDashboardPage() {
     const p = path().toLowerCase();
     return p === "/dashboard" || p === "/dashboard.html" || p.endsWith("/dashboard/") || p.endsWith("/dashboard.html");
@@ -165,8 +158,15 @@
       return;
     }
 
-    // [FIX C-02] Páginas públicas (login, offline, 404, index raiz) — libera sem verificar sessão
-    if (isPublicPage()) {
+    const onLogin = isLoginPage();
+    const onDash  = isDashboardPage();
+
+    if (onLogin) {
+      reveal();
+      return;
+    }
+
+    if (!onLogin && !onDash) {
       reveal();
       return;
     }
@@ -193,8 +193,11 @@
       await ensureBootstrap();
     } catch (e) {
       console.error("[VSC_AUTH_GUARD] bootstrap falhou:", e);
-      // [FIX C-02] Qualquer página autenticada redireciona para login em falha de bootstrap
-      safeReplace(canonicalLoginUrl());
+      if (onDash) {
+        safeReplace(canonicalLoginUrl());
+        return;
+      }
+      reveal();
       return;
     }
 
@@ -204,9 +207,13 @@
       return;
     }
 
-    // [FIX C-02] Sem sessão válida — redirecionar para login em qualquer página autenticada
-    console.warn("[VSC_AUTH_GUARD] Sem sessão válida. Indo para login.", { path: path(), build: BUILD });
-    safeReplace(canonicalLoginUrl());
+    if (onDash) {
+      console.warn("[VSC_AUTH_GUARD] Sem sessão válida. Indo para login.");
+      safeReplace(canonicalLoginUrl());
+      return;
+    }
+
+    reveal();
   }
 
   runGuard().catch((e) => {

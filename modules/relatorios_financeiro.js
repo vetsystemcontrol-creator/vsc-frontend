@@ -498,3 +498,362 @@
         td.textContent = (v===null||v===undefined) ? '' : String(v);
         if(c==='id' || c==='uuid' || c.includes('created_') || c.includes('updated_')) td.className = 'mono';
         tr.appendChild(td);
+      });
+      UI.tb.appendChild(tr);
+    }
+
+    UI.emptyTxt.style.display = rows.length ? 'none' : 'block';
+    UI.tbl.style.display = rows.length ? 'table' : 'none';
+    UI.btnCSV.disabled = rows.length === 0;
+    UI.btnPrint.disabled = rows.length === 0;
+  }
+
+  function toCSV(cols, rows){
+    function esc(x){
+      const s = (x===null||x===undefined) ? '' : String(x);
+      return '"' + s.replace(/"/g,'""') + '"';
+    }
+    const out = [];
+    out.push(cols.map(esc).join(','));
+    for(const r of rows){
+      out.push(cols.map(c=>{
+        let v = r[c];
+        if(typeof v === 'object' && v !== null){
+          try{ v = JSON.stringify(v); }catch(_){ v = String(v); }
+        }
+        return esc(v);
+      }).join(','));
+    }
+    return out.join('\r\n');
+  }
+
+  function downloadCSVCurrent(){
+    clearMsg();
+    if(!STATE.view || !STATE.view.length){
+      showErr('Nada para exportar. Gere primeiro.');
+      return;
+    }
+    const cols = buildCols();
+    const csv = toCSV(cols, STATE.view);
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+    const a = document.createElement('a');
+    const ts = new Date(STATE.lastGeneratedAt || Date.now()).toISOString().slice(0,19).replace(/[:T]/g,'-');
+    a.href = URL.createObjectURL(blob);
+    a.download = `relatorio-financeiro-${STATE.store || 'dados'}-${STATE.tipoMode}-${ts}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 400);
+    showOk('CSV exportado (download iniciado).');
+  }
+
+  async function doPrint(){
+    clearMsg();
+    if(!STATE.view || !STATE.view.length){
+      showErr('Nada para imprimir. Gere primeiro.');
+      return;
+    }
+    await ensurePrintHeader();
+    showOk('Abrindo impressão…');
+    setTimeout(()=>window.print(), 50);
+  }
+
+  function clearAll(){
+    UI.dtIni.value = '';
+    UI.dtFim.value = '';
+    UI.txtBusca.value = '';
+    UI.selCampoValor.value = '';
+    UI.selCampoData.value = '';
+    UI.selCampoStatus.value = '';
+    UI.btnCSV.disabled = true;
+    UI.btnPrint.disabled = true;
+    UI.tbl.style.display = 'none';
+    UI.emptyTxt.style.display = 'block';
+    UI.metaTxt.textContent = '—';
+    UI.kpiTotal.textContent = 'R$ 0,00';
+    UI.kpiAberto.textContent = 'R$ 0,00';
+    UI.kpiVencido.textContent = 'R$ 0,00';
+    UI.kpiPago.textContent = 'R$ 0,00';
+    clearMsg();
+    setStatus('ok','pronto');
+  }
+
+  // -------------------------
+  // Generate
+  // -------------------------
+  async function generate(){
+    clearMsg();
+    setStatus('warn','gerando…');
+
+    try{
+      const modo = UI.selModo.value; // auto | manual
+      const periodoBase = UI.selPeriodoBase.value; // vencimento|emissao|pagamento
+      STATE.tipoMode = UI.selTipo.value; // pagar|receber
+
+      if(!STATE.stores.length){
+        STATE.stores = await listStores();
+        STATE.counts = await getCounts(STATE.stores);
+      }
+      if(!STATE.stores.length) throw new Error('Nenhuma store encontrada em vsc_db.');
+
+      let storePick = '';
+      if(modo === 'manual'){
+        storePick = UI.selStore.value;
+        if(!storePick) throw new Error('Modo MANUAL: selecione a store.');
+      }else{
+        storePick = pickBestStore(STATE.stores, STATE.counts);
+      }
+
+      STATE.store = storePick;
+      UI.selStore.value = storePick;
+
+      const items = await getAll(storePick);
+      STATE.items = Array.isArray(items) ? items : [];
+      STATE.fields = collectFields(STATE.items);
+
+      if(!STATE.items.length){
+        UI.metaTxt.textContent = `Store: ${storePick} • Registros: 0`;
+        showErr(`A store "${storePick}" está vazia. Selecione outra (modo MANUAL) ou crie lançamentos financeiros no ERP.`);
+        setStatus('ok','pronto');
+        renderTable([]);
+        return;
+      }
+
+      // preencher selects manuais com base nos fields encontrados
+      fillSelect(UI.selCampoValor, STATE.fields, '(selecionar)');
+      fillSelect(UI.selCampoData, STATE.fields, '(selecionar)');
+      fillSelect(UI.selCampoStatus, STATE.fields, '(selecionar)');
+
+      if(modo === 'manual'){
+        STATE.campoValor  = UI.selCampoValor.value || '';
+        STATE.campoData   = UI.selCampoData.value || '';
+        STATE.campoStatus = UI.selCampoStatus.value || '';
+        STATE.campoTipo   = guessTipoField(STATE.fields); // no manual, tipo é opcional e só filtra se existir
+
+        if(!STATE.campoValor) throw new Error('Modo MANUAL: selecione o Campo Valor.');
+      }else{
+        STATE.campoValor  = guessValorField(STATE.fields);
+        STATE.campoData   = guessDataField(STATE.fields, periodoBase);
+        STATE.campoStatus = guessStatusField(STATE.fields);
+        STATE.campoTipo   = guessTipoField(STATE.fields);
+
+        UI.selCampoValor.value = STATE.campoValor || '';
+        UI.selCampoData.value = STATE.campoData || '';
+        UI.selCampoStatus.value = STATE.campoStatus || '';
+
+        if(!STATE.campoValor){
+          showErr('AUTO: não detectei Campo Valor. Troque para MANUAL e selecione o campo correto.');
+          setStatus('ok','pronto');
+          UI.metaTxt.textContent = `Store: ${storePick} • Registros: ${STATE.items.length}`;
+          renderTable([]);
+          return;
+        }
+      }
+
+      const filtered = applyFilters(STATE.items);
+      STATE.view = filtered;
+      STATE.lastGeneratedAt = Date.now();
+
+      computeKpis(filtered);
+      renderTable(filtered);
+
+      UI.metaTxt.textContent =
+        `Tipo: ${STATE.tipoMode} • Store: ${storePick} (${STATE.counts[storePick]||STATE.items.length}) • ` +
+        `Filtrados: ${filtered.length} • Valor: ${STATE.campoValor||'—'} • Data: ${STATE.campoData||'—'} • ` +
+        `Status: ${STATE.campoStatus||'—'} • TipoCampo: ${STATE.campoTipo||'—'}`;
+
+      showOk('Relatório gerado.');
+      setStatus('ok','pronto');
+
+      console.log('[VSC_FIN_REL] generate OK', {
+        tipo: STATE.tipoMode,
+        store: storePick,
+        totalStore: STATE.items.length,
+        filtered: filtered.length,
+        campoValor: STATE.campoValor,
+        campoData: STATE.campoData,
+        campoStatus: STATE.campoStatus,
+        campoTipo: STATE.campoTipo
+      });
+
+    }catch(e){
+      showErr(String(e && e.message ? e.message : e));
+      setStatus('danger','erro');
+      (window.VSC_UI?window.VSC_UI.toast("err", String('[VSC_FIN_REL] generate FAIL', e), {ms:3200}):null);
+}
+  }
+
+  async function bootstrap(){
+    clearMsg();
+    setStatus('warn','carregando…');
+
+    try{
+      STATE.stores = await listStores();
+      STATE.counts = await getCounts(STATE.stores);
+
+      const ordered = fillStoresSelect(STATE.stores, STATE.counts);
+      const pick = pickBestStore(ordered, STATE.counts);
+
+      UI.selStore.value = pick || '';
+      STATE.store = pick || '';
+
+      setStatus('ok','pronto');
+      showOk(`Pronto. Sugestão de fonte: ${pick || '—'}. Clique em Gerar.`);
+
+      console.log('[VSC_FIN_REL] init OK', { stores: ordered, counts: STATE.counts, pick });
+
+    }catch(e){
+      setStatus('danger','erro');
+      showErr(String(e && e.message ? e.message : e));
+      (window.VSC_UI?window.VSC_UI.toast("err", String('[VSC_FIN_REL] init FAIL', e), {ms:3200}):null);
+}
+  }
+
+  // -------------------------
+  // Executive summary
+
+
+  async function loadExecutiveSnapshot(){
+    try{
+      if(!window.VSC_FINANCE_ANALYTICS || !window.VSC_DB || !window.VSC_DB.stores) return;
+      var apStore = window.VSC_DB.stores.contas_pagar;
+      var arStore = window.VSC_DB.stores.contas_receber;
+      var ap = await getAll(apStore).catch(function(){ return []; });
+      var ar = await getAll(arStore).catch(function(){ return []; });
+      var ex = window.VSC_FINANCE_ANALYTICS.summarizeExecutive(ap, ar);
+      if(UI.execProjectedNet) UI.execProjectedNet.textContent = window.VSC_FINANCE_ANALYTICS.fmtBRLFromCents(ex.projectedNet30);
+      if(UI.execProjectedNetSub) UI.execProjectedNetSub.textContent = 'Entradas previstas: ' + window.VSC_FINANCE_ANALYTICS.fmtBRLFromCents(ex.projectedInflows30) + ' · Saídas previstas: ' + window.VSC_FINANCE_ANALYTICS.fmtBRLFromCents(ex.projectedOutflows30);
+      window.VSC_FINANCE_ANALYTICS.drawBars(UI.execCashflowChart, ex.monthlyCashflow.map(function(r){ return {label:r.label, value:r.net}; }), {yLabel:'Fluxo'});
+      window.VSC_FINANCE_ANALYTICS.drawDonut(UI.execOpenChart, [
+        {label:'Receber aberto', value:ex.openReceivable},
+        {label:'Pagar aberto', value:ex.openPayable}
+      ]);
+      window.VSC_FINANCE_ANALYTICS.renderList(UI.execTopClientes, ex.ar.topEntities);
+      window.VSC_FINANCE_ANALYTICS.renderList(UI.execTopFornecedores, ex.ap.topEntities);
+    }catch(e){ console.warn('[VSC_FIN_REL] executive snapshot fail', e); }
+  }
+
+  // -------------------------
+  // SelfTest (console-first)
+  // -------------------------
+  MOD.selfTest = async function(){
+    try{
+      console.log('[VSC_FIN_REL] selfTest start');
+
+      if(!window.VSC_DB || typeof window.VSC_DB.openDB !== 'function'){
+        throw new Error('VSC_DB ausente');
+      }
+      console.log('OK: VSC_DB');
+
+      const db = await openDb();
+      if(!db || !db.objectStoreNames) throw new Error('DB open falhou');
+      console.log('OK: openDB');
+
+      const stores = await listStores();
+      console.log('OK: stores', stores);
+
+      if(!UI || !UI.btnGerar) throw new Error('UI não inicializada');
+      console.log('OK: UI bind');
+
+      console.log('[VSC_FIN_REL] selfTest OK');
+      return true;
+    }catch(e){
+      (window.VSC_UI?window.VSC_UI.toast("err", String('[VSC_FIN_REL] selfTest FAIL', e), {ms:3200}):null);
+return false;
+    }
+  };
+
+  // -------------------------
+  // Init
+  // -------------------------
+  function bind(){
+    UI = {
+      statusDot: $('statusDot'),
+      statusTxt: $('statusTxt'),
+
+      selModo: $('selModo'),
+      selTipo: $('selTipo'),
+      selPeriodoBase: $('selPeriodoBase'),
+
+      dtIni: $('dtIni'),
+      dtFim: $('dtFim'),
+      txtBusca: $('txtBusca'),
+
+      selStore: $('selStore'),
+      selCampoValor: $('selCampoValor'),
+      selCampoData: $('selCampoData'),
+      selCampoStatus: $('selCampoStatus'),
+
+      btnGerar: $('btnGerar'),
+      btnCSV: $('btnCSV'),
+      btnPrint: $('btnPrint'),
+      btnLimpar: $('btnLimpar'),
+
+      kpiTotal: $('kpiTotal'),
+      kpiAberto: $('kpiAberto'),
+      kpiVencido: $('kpiVencido'),
+      kpiPago: $('kpiPago'),
+
+      metaTxt: $('metaTxt'),
+      emptyTxt: $('emptyTxt'),
+      tbl: $('tbl'),
+      trHead: $('trHead'),
+      tb: $('tb'),
+
+      boxErr: $('boxErr'),
+      boxOk: $('boxOk'),
+
+      execProjectedNet: $('execProjectedNet'),
+      execProjectedNetSub: $('execProjectedNetSub'),
+      execCashflowChart: $('execCashflowChart'),
+      execOpenChart: $('execOpenChart'),
+      execTopClientes: $('execTopClientes'),
+      execTopFornecedores: $('execTopFornecedores')
+    };
+
+    function on(el, ev, fn){ if(el && typeof el.addEventListener==='function') el.addEventListener(ev, fn); }
+    // Guard enterprise: este módulo só inicializa na sua página (evita crash em painéis/embeds).
+    if(!UI.btnGerar || !UI.btnCSV || !UI.btnPrint || !UI.btnLimpar){
+      console.log('[VSC_FIN_REL] skip bind (DOM ausente)');
+      return false;
+    }
+
+    on(UI.btnGerar, 'click', generate);
+    on(UI.btnCSV, 'click', downloadCSVCurrent);
+    on(UI.btnPrint, 'click', doPrint);
+    on(UI.btnLimpar, 'click', clearAll);
+
+    UI.selModo.addEventListener('change', function(){
+      const on = (UI.selModo.value === 'manual');
+      setManualEnabled(on);
+      clearMsg();
+      showOk(on ? 'Modo MANUAL: selecione store/campos.' : 'Modo AUTO: detecção determinística.');
+    });
+
+    setManualEnabled(false);
+  }
+
+  function init(){
+    // Skip se não estiver na página correta (evita erros em painéis de autoteste)
+    const sentinel = document.getElementById('btnGerar');
+    if(!sentinel){ console.log('[VSC_FIN_REL] skip init (not on relatorios_financeiro.html)'); return; }
+    const bound = bind();
+    if(bound===false) return;
+    clearAll();
+    setStatus('ok','pronto');
+    bootstrap();
+    loadExecutiveSnapshot();
+    console.log('[VSC_FIN_REL] ready');
+  }
+
+  // Debug controlado
+  MOD.__STATE = STATE;
+
+  window.VSC_FIN_REL = MOD;
+
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', init);
+  }else{
+    init();
+  }
+
+})();

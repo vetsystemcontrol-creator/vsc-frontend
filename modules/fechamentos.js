@@ -245,22 +245,13 @@
   // ──────────────────────────────────────────────────────────
   function isAtendimentoElegivel(a, ini, fim){
     if(!a || !a.id) return false;
-    
-    // SGQT 8.8 - Faturamento em Lote (Mensalistas/Período)
-    // Permite selecionar atendimentos finalizados que não foram faturados individualmente.
-    const status = String(a.status || "").toLowerCase();
-    if(status !== "finalizado") return false;
-    
+    if(String(a.status||"") !== "finalizado") return false;
     if(String(a.cliente_id||"") !== String(ST.cliente.id||"")) return false;
 
-    // Se já foi gerado financeiro individual, não entra no fechamento em lote (evita duplicidade)
-    if(a.financeiro_gerado === true || a.cr_id) return false;
-    
-    // anti-dupla-cobrança: atendimento já vinculado a outro fechamento
+    // anti-dupla-cobrança: atendimento já vinculado a fechamento emitido/rascunho
     if(a.fechamento_id) return false;
 
-    // Filtro por data do atendimento (prioriza data_atendimento sobre created_at)
-    const dt = String(a.data_atendimento || a.created_at || "").slice(0,10);
+    const dt = String(a.created_at||"").slice(0,10);
     if(ini && dt && dt < ini) return false;
     if(fim && dt && dt > fim) return false;
     return true;
@@ -449,31 +440,6 @@
     };
   }
 
-
-
-  function _getVSC_DB() {
-    if (window.VSC_DB && typeof window.VSC_DB.openDB === 'function') return window.VSC_DB;
-    try {
-      const frames = Array.from(document.querySelectorAll('iframe'));
-      for (const f of frames) {
-        const w = f.contentWindow;
-        if (w && w.VSC_DB && typeof w.VSC_DB.openDB === 'function') return w.VSC_DB;
-      }
-    } catch(_) {}
-    return null;
-  }
-
-  // ── Sync outbox helper ─────────────────────────────────────────────
-  function _outboxEnqueueFechamento(store, entity, entityId, payload) {
-    try {
-      const vscDb = _getVSC_DB();
-      if (vscDb && typeof vscDb.upsertWithOutbox === 'function') {
-        return vscDb.upsertWithOutbox(store, Object.assign({}, payload), entity, String(entityId), payload);
-      }
-    } catch(_) {}
-    return Promise.resolve();
-  }
-
   async function criarRascunho(){
     if(!ST.cliente.id){ toast("Selecione um cliente.", "err"); return; }
     if(!ST.selecionados.size){ toast("Selecione ao menos 1 atendimento.", "err"); return; }
@@ -482,7 +448,6 @@
     try{
       await idbPut(ST.db, "fechamentos", draft);
       ST.fechamento = draft;
-      _outboxEnqueueFechamento("fechamentos", "fechamentos", draft.id, draft).catch(()=>{});
       statusBadge();
       renderKpis();
       toast("Rascunho criado.", "ok");
@@ -580,8 +545,6 @@
       await txDone(tx);
 
       ST.fechamento = f;
-      _outboxEnqueueFechamento("fechamentos", "fechamentos", f.id, f).catch(()=>{});
-      _outboxEnqueueFechamento("contas_receber", "contas_receber", titulo.id, titulo).catch(()=>{});
       statusBadge();
       renderKpis();
       toast("Fechamento emitido e AR gerado.", "ok");

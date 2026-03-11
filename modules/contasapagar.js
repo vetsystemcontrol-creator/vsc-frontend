@@ -219,12 +219,9 @@
     }
 
     localStorage.setItem(MIGRATION_FLAG, "1");
-    // SGQT 8.3 - Limpeza de dados legados
-    // Dados originais em localStorage removidos após migração bem-sucedida para evitar redundância.
+    // Dados originais em localStorage preservados como backup transitório.
+    // Para remover: localStorage.removeItem(KEY_AP_LS) após validação manual.
     if (migrated > 0) {
-      localStorage.removeItem(KEY_AP_LS);
-      // Avisa apenas em modo de desenvolvimento (não polui console em produção)
-      if (window.__VSC_DEBUG__) {
       // Avisa apenas em modo de desenvolvimento (não polui console em produção)
       if (window.__VSC_DEBUG__) {
         console.info(`[VSC_AP] Migração LS→IDB: ${migrated} título(s) migrado(s).`);

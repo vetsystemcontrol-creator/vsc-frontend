@@ -57,17 +57,9 @@ const VSC_CLOUD_SYNC = (() => {
     const db = await window.VSC_DB.openDB();
     try {
       const localStores = Array.from(db.objectStoreNames || []);
-      // Stores protegidas: não sobrescrever dados locais de auth e sessão
-      const PROTECTED = new Set([
-        'auth_users', 'auth_sessions', 'auth_audit_log',
-        'auth_role_permissions', 'auth_roles',
-        'backup_events', 'db_backups', 'attachments_queue'
-      ]);
       const filteredData = {};
       for (const [store, rows] of Object.entries(snapshot.data || {})) {
-        if (localStores.includes(store) && !PROTECTED.has(store)) {
-          filteredData[store] = Array.isArray(rows) ? rows : [];
-        }
+        if (localStores.includes(store)) filteredData[store] = Array.isArray(rows) ? rows : [];
       }
 
       const filteredSchema = {
@@ -95,30 +87,10 @@ const VSC_CLOUD_SYNC = (() => {
       return { ok: false, error: 'offline' };
     }
 
-    // SGQT 8.1 - Proteção de Integridade Local
-    // Não permite PULL (sobrescrever IDB) se houver itens PENDING na outbox
-    // Evita que o snapshot da nuvem apague dados locais ainda não sincronizados.
-    try {
-      if (window.VSC_RELAY && typeof window.VSC_RELAY.status === 'function') {
-        const s = window.VSC_RELAY.status();
-        if (s && s.pending > 0) {
-          notifyUI('error', 'Há dados locais pendentes de envio. Sincronize o push primeiro.');
-          return { ok: false, error: 'pending_outbox_push_required' };
-        }
-      }
-    } catch (_) {}
-
     isSyncing = true;
     notifyUI('syncing');
     try {
       const payload = await fetchSnapshot();
-      
-      // SGQT 8.5 - Validação de Schema (Snapshot)
-      // Garante que o payload recebido do servidor é um objeto válido antes de aplicar.
-      if (!payload || typeof payload.snapshot !== 'object') {
-        throw new Error('Snapshot inválido recebido do servidor.');
-      }
-      
       const applied = await applySnapshot(payload.snapshot);
       localStorage.setItem(SYNC_KEY, nowIso());
       notifyUI('success');
@@ -166,5 +138,3 @@ const VSC_CLOUD_SYNC = (() => {
     getLastSync: () => localStorage.getItem(SYNC_KEY) || null
   };
 })();
-
-window.VSC_CLOUD_SYNC = VSC_CLOUD_SYNC;
