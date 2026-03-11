@@ -191,8 +191,12 @@ return;
       try { await upsertTitulo(item); migrated++; } catch (_) {}
     }
     localStorage.setItem(MIGRATION_FLAG, "1");
-    if (migrated > 0 && window.__VSC_DEBUG__) {
-      console.info(`[VSC_AR] Migração LS→IDB: ${migrated} título(s) migrado(s).`);
+    // SGQT 8.3 - Limpeza de dados legados
+    if (migrated > 0) {
+      localStorage.removeItem(KEY_AR_LS);
+      if (window.__VSC_DEBUG__) {
+        console.info(`[VSC_AR] Migração LS→IDB: ${migrated} título(s) migrado(s).`);
+      }
     }
   }
 

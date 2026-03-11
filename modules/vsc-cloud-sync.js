@@ -95,6 +95,19 @@ const VSC_CLOUD_SYNC = (() => {
       return { ok: false, error: 'offline' };
     }
 
+    // SGQT 8.1 - Proteção de Integridade Local
+    // Não permite PULL (sobrescrever IDB) se houver itens PENDING na outbox
+    // Evita que o snapshot da nuvem apague dados locais ainda não sincronizados.
+    try {
+      if (window.VSC_RELAY && typeof window.VSC_RELAY.status === 'function') {
+        const s = window.VSC_RELAY.status();
+        if (s && s.pending > 0) {
+          notifyUI('error', 'Há dados locais pendentes de envio. Sincronize o push primeiro.');
+          return { ok: false, error: 'pending_outbox_push_required' };
+        }
+      }
+    } catch (_) {}
+
     isSyncing = true;
     notifyUI('syncing');
     try {

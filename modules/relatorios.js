@@ -450,6 +450,11 @@
     var out = [];
     for(var i=0;i<list.length;i++){
       var it = list[i];
+      if(!it) continue;
+
+      // SGQT 8.2 - Filtro Global Soft-Delete
+      // Registros marcados como deletados não devem aparecer em relatórios.
+      if (it.deleted === true || it.deleted_at) continue;
 
       if(q){
         var blob = "";
