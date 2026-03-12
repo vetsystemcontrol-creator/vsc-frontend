@@ -21,6 +21,7 @@ const ACCESS_CONTROL_ALLOW_HEADERS = [
   'X-VSC-Tenant',
   'X-VSC-User',
   'X-VSC-Token',
+  'X-VSC-Client-Session',
 ].join(', ');
 
 const ACCESS_CONTROL_ALLOW_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';

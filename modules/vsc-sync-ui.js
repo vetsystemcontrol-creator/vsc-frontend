@@ -1,117 +1,156 @@
 /*
  * VSC-SYNC-UI — Botão único de sincronização (Premium)
- * ---------------------------------------------------
- * Mostra:
- *  - Online/Offline (dot)
- *  - Pendências (count)
- *  - Progresso (enviando X ops/s)
- *
- * Integra com:
- *  - window.VSC_RELAY.syncNow()        (push)
- *  - window.VSC_CLOUD_SYNC.manualSync() (push + pull)
- *  - evento window 'vsc:sync-progress'
- *  - evento window 'vsc:sync:status'
+ * ----------------------------------------------------
+ * Correção anti-travamento visual do fluxo de sync.
  */
 (() => {
   'use strict';
 
-  // Habilitar sync remoto em localhost (necessário para 127.0.0.1)
   try {
     localStorage.setItem('vsc_allow_local_sync_api', '1');
-  } catch(_) {}
+  } catch (_) {}
 
-  function $(sel) { return document.querySelector(sel); }
+  function $(selector) {
+    return document.querySelector(selector);
+  }
 
-  function _findEls() {
-    const btn   = $('#vscSyncBtn')     || document.querySelector('[data-vsc-sync-btn]')   || null;
-    const dot   = $('#vscNetDot')      || $('#vscSyncDot') || document.querySelector('[data-vsc-sync-dot]') || null;
+  function findEls() {
+    const btn = $('#vscSyncBtn') || document.querySelector('[data-vsc-sync-btn]') || null;
+    const dot = $('#vscNetDot') || $('#vscSyncDot') || document.querySelector('[data-vsc-sync-dot]') || null;
     const count = $('#vscSyncPending') || $('#vscSyncCount') || document.querySelector('[data-vsc-sync-count]') || null;
-    const note  = $('#vscSyncNote')    || document.querySelector('[data-vsc-sync-note]')  || null;
+    const note = $('#vscSyncNote') || document.querySelector('[data-vsc-sync-note]') || null;
     return { btn, dot, count, note };
+  }
+
+  function formatTime(iso) {
+    if (!iso) return '';
+    try {
+      const date = new Date(iso);
+      if (Number.isNaN(date.getTime())) return '';
+      return date.toLocaleTimeString('pt-BR', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+    } catch (_) {
+      return '';
+    }
   }
 
   const UI = {
     _els: null,
-    _last: { pending: 0, running: false, rate: 0, batch: 0, error: null },
+    _last: {
+      pending: 0,
+      sending: 0,
+      running: false,
+      rate: 0,
+      batch: 0,
+      error: null,
+      note: null,
+      mode: 'idle',
+      lastSync: null,
+    },
     _firstSyncDone: false,
 
     init() {
-      this._els = _findEls();
+      this._els = findEls();
       this._bind();
-      this._render();
-
-      // Mostrar nota de última sync se existir
       try {
-        const last = localStorage.getItem('vsc_last_sync');
-        if (last && this._els.note) {
-          const d = new Date(last);
-          this._els.note.textContent = 'Base sincronizada às ' +
-            d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        }
-      } catch(_) {}
+        this._last.lastSync = localStorage.getItem('vsc_last_sync');
+      } catch (_) {
+        this._last.lastSync = null;
+      }
+      this._render();
     },
 
     _bind() {
       const { btn } = this._els;
-      if (btn) {
+      if (btn && !btn.__vscSyncBound) {
+        btn.__vscSyncBound = true;
         btn.addEventListener('click', async (ev) => {
           ev.preventDefault();
-          // Abrir painel na página pai se disponível
+
           try {
-            const p = window.parent;
-            if (p && p !== window) {
-              if (p.VSC_SYNC_PANEL && typeof p.VSC_SYNC_PANEL.open === 'function') {
-                p.VSC_SYNC_PANEL.open();
+            const parentWin = window.parent;
+            if (parentWin && parentWin !== window) {
+              if (parentWin.VSC_SYNC_PANEL && typeof parentWin.VSC_SYNC_PANEL.open === 'function') {
+                parentWin.VSC_SYNC_PANEL.open();
                 return;
               }
-              p.postMessage({ type: 'VSC_SYNC_PANEL_OPEN' }, '*');
+              parentWin.postMessage({ type: 'VSC_SYNC_PANEL_OPEN' }, '*');
               return;
             }
-          } catch(_) {}
-          // Fallback: sync direto
+          } catch (_) {}
+
           await this._doSync();
         });
       }
 
-      window.addEventListener('online',  () => this._render());
+      window.addEventListener('online', () => this._render());
       window.addEventListener('offline', () => this._render());
 
-      // Progresso do relay (push)
-      window.addEventListener('vsc:sync-progress', (e) => {
-        if (!e || !e.detail) return;
-        this.onProgress(e.detail);
+      window.addEventListener('vsc:sync-progress', (event) => {
+        if (!event || !event.detail) return;
+        this.onProgress(event.detail);
       });
 
-      // Status do cloud sync (pull)
-      window.addEventListener('vsc:sync:status', (e) => {
-        if (!e || !e.detail) return;
-        const { status, message } = e.detail;
+      window.addEventListener('vsc:sync:status', (event) => {
+        if (!event || !event.detail) return;
+        const { status, message, pending } = event.detail;
+
         if (status === 'syncing') {
           this._last.running = true;
+          this._last.error = null;
+          this._last.note = 'Sincronizando…';
           this._render();
-        } else if (status === 'success') {
+          return;
+        }
+
+        if (status === 'success') {
           this._last.running = false;
           this._last.error = null;
-          // Recarregar página pai após sync bem-sucedido
+          this._last.note = null;
+          try {
+            this._last.lastSync = localStorage.getItem('vsc_last_sync');
+          } catch (_) {}
+
           try {
             const parentWin = window.parent;
-            if (parentWin && parentWin !== window) {
-              // Primeiro sync: recarrega para carregar dados
-              if (!this._firstSyncDone) {
-                this._firstSyncDone = true;
-                setTimeout(() => {
-                  try { parentWin.location.reload(); } catch(_) {}
-                }, 800);
-              }
+            if (parentWin && parentWin !== window && !this._firstSyncDone) {
+              this._firstSyncDone = true;
+              setTimeout(() => {
+                try { parentWin.location.reload(); } catch (_) {}
+              }, 800);
             }
-          } catch(_) {}
+          } catch (_) {}
+
           this._render();
-        } else if (status === 'error') {
+          return;
+        }
+
+        if (status === 'partial') {
+          this._last.running = false;
+          this._last.error = null;
+          this._last.pending = Number(pending ?? this._last.pending) || 0;
+          this._last.note = message || 'Sincronização parcial concluída.';
+          try {
+            this._last.lastSync = localStorage.getItem('vsc_last_sync');
+          } catch (_) {}
+          this._render();
+          return;
+        }
+
+        if (status === 'error') {
           this._last.running = false;
           this._last.error = message || 'Falha ao sincronizar';
+          this._last.note = null;
           this._render();
-        } else if (status === 'offline') {
+          return;
+        }
+
+        if (status === 'offline') {
           this._last.running = false;
+          this._last.note = 'Offline';
           this._render();
         }
       });
@@ -119,19 +158,20 @@
 
     async _doSync() {
       if (this._last.running) return;
+
       this._last.running = true;
       this._last.error = null;
+      this._last.note = 'Sincronizando…';
       this._render();
 
       try {
-        // Usa manualSync se disponível (push + pull), senão só push
         if (window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.manualSync === 'function') {
           await window.VSC_CLOUD_SYNC.manualSync();
         } else if (window.VSC_RELAY && typeof window.VSC_RELAY.syncNow === 'function') {
           await window.VSC_RELAY.syncNow();
         }
-      } catch(e) {
-        this._last.error = String(e && (e.message || e)) || 'Falha ao sincronizar';
+      } catch (err) {
+        this._last.error = String(err && (err.message || err)) || 'Falha ao sincronizar';
       } finally {
         this._last.running = false;
         this._render();
@@ -139,19 +179,28 @@
     },
 
     onProgress(detail) {
-      this._last.pending = Number(detail.pending ?? this._last.pending) || 0;
+      this._last.pending = Number(detail.total_open ?? detail.pending ?? this._last.pending) || 0;
+      this._last.sending = Number(detail.sending ?? this._last.sending) || 0;
       this._last.running = !!detail.running;
-      this._last.rate    = Number(detail.lastRateOps ?? 0) || 0;
-      this._last.batch   = Number(detail.lastBatchSize ?? 0) || 0;
-      this._last.error   = detail.error || null;
+      this._last.rate = Number(detail.lastRateOps ?? detail.last_rate_ops ?? 0) || 0;
+      this._last.batch = Number(detail.lastBatchSize ?? detail.last_batch_size ?? 0) || 0;
+      this._last.mode = detail.mode || this._last.mode;
+      this._last.error = detail.error || null;
+
+      if (detail.continuedInBackground) {
+        this._last.note = 'Envio em segundo plano.';
+      } else if (detail.idle) {
+        this._last.note = null;
+      }
+
       this._render();
     },
 
     _render() {
-      if (!this._els) this._els = _findEls();
+      if (!this._els) this._els = findEls();
       const { dot, count, note, btn } = this._els;
-
       const online = navigator.onLine;
+
       if (dot) {
         dot.style.background = online
           ? (this._last.error ? 'var(--vsc-danger,#e53)' : 'var(--vsc-green,#2fb26a)')
@@ -164,33 +213,28 @@
         count.textContent = String(this._last.pending || 0);
       }
 
-      const msg = this._last.running
-        ? (this._last.rate > 0 ? `Enviando… ${this._last.rate} ops/s` : 'Sincronizando…')
-        : (this._last.error
-            ? 'Falha ao sincronizar'
-            : (() => {
-                try {
-                  const last = localStorage.getItem('vsc_last_sync');
-                  if (last) {
-                    const d = new Date(last);
-                    return 'Base sincronizada às ' +
-                      d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                  }
-                } catch(_) {}
-                return online ? 'Pronto para sincronizar' : 'Offline';
-              })()
-          );
+      const defaultMessage = (() => {
+        if (!online) return 'Offline';
+        if (this._last.error) return 'Falha ao sincronizar';
+        if (this._last.running) {
+          if (this._last.rate > 0) return `Enviando… ${this._last.rate} ops/s`;
+          return 'Sincronizando…';
+        }
+        if (this._last.note) return this._last.note;
+        const lastTime = formatTime(this._last.lastSync);
+        return lastTime ? `Base sincronizada às ${lastTime}` : 'Pronto para sincronizar';
+      })();
 
       if (note) {
-        note.textContent = msg;
+        note.textContent = defaultMessage;
       } else if (btn) {
-        btn.title = msg;
+        btn.title = defaultMessage;
       }
 
       if (btn) {
         btn.disabled = this._last.running;
       }
-    }
+    },
   };
 
   window.VSC_SYNC_UI = UI;
@@ -202,5 +246,4 @@
       window.addEventListener('DOMContentLoaded', () => UI.init(), { once: true });
     }
   } catch (_) {}
-
 })();

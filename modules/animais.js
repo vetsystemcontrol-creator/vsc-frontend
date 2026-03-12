@@ -80,6 +80,45 @@ function normalizeBirthValue(v){
   return `${String(dd).padStart(2,'0')}/${String(mm).padStart(2,'0')}/${String(yy)}`;
 }
 
+
+function ensureAnimalActionMenuStyles(){
+  if(document.getElementById("vscAnimalActionMenuStyles")) return;
+  const style = document.createElement("style");
+  style.id = "vscAnimalActionMenuStyles";
+  style.textContent = `
+    .vsc-actions{position:relative;display:inline-flex;justify-content:flex-end;width:100%}
+    .vsc-actions-trigger{min-width:38px;padding-inline:10px;font-size:16px;line-height:1}
+    .vsc-actions-menu{position:absolute;right:0;top:calc(100% + 6px);display:none;min-width:168px;padding:6px;background:#fff;border:1px solid #d9e2ec;border-radius:12px;box-shadow:0 12px 28px rgba(15,23,42,.16);z-index:40}
+    .vsc-actions-menu.open{display:block}
+    .vsc-actions-menu button{display:flex;align-items:center;width:100%;padding:10px 12px;border:0;background:transparent;border-radius:8px;text-align:left;font:inherit;color:#0f172a;cursor:pointer}
+    .vsc-actions-menu button:hover,.vsc-actions-menu button:focus-visible{background:#f8fafc;outline:none}
+    .vsc-actions-menu button.danger{color:#b42318}
+  `;
+  document.head.appendChild(style);
+}
+
+function closeAnimalActionMenus(){
+  document.querySelectorAll('.vsc-actions-menu.open').forEach((menu)=>{
+    menu.classList.remove('open');
+    menu.setAttribute('aria-hidden', 'true');
+  });
+  document.querySelectorAll('.vsc-actions-trigger[aria-expanded="true"]').forEach((btn)=>btn.setAttribute('aria-expanded', 'false'));
+}
+
+function toggleAnimalActionMenu(trigger){
+  if(!trigger) return;
+  const menuId = trigger.getAttribute('aria-controls');
+  const menu = menuId ? document.getElementById(menuId) : null;
+  if(!menu) return;
+  const willOpen = !menu.classList.contains('open');
+  closeAnimalActionMenus();
+  if(!willOpen) return;
+  menu.classList.add('open');
+  menu.setAttribute('aria-hidden', 'false');
+  trigger.setAttribute('aria-expanded', 'true');
+}
+
+
 // ==========================================================
 // MODAL PREMIUM PADRÃO (substitui alert/confirm) — v1
 // - Usa bdVscDialog do animais.html
@@ -431,7 +470,6 @@ async function vsc_onFotoFileChange(){
   try{
     if(file.size > (12 * 1024 * 1024)){
       vsc_clearFoto();
-    renderAnimalHistoryPanel(null);
       await (window.VSC_UI && window.VSC_UI.alert ? window.VSC_UI.alert("Arquivo muito grande (>12MB). Use uma foto menor.") : Promise.resolve());
       return;
     }
@@ -440,7 +478,6 @@ async function vsc_onFotoFileChange(){
     vsc_setFotoUI(dataUrl);
   }catch(err){
     vsc_clearFoto();
-    renderAnimalHistoryPanel(null);
     await (window.VSC_UI && window.VSC_UI.alert ? window.VSC_UI.alert(err && err.message ? err.message : "Não foi possível processar a foto.") : Promise.resolve());
   }
 }
@@ -1146,14 +1183,26 @@ function render(){
 
     const tdA = document.createElement("td");
     tdA.className = 'col-actions';
+    const actionMenuId = `animal-actions-${String(a?.id || '').replace(/[^a-zA-Z0-9_-]/g, '') || vsc_uuidv4()}`;
     tdA.innerHTML = `
-      <div style="display:flex; gap:8px; flex-wrap:wrap">
-        <button class="btn btnMini btnGhost" data-act="history" data-id="${a?.id}">Histórico</button><button class="btn btnMini btnGhost" data-act="edit" data-id="${a?.id}">Alterar</button>
-        <button class="btn btnMini ${isInativo ? "btnPrimary" : "btnWarn"}"
-                data-act="toggle" data-id="${a?.id}">
-          ${isInativo ? "Ativar" : "Inativar"}
-        </button>
-        <button class="btn btnMini btnDanger" data-act="del" data-id="${a?.id}">Excluir</button>
+      <div class="vsc-actions">
+        <button
+          type="button"
+          class="btn btnMini btnGhost vsc-actions-trigger"
+          data-menu-trigger="${a?.id}"
+          data-id="${a?.id}"
+          aria-haspopup="menu"
+          aria-expanded="false"
+          aria-controls="${actionMenuId}"
+          title="Ações do animal"
+          aria-label="Ações do animal ${escapeHtml(a?.nome || '')}"
+        >⚙</button>
+        <div class="vsc-actions-menu" id="${actionMenuId}" data-menu="${a?.id}" data-id="${a?.id}" role="menu" aria-hidden="true">
+          <button type="button" data-act="history" data-id="${a?.id}" role="menuitem">Histórico</button>
+          <button type="button" data-act="edit" data-id="${a?.id}" role="menuitem">Editar</button>
+          <button type="button" data-act="toggle" data-id="${a?.id}" role="menuitem">${isInativo ? "Ativar" : "Inativar"}</button>
+          <button type="button" data-act="del" data-id="${a?.id}" role="menuitem" class="danger">Excluir</button>
+        </div>
       </div>
     `;
     tr.appendChild(tdA);
@@ -1167,6 +1216,7 @@ function render(){
 // WIRE UI
 // ==========================================================
 function wireUI(){
+  ensureAnimalActionMenuStyles();
   // recovery buttons (empty-state)
   const btnEmptyNovo = document.getElementById("btnAnimaisNovoFromEmpty");
   if(btnEmptyNovo){
@@ -1267,14 +1317,34 @@ function wireUI(){
 
   // delegação na tabela
   tb && tb.addEventListener("click", (ev)=>{
+    const trigger = ev.target.closest("button[data-menu-trigger]");
+    if(trigger){
+      ev.preventDefault();
+      ev.stopPropagation();
+      toggleAnimalActionMenu(trigger);
+      return;
+    }
+
     const btn = ev.target.closest("button[data-act]");
     if(!btn) return;
+    ev.preventDefault();
+    ev.stopPropagation();
     const act = btn.getAttribute("data-act");
     const id  = btn.getAttribute("data-id");
+    closeAnimalActionMenus();
     if(act==="history"){ renderAnimalHistoryPanel(id); return; }
     if(act==="edit"){ openAnimalModal(id); return; }
     if(act==="toggle"){ toggleAnimal(id); return; }
     if(act==="del"){ delAnimal(id); return; }
+  });
+
+  document.addEventListener("click", (ev)=>{
+    if(ev.target && ev.target.closest && ev.target.closest('.vsc-actions')) return;
+    closeAnimalActionMenus();
+  });
+
+  document.addEventListener("keydown", (ev)=>{
+    if(ev.key === "Escape") closeAnimalActionMenus();
   });
 
   const btnHistoryClose = document.getElementById("btnAnimalHistoryClose");
@@ -1333,6 +1403,8 @@ function wireUI(){
 // ==========================================================
 function openAnimalModal(id){
   editingAnimalId = id || null;
+  closeAnimalActionMenus();
+  closeAnimalHistoryModal();
 
   if(editingAnimalId){
     const a = (st_animais||[]).find(x=>x && x.id===editingAnimalId);
@@ -1340,8 +1412,8 @@ function openAnimalModal(id){
 
     $("mAnimalTitle") && ($("mAnimalTitle").textContent = "Alterar Animal");
 
-    // CANÔNICO: abrir em VISUALIZAÇÃO
-    __vsc_animal_applyMode("VIEW");
+    // Edição direta a partir do grid: abrir em edição, sem sobrepor o histórico.
+    __vsc_animal_applyMode("EDIT");
 
     $("aNome") && ($("aNome").value = a.nome || "");
     $("aEspecie") && ($("aEspecie").value = a.especie_id || "");
@@ -1363,7 +1435,6 @@ function openAnimalModal(id){
 
     // FOTO
     vsc_setFotoUI(a.foto_data || "");
-    renderAnimalHistoryPanel(editingAnimalId);
   }else{
     $("mAnimalTitle") && ($("mAnimalTitle").textContent = "Novo Animal");
 
@@ -1383,7 +1454,6 @@ function openAnimalModal(id){
     $("aObs") && ($("aObs").value = "");
 
     vsc_clearFoto();
-    renderAnimalHistoryPanel(null);
   }
 
   $("bdAnimal") && $("bdAnimal").classList.add("open");

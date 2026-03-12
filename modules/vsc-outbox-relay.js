@@ -312,7 +312,7 @@
       const rec = await _reqToPromise(store.get(ev.id));
       if (!rec) continue;
 
-      const ackedById = ackIds.has(String(ev.id));
+      const ackedById = ackIds.has(String(ev.op_id || ev.id || ''));
       const rejectedMeta = rejectedByOpId.get(String(ev.op_id || ev.id || '')) || null;
 
       if (ackedById || canAckWholeBatch) {

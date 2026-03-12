@@ -11,7 +11,7 @@ function applyCors(request, headers, methods = 'GET, POST, PUT, PATCH, DELETE, O
   headers.set('Access-Control-Allow-Methods', methods);
   headers.set(
     'Access-Control-Allow-Headers',
-    'Content-Type, Authorization, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token'
+    'Content-Type, Authorization, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token, X-VSC-Client-Session'
   );
   headers.set('Access-Control-Expose-Headers', 'Content-Type, Content-Length, ETag, X-VSC-State-Revision');
   headers.set('Access-Control-Max-Age', '86400');

@@ -8,8 +8,9 @@ const ALLOWED_HEADERS = [
   'X-VSC-Tenant',
   'X-VSC-User',
   'X-VSC-Token',
+  'X-VSC-Client-Session',
 ].join(', ');
-const EXPOSE_HEADERS = ['Content-Type', 'Cache-Control', 'ETag'].join(', ');
+const EXPOSE_HEADERS = ['Content-Type', 'Cache-Control', 'ETag', 'X-VSC-State-Revision'].join(', ');
 
 function resolveCorsOrigin(request) {
   const origin = request.headers.get('Origin') || '';
