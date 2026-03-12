@@ -15,15 +15,8 @@
 (() => {
   'use strict';
 
-  const TOKEN_KEY = 'vsc_local_token';
-  const FIXED_TOKEN = 'VSC@2026!SyncToken#Vet$Equine';
-
-  // Garantir token e flag de sync remoto sempre presentes
+  // Habilitar sync remoto em localhost (necessário para 127.0.0.1)
   try {
-    if (!localStorage.getItem(TOKEN_KEY)) {
-      localStorage.setItem(TOKEN_KEY, FIXED_TOKEN);
-    }
-    // Habilitar sync remoto em localhost (necessário para 127.0.0.1)
     localStorage.setItem('vsc_allow_local_sync_api', '1');
   } catch(_) {}
 

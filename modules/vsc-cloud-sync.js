@@ -122,8 +122,20 @@ const VSC_CLOUD_SYNC = (() => {
     notifyUI('syncing');
     try {
       let pushResult = null;
-      if (window.VSC_RELAY && typeof window.VSC_RELAY.syncNow === 'function') {
-        pushResult = await window.VSC_RELAY.syncNow();
+      let relay = (window.VSC_RELAY && typeof window.VSC_RELAY.syncNow === 'function')
+        ? window.VSC_RELAY
+        : null;
+
+      if (!relay && typeof window.VSC_LOAD_RELAY === 'function') {
+        try {
+          relay = await window.VSC_LOAD_RELAY();
+        } catch (_) {
+          relay = null;
+        }
+      }
+
+      if (relay && typeof relay.syncNow === 'function') {
+        pushResult = await relay.syncNow();
       }
       const payload = await fetchSnapshot();
       const applied = await applySnapshot(payload.snapshot);

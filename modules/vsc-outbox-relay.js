@@ -75,7 +75,42 @@
   // ──────────────────────────────────────────────────────────
   function _now() { return Date.now(); }
 
-  
+  function _getTenant() {
+    try {
+      if (window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.status === 'function') {
+        const st = window.VSC_CLOUD_SYNC.status();
+        if (st && st.tenant) return String(st.tenant).trim() || 'tenant-default';
+      }
+    } catch (_) {}
+    try {
+      return String(localStorage.getItem('vsc_tenant') || sessionStorage.getItem('vsc_tenant') || 'tenant-default').trim() || 'tenant-default';
+    } catch (_) {
+      return 'tenant-default';
+    }
+  }
+
+  function _getUserLabel() {
+    try {
+      const raw = localStorage.getItem('vsc_user') || sessionStorage.getItem('vsc_user') || 'null';
+      const u = JSON.parse(raw);
+      return String((u && (u.username || u.nome || u.name || u.id || u.email)) || 'anonymous').slice(0, 120);
+    } catch (_) {
+      return 'anonymous';
+    }
+  }
+
+  function _getClientSession() {
+    try {
+      return String(
+        localStorage.getItem('vsc_session_id') ||
+        sessionStorage.getItem('vsc_session_id') ||
+        'session-anon'
+      ).slice(0, 120);
+    } catch (_) {
+      return 'session-anon';
+    }
+  }
+
   function _emitProgress(extra = {}) {
     const detail = {
       ok: !_lastError,
@@ -325,15 +360,18 @@
   // Network: push
   // ──────────────────────────────────────────────────────────
   async function _pushBatchSyncPush(batch) {
-    const token = _getToken();
+    const tenant = _getTenant();
+    const userLabel = _getUserLabel();
+    const clientSession = _getClientSession();
+
     const res = await fetch(_apiUrl('/api/sync/push'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        
-        'X-VSC-Tenant': (window.VSC_CLOUD_SYNC && window.VSC_CLOUD_SYNC.status ? window.VSC_CLOUD_SYNC.status().tenant : 'tenant-default'),
-        'X-VSC-User': (() => { try { const u = JSON.parse(localStorage.getItem('vsc_user') || 'null'); return String((u && (u.username || u.nome || u.name || u.id)) || 'anonymous').slice(0,120); } catch (_) { return 'anonymous'; } })(),
+        'X-VSC-Tenant': tenant,
+        'X-VSC-User': userLabel,
+        'X-VSC-Client-Session': clientSession,
       },
       body: JSON.stringify({ operations: batch }),
     });
@@ -347,8 +385,10 @@
   }
 
   async function _pushBatchLegacyOutbox(batch) {
-    // Envia 1 a 1 no endpoint antigo
-    const token = _getToken();
+    const tenant = _getTenant();
+    const userLabel = _getUserLabel();
+    const clientSession = _getClientSession();
+
     for (const ev of batch) {
       const body = {
         entity: ev.entity,
@@ -362,9 +402,9 @@
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
-          
-          'X-VSC-Tenant': (window.VSC_CLOUD_SYNC && window.VSC_CLOUD_SYNC.status ? window.VSC_CLOUD_SYNC.status().tenant : 'tenant-default'),
-          'X-VSC-User': (() => { try { const u = JSON.parse(localStorage.getItem('vsc_user') || 'null'); return String((u && (u.username || u.nome || u.name || u.id)) || 'anonymous').slice(0,120); } catch (_) { return 'anonymous'; } })(),
+          'X-VSC-Tenant': tenant,
+          'X-VSC-User': userLabel,
+          'X-VSC-Client-Session': clientSession,
         },
         body: JSON.stringify(body),
       });
