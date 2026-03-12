@@ -1,6 +1,5 @@
 import {
   json as syncJson,
-  corsHeaders,
   getDB,
   isD1Like,
   getTenant,
@@ -9,6 +8,7 @@ import {
   ingestOperation,
   loadCanonicalSnapshot,
 } from './_lib/sync-store.js';
+
 import {
   buildJsonResponse,
   buildOptionsResponse,
@@ -25,7 +25,12 @@ function readTenant(request, url) {
 
 async function buildCapabilities(request, env) {
   const db = getDB(env);
-  const legacy = await getLegacyCapabilities(env).catch(() => ({ ok: true, available: true, remote_sync_allowed: !!db }));
+  const legacy = await getLegacyCapabilities(env).catch(() => ({
+    ok: true,
+    available: true,
+    remote_sync_allowed: !!db,
+  }));
+
   return buildJsonResponse(request, {
     ok: true,
     available: true,
@@ -63,12 +68,14 @@ async function handlePull(request, env, tenant) {
   if (!legacy.ok) {
     return buildJsonResponse(request, { ok: false, action: 'pull', tenant, error: legacy.error || 'pull_failed' }, 503);
   }
+
   return buildJsonResponse(request, { ok: true, action: 'pull', tenant, ...legacy });
 }
 
 async function handlePush(request, env, tenant) {
   const db = getDB(env);
   let body = null;
+
   try {
     body = await request.json();
   } catch (_) {
@@ -79,10 +86,12 @@ async function handlePush(request, env, tenant) {
     if (!db) {
       return syncJson({ ok: false, error: 'missing_d1_binding', remote_sync_allowed: false }, 501, request);
     }
+
     const operations = body.operations;
     if (!operations.length) {
       return syncJson({ ok: false, error: 'operations_required' }, 400, request);
     }
+
     if (operations.length > 200) {
       return syncJson({ ok: false, error: 'batch_too_large', limit: 200 }, 413, request);
     }
@@ -108,6 +117,7 @@ async function handlePush(request, env, tenant) {
 
     const ok = ack_ids.length > 0 && rejected.length === 0;
     const status = rejected.length ? 207 : 200;
+
     return syncJson({
       ok,
       tenant,
@@ -125,9 +135,11 @@ async function handlePush(request, env, tenant) {
       source: body.source || 'manual-browser-sync',
       exported_at: body.snapshot?.meta?.exported_at,
     });
+
     if (!result.ok) {
       return buildJsonResponse(request, { ok: false, action: 'push', tenant, error: result.error || 'push_failed' }, 503);
     }
+
     return buildJsonResponse(request, { ok: true, action: 'push', tenant, ...result });
   }
 
@@ -140,6 +152,7 @@ export async function onRequestOptions(context) {
 
 export async function onRequestGet(context) {
   const { request, env } = context;
+
   try {
     const url = new URL(request.url);
     const action = String(url.searchParams.get('action') || 'capabilities').trim().toLowerCase();
@@ -147,22 +160,33 @@ export async function onRequestGet(context) {
 
     if (action === 'capabilities') return buildCapabilities(request, env);
     if (action === 'pull') return await handlePull(request, env, tenant);
+
     return buildJsonResponse(request, { ok: false, error: 'unsupported_action', action }, 400);
   } catch (error) {
-    return buildJsonResponse(request, { ok: false, error: 'state_get_failed', detail: String(error?.message || error || 'unknown_error') }, 500);
+    return buildJsonResponse(request, {
+      ok: false,
+      error: 'state_get_failed',
+      detail: String(error?.message || error || 'unknown_error'),
+    }, 500);
   }
 }
 
 export async function onRequestPost(context) {
   const { request, env } = context;
+
   try {
     const url = new URL(request.url);
     const action = String(url.searchParams.get('action') || '').trim().toLowerCase();
     const tenant = readTenant(request, url);
 
     if (action === 'push') return await handlePush(request, env, tenant);
+
     return buildJsonResponse(request, { ok: false, error: 'unsupported_action', action }, 400);
   } catch (error) {
-    return buildJsonResponse(request, { ok: false, error: 'state_post_failed', detail: String(error?.message || error || 'unknown_error') }, 500);
+    return buildJsonResponse(request, {
+      ok: false,
+      error: 'state_post_failed',
+      detail: String(error?.message || error || 'unknown_error'),
+    }, 500);
   }
 }

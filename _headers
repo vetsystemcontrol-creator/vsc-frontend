@@ -2,33 +2,11 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   X-Frame-Options: SAMEORIGIN
-  Content-Security-Policy: frame-ancestors 'self'
-  Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=(), usb=()
-  Cross-Origin-Opener-Policy: same-origin
-  Cross-Origin-Resource-Policy: same-origin
 
 /api/*
-  Cache-Control: no-store, max-age=0, must-revalidate
+  Cache-Control: no-store
   Access-Control-Allow-Origin: *
-  Access-Control-Allow-Methods: GET, POST, OPTIONS
-  Access-Control-Allow-Headers: Content-Type, Accept, Authorization, Origin, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token
-  Access-Control-Expose-Headers: Content-Type, Cache-Control, ETag
-  Access-Control-Max-Age: 86400
-
-/sw.js
-  Cache-Control: no-store, max-age=0, must-revalidate
-
-/index.html
-  Cache-Control: no-store, max-age=0, must-revalidate
-
-/login.html
-  Cache-Control: no-store, max-age=0, must-revalidate
-
-/dashboard.html
-  Cache-Control: no-store, max-age=0, must-revalidate
-
-/topbar.html
-  Cache-Control: no-store, max-age=0, must-revalidate
-
-/404.html
-  Cache-Control: no-store, max-age=0, must-revalidate
+  Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS
+  Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token
+  Access-Control-Expose-Headers: Content-Type, Content-Length, ETag
+  Vary: Origin, Access-Control-Request-Method, Access-Control-Request-Headers
