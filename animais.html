@@ -253,8 +253,10 @@
     .filtersMeta{ display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:10px; flex-wrap:wrap; }
     .filtersCount{ font-size:12px; color:#334155; font-weight:800; }
     .listEmpty{ padding:22px 18px; color:#64748b; font-size:14px; }
-    .tableShell{ margin-top:14px; overflow-x:auto; border:1px solid #edf2f7; border-radius:12px; }
-    .col-actions{ position:sticky; right:0; background:#fff; box-shadow:-2px 0 6px rgba(0,0,0,.06); z-index:1; }
+    .tableShell{ margin-top:14px; overflow-x:auto; overflow-y:visible; border:1px solid #edf2f7; border-radius:12px; }
+    .col-actions{ position:sticky; right:0; background:#fff; box-shadow:-2px 0 6px rgba(0,0,0,.06); z-index:10; }
+    /* [FIX-DROPDOWN-2] painel do dropdown deve flutuar acima da linha sticky */
+    .vsc-animal-actions-panel{ z-index:9999 !important; }
     thead .col-actions{ background:#f8fafc; }
     @media (max-width:1400px){ .col-hide-xl{ display:none; } }
     @media (max-width:1100px){ .col-hide-lg{ display:none; } }
@@ -358,6 +360,8 @@
     table { width: 100% !important; }
     table { table-layout: fixed; }
     th, td { overflow: hidden; text-overflow: ellipsis; }
+    /* [FIX-DROPDOWN-1] col-actions não pode clipar o painel absoluto */
+    td.col-actions { overflow: visible !important; }
 
     /* 3) coluna AÇÕES compacta e sempre acessível (desktop) */
     th:last-child, td:last-child { width: 260px; } /* ajuste seguro p/ 3 botões */
