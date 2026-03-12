@@ -1153,13 +1153,9 @@ function render(){
                 data-act="toggle" data-id="${a?.id}">
           ${isInativo ? "Ativar" : "Inativar"}
         </button>
-        <details class="vsc-animal-actions-menu" data-id="${a?.id}">
-          <summary class="btn btnMini btnGhost vsc-animal-actions-trigger" aria-label="Mais ações" title="Mais ações">⚙</summary>
-          <div class="vsc-animal-actions-panel">
-            <button class="btn btnMini btnGhost" type="button" data-act="edit" data-id="${a?.id}">Alterar</button>
-            <button class="btn btnMini btnDanger" type="button" data-act="del" data-id="${a?.id}">Excluir</button>
-          </div>
-        </details>
+        <button class="btn btnMini btnGhost vsc-gear-trigger" type="button"
+                data-act="gear" data-id="${a?.id}"
+                aria-label="Mais ações" title="Mais ações">⚙</button>
       </div>
     `;
     tr.appendChild(tdA);
@@ -1174,16 +1170,12 @@ function ensureAnimalActionsMenuStyles(){
   const st = document.createElement("style");
   st.id = "vsc-animal-actions-menu-style";
   st.textContent = `
-    .col-actions{ overflow: visible; }
     .vsc-animal-actions-row{ display:flex; justify-content:flex-end; align-items:center; gap:8px; flex-wrap:nowrap; white-space:nowrap; min-width:0; }
-    .vsc-animal-actions-menu{ position:relative; display:inline-block; margin:0; }
-    .vsc-animal-actions-menu summary{ list-style:none; }
-    .vsc-animal-actions-menu summary::-webkit-details-marker{ display:none; }
-    .vsc-animal-actions-trigger{ min-width:42px; padding-left:10px !important; padding-right:10px !important; }
-    /* [FIX-DROPDOWN] position:fixed escapa de qualquer overflow pai (tabela/td) */
-    .vsc-animal-actions-panel{ position:fixed; display:none; min-width:144px; padding:8px; border:1px solid #dbe1ea; border-radius:12px; background:#fff; box-shadow:0 12px 28px rgba(15,23,42,.16); z-index:99999; }
-    .vsc-animal-actions-menu[open] .vsc-animal-actions-panel{ display:flex; flex-direction:column; gap:8px; }
-    .vsc-animal-actions-panel .btn{ width:100%; justify-content:flex-start; }
+    .vsc-gear-trigger{ min-width:42px; padding-left:10px !important; padding-right:10px !important; }
+    /* Painel singleton appendado ao body — escapa de qualquer overflow/stacking context */
+    #vsc-gear-panel{ position:fixed; display:none; flex-direction:column; gap:8px; min-width:148px; padding:8px; border:1px solid #dbe1ea; border-radius:12px; background:#fff; box-shadow:0 12px 28px rgba(15,23,42,.18); z-index:99999; }
+    #vsc-gear-panel.open{ display:flex; }
+    #vsc-gear-panel .btn{ width:100%; justify-content:flex-start; }
   `;
   document.head.appendChild(st);
 }
@@ -1194,44 +1186,84 @@ function ensureAnimalActionsMenuStyles(){
 function wireUI(){
   ensureAnimalActionsMenuStyles();
 
-  // [FIX-DROPDOWN] fechar outros menus e reposicionar painel com position:fixed
-  document.addEventListener("click", (ev)=>{
-    const inside = ev.target.closest(".vsc-animal-actions-menu");
-    document.querySelectorAll(".vsc-animal-actions-menu[open]").forEach((node)=>{
-      if(node !== inside) node.removeAttribute("open");
+  // ── Painel singleton appendado ao body ──────────────────────────────────────
+  // Escapa de qualquer overflow/stacking context da tabela.
+  // Um único #vsc-gear-panel reutilizado por todas as linhas.
+  let _gearPanel = null;
+  let _gearActiveId = null;
+
+  function _getGearPanel(){
+    if(_gearPanel) return _gearPanel;
+    _gearPanel = document.createElement("div");
+    _gearPanel.id = "vsc-gear-panel";
+    _gearPanel.innerHTML =
+      '<button class="btn btnMini btnGhost" type="button" id="vsc-gear-edit">Alterar</button>' +
+      '<button class="btn btnMini btnDanger" type="button" id="vsc-gear-del">Excluir</button>';
+    document.body.appendChild(_gearPanel);
+
+    // Ações do painel — chama funções do módulo diretamente
+    _gearPanel.addEventListener("click", (ev)=>{
+      ev.stopPropagation();
+      const btn = ev.target.closest("button");
+      if(!btn || !_gearActiveId) return;
+      const id = _gearActiveId;
+      _closeGearPanel();
+      if(btn.id === "vsc-gear-edit") openAnimalModal(id, { mode:"EDIT", openHistory:false });
+      if(btn.id === "vsc-gear-del")  delAnimal(id);
     });
-  }, true);
 
-  // Reposicionar painel quando details abre (toggle)
-  document.addEventListener("toggle", (ev)=>{
-    const details = ev.target;
-    if(!details.classList || !details.classList.contains("vsc-animal-actions-menu")) return;
-    if(!details.open) return;
-    const panel = details.querySelector(".vsc-animal-actions-panel");
-    if(!panel) return;
-    const trigger = details.querySelector(".vsc-animal-actions-trigger");
-    if(!trigger) return;
+    return _gearPanel;
+  }
+
+  function _openGearPanel(trigger, id){
+    const panel = _getGearPanel();
+    _gearActiveId = id;
     const rect = trigger.getBoundingClientRect();
-    // Posicionar abaixo e alinhado à direita do trigger
-    panel.style.top  = (rect.bottom + 6) + "px";
-    panel.style.left = "";
-    panel.style.right = "";
-    // Calcular posição left para alinhar à direita do trigger
-    const panelW = panel.offsetWidth || 144;
-    let leftPos = rect.right - panelW;
-    // Garantir que não sai pela esquerda da tela
-    if(leftPos < 8) leftPos = 8;
-    panel.style.left = leftPos + "px";
+    // Mostrar brevemente para medir largura real
+    panel.style.visibility = "hidden";
+    panel.classList.add("open");
+    const pw = panel.offsetWidth || 148;
+    panel.style.visibility = "";
+    // Posição: abaixo do trigger, alinhado à direita
+    let top  = rect.bottom + 6;
+    let left = rect.right - pw;
+    if(left < 8) left = 8;
+    // Garantir que não sai pela base da viewport
+    if(top + 120 > window.innerHeight) top = rect.top - 120;
+    panel.style.top  = top + "px";
+    panel.style.left = left + "px";
+  }
+
+  function _closeGearPanel(){
+    if(!_gearPanel) return;
+    _gearPanel.classList.remove("open");
+    _gearActiveId = null;
+  }
+
+  // Abrir painel ao clicar na engrenagem
+  document.addEventListener("click", (ev)=>{
+    const gear = ev.target.closest(".vsc-gear-trigger");
+    if(gear){
+      ev.stopPropagation();
+      const id = gear.dataset.id;
+      const panel = _getGearPanel();
+      // Toggle: fechar se já está aberto para este id
+      if(panel.classList.contains("open") && _gearActiveId === id){
+        _closeGearPanel(); return;
+      }
+      _openGearPanel(gear, id);
+      return;
+    }
+    // Clicar fora fecha
+    if(!ev.target.closest("#vsc-gear-panel")) _closeGearPanel();
   }, true);
 
-  // Fechar ao scroll (painel fixo ficaria "voando")
-  window.addEventListener("scroll", ()=>{
-    document.querySelectorAll(".vsc-animal-actions-menu[open]").forEach((node)=>node.removeAttribute("open"));
-  }, { passive:true, capture:true });
+  // Fechar ao scroll ou resize
+  window.addEventListener("scroll", _closeGearPanel, { passive:true, capture:true });
+  window.addEventListener("resize", _closeGearPanel, { passive:true });
 
   document.addEventListener("keydown", (ev)=>{
-    if(ev.key !== "Escape") return;
-    document.querySelectorAll(".vsc-animal-actions-menu[open]").forEach((node)=>node.removeAttribute("open"));
+    if(ev.key === "Escape") _closeGearPanel();
   });
 
   // recovery buttons (empty-state)

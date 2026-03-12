@@ -494,6 +494,76 @@ function wireAttachListInteractions(db){
     return u8;
   }
 
+  function clonePrintSafe(value){
+    try{
+      if(typeof structuredClone === "function") return structuredClone(value);
+    }catch(_){}
+    try{
+      return JSON.parse(JSON.stringify(value));
+    }catch(_){
+      return value;
+    }
+  }
+
+  function blobToDataUrl(blob){
+    return new Promise((resolve, reject) => {
+      try{
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result || ""));
+        fr.onerror = () => reject(fr.error || new Error("file_reader_failed"));
+        fr.readAsDataURL(blob);
+      }catch(e){
+        reject(e);
+      }
+    });
+  }
+
+  async function fetchAttachmentDataUrlForPrint(atendimentoId, att){
+    try{
+      if(!atendimentoId || !att || !att.id || att.dataUrl || !att.synced_to_r2) return att;
+      const headers = getPrintAuthHeaders();
+      const tenant = headers["X-VSC-Tenant"] || headers["x-vsc-tenant"] || "tenant-default";
+      const base = location.origin || "";
+      const url = `${base}/api/attachments?action=download&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(att.id)}&tenant=${encodeURIComponent(tenant)}`;
+      const ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => { try{ ctrl.abort(); }catch(_){} }, 12000) : null;
+      const r = await fetch(url, {
+        method: "GET",
+        credentials: "include",
+        headers,
+        signal: ctrl ? ctrl.signal : undefined
+      });
+      if(timer) clearTimeout(timer);
+      if(!r.ok) throw new Error(`HTTP_${r.status}`);
+      const blob = await r.blob();
+      att.dataUrl = await blobToDataUrl(blob);
+      if(!att.mime && blob && blob.type) att.mime = blob.type;
+      return att;
+    }catch(e){
+      console.warn("[PRINT] anexo remoto indisponível para impressão:", att && (att.name || att.id), e);
+      return att;
+    }
+  }
+
+  async function hydrateAtendimentoAttachmentsForPrint(atendimento){
+    const rec = clonePrintSafe(atendimento || {});
+    const attachments = Array.isArray(rec.attachments) ? rec.attachments.map(a => Object.assign({}, a)) : [];
+    if(!attachments.length){
+      rec.attachments = [];
+      return rec;
+    }
+    rec.attachments = await Promise.all(attachments.map(att => fetchAttachmentDataUrlForPrint(rec.atendimento_id, att)));
+    return rec;
+  }
+
+  function getOfficialSystemLogoUrl(){
+    try{
+      return new URL('/assets/brand/vsc-logo-horizontal.png', location.origin).href;
+    }catch(_){
+      return '/assets/brand/vsc-logo-horizontal.png';
+    }
+  }
+
   async function getEmpresaLogoAFromLocalStorage(){
     try{
       // Prioridade: snapshot JSON da empresa (quando existe)
@@ -591,9 +661,10 @@ async function loadEmpresaSnapshot(db){
   async function buildPrintData(db){
     // garantir persistência
     await salvar(db, false);
-    const rec = await idbGet(db,"atendimentos_master", ATD.atendimento_id);
-    if(!rec) throw new Error("Atendimento não encontrado para impressão.");
+    const recRaw = await idbGet(db,"atendimentos_master", ATD.atendimento_id);
+    if(!recRaw) throw new Error("Atendimento não encontrado para impressão.");
 
+    const rec = await hydrateAtendimentoAttachmentsForPrint(recRaw);
     const empresa = await loadEmpresaSnapshot(db);
 
     const cliente = (rec.cliente_id && hasStore(db,"clientes_master"))
@@ -604,7 +675,14 @@ async function loadEmpresaSnapshot(db){
       ? (await Promise.all(rec.animal_ids.map(id => idbGet(db,"animais_master", id)))).filter(Boolean)
       : [];
 
-    return { empresa, cliente, animais, atendimento: rec, gerado_em: isoNow() };
+    return {
+      empresa,
+      cliente,
+      animais,
+      atendimento: rec,
+      gerado_em: isoNow(),
+      system_logo_url: getOfficialSystemLogoUrl()
+    };
   }
 
 // SGQT-PRINT-3.0 (Premium Enterprise) — melhor prática: gerar PDF server-side (Chromium headless)
@@ -895,18 +973,7 @@ function openPrintWindowClient(payload, docType, opts){
   const DOC_LABEL = (docType === "financeiro") ? "Comprovante Financeiro" : (docType === "prescricao") ? "Prescrição" : (docType === "clinico_financeiro") ? "Relatório Clínico + Financeiro" : "Relatório Clínico / Prontuário";
   const DOC_SPEC = "SGQT-PRINT-1.0";
 
-  const SYSTEM_LOGO_SVG = `
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-label="Vet System Control">
-  <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#16a34a"/>
-      <stop offset="1" stop-color="#0ea5e9"/>
-    </linearGradient>
-  </defs>
-  <rect x="6" y="6" width="52" height="52" rx="12" fill="url(#g)"/>
-  <path d="M18 39c7-10 16-16 28-17-3 4-7 7-11 8 3 1 5 3 6 6-6-3-13-3-19-1-1 2-3 4-4 4z" fill="#fff" opacity=".95"/>
-  <path d="M24 46c7-5 16-7 26-6" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".9"/>
-</svg>`;
+  const SYSTEM_LOGO_URL = R.system_logo_url || getOfficialSystemLogoUrl();
 
   const empLine = [empresa.cnpj, empresa.endereco, [empresa.telefone, empresa.email].filter(Boolean).join(" • ")].filter(Boolean).join("<br/>");
   const animaisTxt = animais.length ? animais.map(a=>a.nome||a.id).filter(Boolean).join(", ") : (Array.isArray(atd._animal_names)?atd._animal_names.join(", "):"—");
@@ -936,76 +1003,237 @@ function openPrintWindowClient(payload, docType, opts){
   ].filter(Boolean).join(" — ");
 
   const css = `
-:root{--text:#0f172a;--muted:#64748b;--bd:#e2e8f0;}
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--text);margin:0;background:#fff;}
-.page{max-width:920px;margin:0 auto;padding:24px 26px 36px;}
-.sheet{position:relative;}
+:root{
+  --text:#0f172a;
+  --text-soft:#1e293b;
+  --muted:#64748b;
+  --bd:#dbe4ee;
+  --bd-strong:#c7d2df;
+  --panel:#f8fafc;
+  --panel-2:#eef6f1;
+  --accent:#0f766e;
+  --accent-soft:#dff6f0;
+}
+*{box-sizing:border-box;}
+html{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+body{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--text);margin:0;background:#fff;}
+.page{max-width:980px;margin:0 auto;padding:20px 22px 34px;}
+.sheet{position:relative;background:#fff;}
 .sheet + .sheet{margin-top:18px;}
-.hdr{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;border-bottom:2px solid var(--bd);padding-bottom:14px;margin-bottom:16px;}
-.hdr-left{display:flex;gap:14px;align-items:flex-start;}
-
-.sysBrand{display:flex;gap:8px;align-items:center;}
-.sysIcon svg{height:34px;width:auto;display:block;}
-.sysName{line-height:1.05}
-.sysMain{font-size:13px;font-weight:900;letter-spacing:-.02em;}
-.sysSub{font-size:11px;color:var(--muted);font-weight:800;}
-.logoA{width:54px;height:54px;object-fit:contain;border:none;border-radius:0;margin:0;}
-.hdr h1{font-size:16px;margin:0;font-weight:900;letter-spacing:-.02em;}
-.small{font-size:11px;color:var(--muted);line-height:1.4;}
-.box{border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin:10px 0;}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-.lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700;}
-.val{font-size:13px;font-weight:800;margin-top:2px;}
-.pre{white-space:pre-wrap;font-weight:600;}
-table{width:100%;border-collapse:collapse;margin-top:8px;}
-th,td{border-bottom:1px solid var(--bd);padding:8px 10px;font-size:12.5px;vertical-align:top;}
-th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:left;}
+.sheetContent{position:relative;z-index:1;}
+.hdr{
+  position:relative;
+  display:grid;
+  grid-template-columns:100px 1fr 220px;
+  gap:18px;
+  align-items:start;
+  padding:18px 18px 16px;
+  border:1px solid var(--bd-strong);
+  border-radius:18px;
+  background:linear-gradient(180deg,#ffffff 0%,#f9fbfd 100%);
+  margin-bottom:14px;
+  overflow:hidden;
+}
+.hdr::after{
+  content:" ";
+  position:absolute;
+  left:0;right:0;bottom:0;
+  height:4px;
+  background:linear-gradient(90deg,#0f766e 0%, #16a34a 45%, #0ea5e9 100%);
+}
+.hdr-logos{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  min-height:84px;
+}
+.logoA{
+  width:84px;
+  max-width:100%;
+  max-height:84px;
+  object-fit:contain;
+  border:none;
+  border-radius:0;
+  margin:0;
+}
+.logoA--placeholder{
+  width:84px;height:84px;border-radius:18px;
+  display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(135deg,#0f766e,#16a34a);
+  color:#fff;font-weight:900;font-size:26px;letter-spacing:-.04em;
+}
+.hdr-empresa{display:flex;flex-direction:column;gap:7px;min-width:0;}
+.module-chip{
+  display:inline-flex;align-items:center;gap:8px;width:max-content;
+  padding:6px 10px;border-radius:999px;
+  background:var(--accent-soft);color:var(--accent);
+  font-size:10.5px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;
+}
+.system-line{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding-top:2px;
+}
+.system-line img{
+  width:220px;max-width:100%;max-height:44px;object-fit:contain;
+  border:none !important;border-radius:0 !important;margin:0 !important;
+}
+.system-name-fallback{font-size:16px;font-weight:900;letter-spacing:-.03em;color:#0b1220;}
+.emp-nome{font-size:22px;line-height:1.05;font-weight:900;letter-spacing:-.04em;color:#0b1220;}
+.emp-sub{font-size:12px;font-weight:700;color:var(--text-soft);}
+.emp-dados{font-size:12px;line-height:1.58;color:var(--text-soft);}
+.hdr-doc{
+  border:1px solid var(--bd);
+  background:var(--panel);
+  border-radius:16px;
+  padding:12px 13px;
+  display:grid;
+  gap:7px;
+  align-self:stretch;
+}
+.doc-tipo{font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#0b1220;}
+.doc-meta{font-size:12px;line-height:1.45;color:var(--text-soft);}
+.doc-meta strong{color:#0b1220;}
+.intro-grid{display:grid;grid-template-columns:1.2fr .8fr;gap:12px;margin:0 0 12px;}
+.summary-card,.meta-card{
+  border:1px solid var(--bd);
+  border-radius:16px;
+  background:#fff;
+  padding:14px 16px;
+}
+.summary-card{background:linear-gradient(180deg,#ffffff 0%,#f7fbf9 100%);}
+.summary-title,.meta-title,.section-title{
+  margin:0 0 10px;
+  font-size:11px;
+  font-weight:900;
+  text-transform:uppercase;
+  letter-spacing:.12em;
+  color:var(--accent);
+}
+.summary-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:12px 16px;
+}
+.lbl{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;font-weight:800;}
+.val{font-size:13.5px;font-weight:800;margin-top:3px;line-height:1.45;color:#0b1220;}
+.pre{white-space:pre-wrap;font-weight:600;line-height:1.58;}
+.box{
+  border:1px solid var(--bd);
+  border-radius:16px;
+  padding:12px 14px;
+  margin:10px 0;
+  background:#fff;
+}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;}
+.info-list{display:grid;gap:8px;}
+.info-item{
+  padding:10px 12px;
+  border:1px solid var(--bd);
+  border-radius:14px;
+  background:#fff;
+}
+table{
+  width:100%;
+  border-collapse:separate;
+  border-spacing:0;
+  margin-top:8px;
+  border:1px solid var(--bd);
+  border-radius:14px;
+  overflow:hidden;
+}
+th,td{
+  border-bottom:1px solid var(--bd);
+  padding:9px 10px;
+  font-size:12.5px;
+  vertical-align:top;
+}
+th{
+  background:#f8fafc;
+  font-size:10.5px;
+  color:var(--muted);
+  text-transform:uppercase;
+  letter-spacing:.08em;
+  text-align:left;
+  font-weight:900;
+}
+tbody tr:last-child td{border-bottom:none;}
 .right{text-align:right;}
 .tot{display:flex;justify-content:flex-end;margin-top:10px;}
-.tot .box{min-width:320px;}
-.section-title{margin-top:18px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.08em;color:#0b1220;}
-img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid var(--bd);border-radius:10px;}
+.tot .box{min-width:320px;background:linear-gradient(180deg,#fff 0%,#f8fafc 100%);}
+img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid var(--bd);border-radius:12px;}
 .pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
 .muted{color:var(--muted);}
-.att{margin:14px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:10px;break-inside:avoid;}
-.att-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:#334155;margin-bottom:6px;}
-.att-desc{font-size:12px;color:var(--muted);margin-top:6px;font-style:italic;}
-.att-nodata{font-size:12px;color:#b45309;background:#fef3c7;padding:8px 10px;border-radius:6px;margin-top:6px;}
-
-/* Marca d'água (somente relatório) */
+.attachments{display:grid;gap:14px;}
+.attachments-lead{
+  margin:0 0 12px;
+  font-size:12px;
+  color:var(--text-soft);
+  line-height:1.6;
+}
+.att{
+  margin:0;
+  padding:14px 16px;
+  border:1px solid var(--bd);
+  border-radius:18px;
+  break-inside:avoid;
+  background:#fff;
+}
+.att-head{
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  align-items:flex-start;
+  margin-bottom:8px;
+}
+.att-title{
+  font-size:12px;
+  font-weight:900;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+  color:#0b1220;
+  margin:0;
+}
+.att-meta{font-size:11px;color:var(--muted);line-height:1.45;}
+.att-desc{
+  font-size:12px;
+  color:var(--text-soft);
+  margin:10px 0 0;
+  padding-top:10px;
+  border-top:1px dashed var(--bd);
+  line-height:1.58;
+}
+.att-nodata{
+  font-size:12px;
+  color:#92400e;
+  background:#fff7ed;
+  padding:9px 11px;
+  border-radius:10px;
+  margin-top:8px;
+  border:1px solid #fed7aa;
+}
 .wmLocal{
   position:absolute; inset:0;
   display:flex; align-items:center; justify-content:center;
-  pointer-events:none; user-select:none;
-  z-index:0;
+  pointer-events:none; user-select:none; z-index:0;
 }
 .wmLocal img{
-  width:62%;
-  max-width:560px;
-  border:none !important;
-  border-radius:0 !important;
-  margin:0 !important;
-  opacity:.08;
-  filter:grayscale(1);
-  object-fit:contain;
+  width:64%; max-width:560px;
+  border:none !important; border-radius:0 !important; margin:0 !important;
+  opacity:.06; filter:grayscale(1); object-fit:contain;
 }
-.sheetContent{position:relative; z-index:1;}
-
 .footer{display:none;}
 
 @media print{
-  @page{ size:A4; margin:12mm 12mm 30mm 12mm; } /* reserva espaço p/ rodapé fixo */
+  @page{ size:A4; margin:12mm 12mm 28mm 12mm; }
   .no-print{display:none !important;}
-  body{margin:0;}
+  body{margin:0;background:#fff;}
   .page{max-width:none;padding:0;}
-  .box{break-inside:avoid;}
+  .box,.summary-card,.meta-card,.info-item,.att{break-inside:avoid;}
   .attachments{break-inside:auto;}
-  .att{break-inside:avoid;}
   .att-media{break-inside:avoid;}
-  .att-media img{max-height:250mm;}
+  .att-media img{max-height:245mm;}
   .pdf-pages img{break-inside:avoid; break-after:page;}
   .pdf-pages img:last-child{break-after:auto;}
-
   table{break-inside:auto;}
   tr{break-inside:avoid;}
   img{break-inside:avoid;}
@@ -1015,12 +1243,18 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     display:block;
     position:fixed; left:0; right:0; bottom:0;
     border-top:1px solid var(--bd);
-    padding:3mm 12mm 3mm;
+    padding:3mm 12mm;
     font-size:9px; color:var(--muted);
     background:#fff;
   }
-  .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:center;}
-  /* counter(pages) não funciona no Chrome para about:blank - JS preenche .pnum */
+  .footer .row{display:flex;justify-content:space-between;align-items:flex-end;gap:8px;}
+}
+@media (max-width: 860px){
+  .hdr{grid-template-columns:1fr;gap:14px;}
+  .hdr-logos{justify-content:flex-start;min-height:auto;}
+  .logoA,.logoA--placeholder{width:72px;height:72px;}
+  .intro-grid,.summary-grid,.grid{grid-template-columns:1fr;}
+  .system-line img{width:190px;}
 }
   `;
 
@@ -1149,6 +1383,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
   const bodyClinicoAttachments = `
     <div class="section-title">Anexos</div>
+    <div class="attachments-lead">Todos os anexos disponíveis são incorporados visualmente ao documento. Fotos são impressas em escala proporcional e PDFs são renderizados página por página para preservar leitura e rastreabilidade.</div>
     <div class="attachments">${attHtml || `<div class="small muted">Nenhum anexo.</div>`}</div>
   `;
 
@@ -1265,12 +1500,14 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         ${(docType === "clinico" && logoB) ? `<div class="wmLocal"><img src="${logoB}" alt="Marca d'água"/></div>` : ``}
         <div class="sheetContent">
           <div class="hdr">
-            <!-- Logo empresa (destaque, lado esquerdo) -->
             <div class="hdr-logos">
-              ${logoA ? `<img class="logoA" src="${logoA}" alt="Logo"/>` : `<div style="width:56px;height:56px;border-radius:4px;background:linear-gradient(135deg,#16a34a,#0369a1);display:flex;align-items:center;justify-content:center;">${SYSTEM_LOGO_SVG}</div>`}
+              ${logoA ? `<img class="logoA" src="${logoA}" alt="Logo da empresa"/>` : `<div class="logoA--placeholder" aria-label="Identidade da empresa">A</div>`}
             </div>
-            <!-- Dados da empresa (centro) -->
             <div class="hdr-empresa">
+              <div class="module-chip">Módulo Atendimentos</div>
+              <div class="system-line">
+                ${SYSTEM_LOGO_URL ? `<img src="${SYSTEM_LOGO_URL}" alt="Vet System Control"/>` : `<div class="system-name-fallback">Vet System Control</div>`}
+              </div>
               <div class="emp-nome">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa")}</div>
               ${empresa.razao_social && (empresa.razao_social !== empresa.nome) ? `<div class="emp-sub">${esc(empresa.razao_social)}</div>` : ""}
               <div class="emp-dados">${[
@@ -1278,21 +1515,47 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
                 empresa.crmv ? "CRMV: "+empresa.crmv : "",
                 empresa.endereco||"",
                 [empresa.cidade, empresa.uf].filter(Boolean).join("/"),
-                [empresa.telefone, empresa.email].filter(Boolean).join("  •  ")
+                [empresa.telefone, empresa.email].filter(Boolean).join(" • ")
               ].filter(Boolean).join("<br/>")}</div>
             </div>
-            <!-- Identificação do documento (direita) -->
             <div class="hdr-doc">
               <div class="doc-tipo">${esc(DOC_LABEL)}</div>
-              <div class="doc-num"><strong>Nº:</strong> ${esc(atd.numero||"—")}</div>
-              <div class="doc-status"><strong>Status:</strong> ${esc(atd.status||"—")}</div>
-              <div class="doc-data"><strong>Data:</strong> ${esc(fmtDate(R.gerado_em))}</div>
+              <div class="doc-meta"><strong>Nº:</strong> ${esc(atd.numero||"—")}</div>
+              <div class="doc-meta"><strong>Status:</strong> ${esc(atd.status||"—")}</div>
+              <div class="doc-meta"><strong>Data de emissão:</strong> ${esc(fmtDate(R.gerado_em))}</div>
+              <div class="doc-meta"><strong>Paciente(s):</strong> ${esc(animaisTxt||"—")}</div>
             </div>
-            <!-- Crédito sistema (rodapé do cabeçalho) -->
-            <div class="sys-credit">
-              ${SYSTEM_LOGO_SVG}
-              <span class="sysMain">Vet System Control</span>
-              <span class="sysSub">| Equine — Sistema de Gestão Veterinária</span>
+          </div>
+
+          <div class="intro-grid">
+            <div class="summary-card">
+              <div class="summary-title">Resumo institucional</div>
+              <div class="summary-grid">
+                <div>
+                  <div class="lbl">Cliente / Proprietário</div>
+                  <div class="val">${esc(cli.nome||cli.razao_social||atd.cliente_label||"—")}</div>
+                </div>
+                <div>
+                  <div class="lbl">Paciente(s)</div>
+                  <div class="val">${esc(animaisTxt||"—")}</div>
+                </div>
+                <div>
+                  <div class="lbl">Veterinário / Responsável</div>
+                  <div class="val">${esc(vetLine||"—")}</div>
+                </div>
+                <div>
+                  <div class="lbl">Anexos clínicos</div>
+                  <div class="val">${esc(String(atts.length || 0))}</div>
+                </div>
+              </div>
+            </div>
+            <div class="meta-card">
+              <div class="meta-title">Controle do documento</div>
+              <div class="info-list">
+                <div class="info-item"><div class="lbl">Especificação</div><div class="val">${esc(DOC_SPEC)}</div></div>
+                <div class="info-item"><div class="lbl">Origem</div><div class="val">Vet System Control • ERP Equine</div></div>
+                <div class="info-item"><div class="lbl">Finalidade</div><div class="val">Registro operacional para atendimento, balcão e auditoria clínica.</div></div>
+              </div>
             </div>
           </div>
 
