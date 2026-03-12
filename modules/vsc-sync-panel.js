@@ -222,7 +222,7 @@
               <span style="font-size:20px">⟳</span>
               Sincronização
             </div>
-            <button class="sp-close" id="vscSyncPanelClose">✕</button>
+            <button type="button" class="sp-close" id="vscSyncPanelClose">✕</button>
           </div>
           <div class="sp-body">
             <div class="sp-cards" id="vscSyncCards">
@@ -248,7 +248,7 @@
 
             <div class="sp-error-box" id="spErrorBox"></div>
 
-            <button class="sp-sync-btn" id="spSyncBtn">
+            <button type="button" class="sp-sync-btn" id="spSyncBtn">
               <span id="spSyncBtnIcon">⟳</span>
               <span id="spSyncBtnText">Sincronizar Agora</span>
             </button>
@@ -325,6 +325,9 @@
     const btn = document.getElementById('spSyncBtn');
     const btnIcon = document.getElementById('spSyncBtnIcon');
     const btnText = document.getElementById('spSyncBtnText');
+    const closeBtn = document.getElementById('vscSyncPanelClose');
+    if (closeBtn) closeBtn.disabled = !!state.syncing;
+
     if (btn) {
       btn.disabled = state.syncing;
       btn.className = 'sp-sync-btn' + (state.syncing ? ' syncing' : (state.error ? ' error' : ''));
@@ -385,11 +388,15 @@
     _injectCSS();
     document.body.insertAdjacentHTML('beforeend', _buildHTML());
 
-    document.getElementById('vscSyncPanelClose').addEventListener('click', close);
+    document.getElementById('vscSyncPanelClose').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (!_syncing) close(); });
     document.getElementById('vscSyncPanelOverlay').addEventListener('click', e => {
-      if (e.target.id === 'vscSyncPanelOverlay') close();
+      if (e.target.id === 'vscSyncPanelOverlay' && !_syncing) close();
     });
-    document.getElementById('spSyncBtn').addEventListener('click', _doSync);
+    document.getElementById('spSyncBtn').addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      _doSync();
+    });
 
     _render({ syncing: false, error: null });
 

@@ -6,6 +6,7 @@
   const TENANT = 'tenant-default';
   const REMOTE_BASE = 'https://app.vetsystemcontrol.com.br';
   const SNAPSHOT_TIMEOUT_MS = 20_000;
+  const SNAPSHOT_PUSH_TIMEOUT_MS = 60_000;
   const MANUAL_PUSH_BUDGET_MS = 45_000;
 
   let isSyncing = false;
@@ -36,12 +37,32 @@
     };
   }
 
+  const SNAPSHOT_ALLOWED_STORES = new Set([
+    'produtos_master','produtos_lotes','servicos_master','exames_master','clientes_master','animais_master','atendimentos_master','contas_pagar','contas_receber','fornecedores_master','fechamentos','repro_cases','repro_exams','repro_protocols','repro_events','repro_pregnancy','repro_foaling','repro_tasks','config_params','config_audit_log','user_profiles','business_audit_log','estoque_movimentos','estoque_saldos','import_ledger','estoque_reasons','tenant_subscription','billing_events','animais_racas','animais_pelagens','animais_especies','animal_vitals_history','animal_vaccines','documents'
+  ]);
+
   function apiCandidates() {
     const relative = ['/api/sync/pull', '/api/state?action=pull'];
     const absolute = [
       `${REMOTE_BASE}/api/sync/pull`,
       `${REMOTE_BASE}/api/state?action=pull`,
     ];
+
+    try {
+      const proto = String(location.protocol || '').toLowerCase();
+      if (proto === 'file:') return absolute;
+      const host = String(location.hostname || '').toLowerCase();
+      if (proto === 'http:' && (host === '127.0.0.1' || host === 'localhost')) {
+        return [...relative, ...absolute];
+      }
+    } catch (_) {}
+
+    return relative;
+  }
+
+  function snapshotPushCandidates() {
+    const relative = ['/api/state?action=push'];
+    const absolute = [`${REMOTE_BASE}/api/state?action=push`];
 
     try {
       const proto = String(location.protocol || '').toLowerCase();
@@ -124,6 +145,113 @@
     throw lastErr || new Error('pull_failed');
   }
 
+  function snapshotRowCount(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object' || typeof snapshot.data !== 'object' || !snapshot.data) return 0;
+    let total = 0;
+    for (const rows of Object.values(snapshot.data || {})) {
+      if (Array.isArray(rows)) total += rows.length;
+    }
+    return total;
+  }
+
+  function isRemoteSnapshotMeaningful(payload) {
+    return snapshotRowCount(payload && payload.snapshot) > 0 || Number(payload && payload.revision || 0) > 0;
+  }
+
+  function sanitizeSnapshotForCloud(dump) {
+    if (!dump || typeof dump !== 'object' || typeof dump.data !== 'object' || !dump.data) return null;
+    const filteredData = {};
+    for (const [store, rows] of Object.entries(dump.data || {})) {
+      if (!SNAPSHOT_ALLOWED_STORES.has(store)) continue;
+      filteredData[store] = Array.isArray(rows)
+        ? rows.filter((row) => row && typeof row === 'object' && !Array.isArray(row))
+        : [];
+    }
+
+    const stores = Object.keys(filteredData);
+    if (!stores.length) return null;
+
+    return {
+      meta: {
+        app: 'Vet System Control – Equine',
+        db_name: (dump.schema && dump.schema.db_name) || 'vsc_db',
+        exported_at: nowIso(),
+        source: 'browser-local-bootstrap',
+      },
+      schema: {
+        db_name: (dump.schema && dump.schema.db_name) || 'vsc_db',
+        exported_at: nowIso(),
+        stores,
+      },
+      data: filteredData,
+    };
+  }
+
+  async function exportLocalSnapshotForBootstrap() {
+    if (!(window.VSC_DB && typeof window.VSC_DB.exportDump === 'function')) return null;
+    const dump = await window.VSC_DB.exportDump();
+    const snapshot = sanitizeSnapshotForCloud(dump);
+    if (!snapshot || snapshotRowCount(snapshot) <= 0) return null;
+    return snapshot;
+  }
+
+  async function pushBootstrapSnapshot(snapshot) {
+    const urls = snapshotPushCandidates();
+    let lastErr = null;
+
+    for (const url of urls) {
+      try {
+        const response = await fetchWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+              'X-VSC-Tenant': TENANT,
+            },
+            body: JSON.stringify({
+              snapshot,
+              source: 'browser-local-bootstrap',
+              replace: true,
+            }),
+            cache: 'no-store',
+          },
+          SNAPSHOT_PUSH_TIMEOUT_MS,
+          `snapshot_push_timeout_${SNAPSHOT_PUSH_TIMEOUT_MS}ms`
+        );
+
+        if (!response.ok) {
+          throw new Error(`snapshot_push_http_${response.status}`);
+        }
+
+        const body = await response.json().catch(() => ({}));
+        if (body && body.ok) return body;
+        throw new Error(body && body.error ? String(body.error) : 'snapshot_push_invalid_payload');
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+
+    throw lastErr || new Error('snapshot_push_failed');
+  }
+
+  async function ensureCloudSeededFromLocal(payload) {
+    if (isRemoteSnapshotMeaningful(payload)) return { bootstrapped: false, payload };
+
+    const localSnapshot = await exportLocalSnapshotForBootstrap();
+    if (!localSnapshot) return { bootstrapped: false, payload };
+
+    notifyUI('syncing', 'Publicando base local no servidor…', {
+      phase: 'bootstrap',
+      local_rows: snapshotRowCount(localSnapshot),
+    });
+
+    await pushBootstrapSnapshot(localSnapshot);
+    const refreshed = await fetchSnapshot();
+    return { bootstrapped: true, payload: refreshed };
+  }
+
   async function applySnapshot(snapshot) {
     if (!snapshot || !snapshot.data) {
       return { ok: true, importedStores: [] };
@@ -182,11 +310,13 @@
     notifyUI('syncing');
 
     try {
-      const payload = await fetchSnapshot();
+      let payload = await fetchSnapshot();
+      const seeded = await ensureCloudSeededFromLocal(payload);
+      payload = seeded.payload;
       const applied = await applySnapshot(payload.snapshot);
       localStorage.setItem(SYNC_KEY, nowIso());
-      notifyUI('success', '', { phase: 'pull', applied });
-      return { ok: true, pulled: true, applied };
+      notifyUI('success', '', { phase: seeded.bootstrapped ? 'bootstrap+pull' : 'pull', applied, bootstrapped: seeded.bootstrapped });
+      return { ok: true, pulled: true, applied, bootstrapped: seeded.bootstrapped };
     } catch (err) {
       notifyUI('error', String(err && (err.message || err) || 'pull_failed'));
       throw err;
@@ -247,11 +377,13 @@
         };
       }
 
-      const payload = await fetchSnapshot();
+      let payload = await fetchSnapshot();
+      const seeded = await ensureCloudSeededFromLocal(payload);
+      payload = seeded.payload;
       const applied = await applySnapshot(payload.snapshot);
       localStorage.setItem(SYNC_KEY, nowIso());
-      notifyUI('success', '', { phase: 'push+pull', pushResult, applied });
-      return { ok: true, pushed: !!pushResult, pushResult, applied };
+      notifyUI('success', '', { phase: seeded.bootstrapped ? 'push+bootstrap+pull' : 'push+pull', pushResult, applied, bootstrapped: seeded.bootstrapped });
+      return { ok: true, pushed: !!pushResult, pushResult, applied, bootstrapped: seeded.bootstrapped };
     } catch (err) {
       notifyUI('error', String(err && (err.message || err) || 'manual_sync_failed'));
       throw err;

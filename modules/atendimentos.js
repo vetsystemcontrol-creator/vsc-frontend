@@ -589,85 +589,87 @@ async function loadEmpresaSnapshot(db){
   }
 
 
-function getAttachmentFetchBases(){
-  const out = [];
-  const local = (location.hostname === "127.0.0.1" || location.hostname === "localhost");
-  if(local) out.push("https://app.vetsystemcontrol.com.br");
-  out.push("");
-  return Array.from(new Set(out));
-}
+  function getAttachmentPrintBaseUrls(){
+    const bases = [];
+    if(location.hostname === "127.0.0.1" || location.hostname === "localhost"){
+      bases.push("https://app.vetsystemcontrol.com.br");
+    }
+    bases.push("");
+    return Array.from(new Set(bases));
+  }
 
-async function blobToDataUrl(blob){
-  return await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(reader.error || new Error("blob_to_dataurl_failed"));
-    reader.readAsDataURL(blob);
-  });
-}
+  async function blobToDataUrl(blob){
+    return await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result || ""));
+      fr.onerror = () => reject(fr.error || new Error("blob_to_dataurl_failed"));
+      fr.readAsDataURL(blob);
+    });
+  }
 
-async function hydrateAttachmentsForPrint(atendimento){
-  try{
+  async function hydrateAttachmentsForPrint(atendimento){
     if(!atendimento || !Array.isArray(atendimento.attachments) || !atendimento.attachments.length) return atendimento;
-    const tenant = (window.localStorage && (localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT"))) || "tenant-default";
+    const tenant = localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "tenant-default";
     const atendimentoId = atendimento.atendimento_id || atendimento.id || "";
     if(!atendimentoId) return atendimento;
 
-    const bases = getAttachmentFetchBases();
-    const hydrated = await Promise.all(atendimento.attachments.map(async (raw) => {
-      const att = raw ? Object.assign({}, raw) : raw;
-      if(!att || att.dataUrl) return att;
+    const bases = getAttachmentPrintBaseUrls();
+    const hydrated = [];
+    for(const src of atendimento.attachments){
+      const att = src ? Object.assign({}, src) : src;
+      if(!att){ hydrated.push(att); continue; }
+      if(att.dataUrl){ hydrated.push(att); continue; }
 
-      const mime = String(att.mime || att.mime_type || "");
-      if(att.url){
+      const possibleUrls = [
+        att.url,
+        att.download_url,
+        att.downloadUrl,
+        att.r2_url,
+        att.file_url,
+        att.src
+      ].filter(Boolean);
+
+      let done = false;
+
+      for(const rawUrl of possibleUrls){
         try{
-          const absolute = /^https?:\/\//i.test(String(att.url));
-          const base = (!absolute && (location.hostname === "127.0.0.1" || location.hostname === "localhost"))
-            ? "https://app.vetsystemcontrol.com.br"
-            : "";
-          const url = absolute ? String(att.url) : `${base}${String(att.url)}`;
-          const res = await fetch(url, { credentials: absolute ? "omit" : "include" });
-          if(res.ok){
-            const blob = await res.blob();
-            att.dataUrl = await blobToDataUrl(blob);
-            att.mime = att.mime || blob.type || mime;
-            att.__printHydrated = true;
-            return att;
-          }
-        }catch(_){}
-      }
-
-      if(!att.synced_to_r2 || !att.id) return att;
-
-      let lastErr = null;
-      for(const base of bases){
-        const url = `${base}/api/attachments?action=download&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(att.id)}`;
-        try{
-          const res = await fetch(url, {
-            headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
-            credentials: base ? "omit" : "include"
-          });
+          const res = await fetch(String(rawUrl), { credentials:"include" });
           if(!res.ok) throw new Error(`HTTP ${res.status}`);
           const blob = await res.blob();
           att.dataUrl = await blobToDataUrl(blob);
-          att.mime = att.mime || blob.type || mime;
-          att.__printHydrated = true;
-          return att;
-        }catch(err){
-          lastErr = err;
+          att.mime = att.mime || blob.type || "";
+          done = true;
+          break;
+        }catch(_err){}
+      }
+
+      if(!done && att.id){
+        for(const base of bases){
+          try{
+            const url = `${base}/api/attachments?action=download&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(att.id)}`;
+            const res = await fetch(url, {
+              headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
+              credentials: base ? "omit" : "include"
+            });
+            if(!res.ok) throw new Error(`HTTP ${res.status}`);
+            const blob = await res.blob();
+            att.dataUrl = await blobToDataUrl(blob);
+            att.mime = att.mime || blob.type || "";
+            done = true;
+            break;
+          }catch(_err){}
         }
       }
-      if(lastErr) console.warn("[PRINT][ATTACH] falha ao hidratar anexo para impressão:", att.name || att.id, lastErr);
-      return att;
-    }));
+
+      if(!done){
+        console.warn("[PRINT][ATTACH] anexo não hidratado para impressão:", att.name || att.id || att);
+      }
+      hydrated.push(att);
+    }
 
     atendimento.attachments = hydrated;
     return atendimento;
-  }catch(err){
-    console.warn("[PRINT][ATTACH] hidratação interrompida:", err);
-    return atendimento;
   }
-}
 
   async function buildPrintData(db){
     // garantir persistência
@@ -1021,79 +1023,71 @@ function openPrintWindowClient(payload, docType, opts){
   ].filter(Boolean).join(" — ");
 
   const css = `
-:root{--text:#0f172a;--muted:#64748b;--bd:#d9e2ec;--soft:#f8fbfd;--brand:#0f766e;--brand2:#0ea5e9;}
+:root{--text:#0f172a;--muted:#64748b;--bd:#d8e1ec;--soft:#f8fbfd;--brand:#0f766e;--brand2:#0ea5e9;}
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--text);margin:0;background:#fff;}
-.page{max-width:920px;margin:0 auto;padding:16px 20px 28px;}
+.page{max-width:920px;margin:0 auto;padding:22px 26px 34px;}
 .sheet{position:relative;}
-.sheet + .sheet{margin-top:12px;}
-.sheet--attachments{padding-top:2px;}
-.hdr{position:relative;border:1px solid var(--bd);border-radius:18px;padding:16px 18px 14px;background:linear-gradient(180deg,#fff 0%,#fcfefe 100%);overflow:hidden;margin-bottom:14px;}
-.hdr::after{content:"";display:block;height:5px;margin:14px -18px -14px;border-radius:999px;background:linear-gradient(90deg,var(--brand) 0%,#10b981 38%,var(--brand2) 100%);}
-.hdr-top{display:grid;grid-template-columns:88px minmax(250px,1.1fr) minmax(240px,.95fr);gap:14px;align-items:start;}
-.hdr-mark{width:80px;height:80px;object-fit:contain;border:none;border-radius:0;background:#fff;display:block;margin:0;}
-.hdr-brand{display:flex;gap:12px;align-items:flex-start;margin-bottom:6px;}
-.hdr-system-logo img,.hdr-system-logo svg{width:170px;max-width:100%;height:auto;display:block;border:none;margin:0;}
-.hdr-empresa{padding-top:3px;}
-.emp-nome{font-size:20px;font-weight:900;letter-spacing:-.02em;line-height:1.08;margin-bottom:6px;}
-.emp-sub{font-size:12px;color:var(--muted);font-weight:700;margin-bottom:6px;}
-.emp-dados{font-size:12px;line-height:1.45;color:#334155;}
-.hdr-doc{border:1px solid var(--bd);border-radius:14px;padding:11px 13px;background:#fff;}
-.doc-tipo{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.08em;line-height:1.25;margin-bottom:8px;}
-.doc-row{font-size:12.5px;line-height:1.45;margin:3px 0;}
-.doc-row strong{font-weight:900;}
-.sys-credit{margin-top:10px;padding-top:10px;border-top:1px solid #e8eef5;font-size:11px;color:var(--muted);display:flex;gap:8px;align-items:center;}
-.sys-credit svg{width:18px;height:18px;display:block;flex:none;}
-.grid-2{display:grid;grid-template-columns:1.08fr .92fr;gap:12px;align-items:start;}
+.sheet + .sheet{margin-top:14px;}
+.sheet--attachments{padding-top:4px;}
+.hdr{border:1px solid #cbd5e1;border-radius:20px;padding:14px 16px 12px;background:#fff;overflow:hidden;margin-bottom:12px;}
+.hdr::after{content:"";display:block;height:8px;border-radius:999px;margin:12px -16px -12px;background:linear-gradient(90deg,#16a34a 0%, #14b8a6 44%, #0ea5e9 100%);}
+.hdr-grid{display:grid;grid-template-columns:minmax(360px,1.45fr) minmax(180px,.7fr);gap:18px;align-items:start;}
+.brand-row{display:grid;grid-template-columns:170px 1fr;gap:18px;align-items:start;}
+.system-logo{width:100%;height:auto;display:block;margin:0;}
+.company-logo{width:152px;max-width:100%;height:152px;object-fit:contain;display:block;margin:0 0 0 auto;border:none;}
+.company-box{display:grid;gap:10px;align-content:start;}
+.emp-nome{font-size:18px;line-height:1.1;font-weight:900;letter-spacing:-.02em;margin:0;color:#0f172a;}
+.emp-dados{font-size:12px;line-height:1.55;color:#334155;}
+.doc-title{font-size:15px;line-height:1.2;font-weight:900;letter-spacing:.04em;text-transform:uppercase;margin:2px 0 12px;}
+.doc-meta{display:grid;gap:8px;font-size:12px;line-height:1.45;color:#334155;}
+.doc-meta b{font-size:13px;color:#0f172a;}
+.plain-meta{display:grid;gap:4px;margin:10px 0 12px;}
+.plain-meta .k{font-size:11px;font-weight:900;letter-spacing:.11em;text-transform:uppercase;color:#64748b;}
+.plain-meta .v{font-size:15px;font-weight:900;line-height:1.3;color:#0f172a;}
+.plain-text{font-size:12px;line-height:1.6;color:#0f172a;font-weight:700;}
+.section-label{margin:16px 0 8px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.14em;color:var(--brand);}
+.grid-summary{display:grid;grid-template-columns:1fr auto;gap:18px;align-items:start;}
+.summary-date{min-width:180px;text-align:right;}
+.small{font-size:11px;color:var(--muted);line-height:1.45;}
+.box{border:1px solid var(--bd);border-radius:14px;padding:12px 14px;margin:10px 0;background:#fff;}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-.box{border:1px solid var(--bd);border-radius:14px;padding:11px 13px;margin:9px 0;background:#fff;}
-.panel-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.1em;color:var(--brand);margin:0 0 10px;}
-.panel-stack{display:grid;gap:9px;}
-.meta-item{padding:9px 11px;border:1px solid var(--bd);border-radius:12px;background:var(--soft);}
-.meta-k{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.09em;font-weight:800;margin-bottom:4px;}
-.meta-v{font-size:13px;font-weight:800;line-height:1.35;}
 .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:800;}
 .val{font-size:13px;font-weight:800;margin-top:3px;}
-.small{font-size:11px;color:var(--muted);line-height:1.45;}
-.pre{white-space:pre-wrap;font-weight:600;line-height:1.55;min-height:18px;}
-.section-title{margin-top:14px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.1em;color:var(--brand);}
-table{width:100%;border-collapse:collapse;margin-top:7px;border:1px solid var(--bd);border-radius:14px;overflow:hidden;}
-thead th{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.08em;text-align:left;background:#f8fafc;}
+.pre{white-space:pre-wrap;font-weight:600;line-height:1.55;}
+.table-tight{margin-top:8px;}
+table{width:100%;border-collapse:collapse;margin-top:8px;border-top:1px solid var(--bd);}
 th,td{border-bottom:1px solid var(--bd);padding:8px 10px;font-size:12.5px;vertical-align:top;}
-tbody tr:last-child td{border-bottom:none;}
+th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;text-align:left;}
 .right{text-align:right;}
-.tot{display:flex;justify-content:flex-end;margin-top:9px;}
+.tot{display:flex;justify-content:flex-end;margin-top:10px;}
 .tot .box{min-width:320px;}
-img{max-width:100%;height:auto;display:block;margin:8px auto;border:1px solid var(--bd);border-radius:10px;}
-.attachments{display:grid;gap:12px;}
-.att{margin:0;padding:12px 14px;border:1px solid var(--bd);border-radius:14px;background:#fff;break-inside:avoid;page-break-inside:avoid;}
+.section-title{margin-top:18px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.12em;color:#0f766e;}
+img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid var(--bd);border-radius:10px;}
+.pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
+.muted{color:var(--muted);}
+.att{margin:12px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:12px;break-inside:avoid;page-break-inside:avoid;}
 .att-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:8px;}
 .att-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:#334155;}
 .att-kind{font-size:11px;color:var(--muted);font-weight:800;white-space:nowrap;}
-.att-media{margin-top:8px;break-inside:avoid;page-break-inside:avoid;}
-.att-desc-wrap{margin-top:10px;padding:9px 11px;border-top:1px dashed #cbd5e1;background:#f8fafc;border-radius:10px;}
-.att-desc-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.08em;font-weight:800;margin-bottom:4px;}
-.att-desc{font-size:12px;color:#0f172a;font-style:normal;line-height:1.45;white-space:pre-wrap;}
+.att-desc-wrap{margin-top:10px;padding-top:10px;border-top:1px dashed #cbd5e1;}
+.att-desc-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.09em;font-weight:800;margin-bottom:5px;}
+.att-desc{font-size:12px;color:#0f172a;white-space:pre-wrap;line-height:1.45;}
 .att-nodata{font-size:12px;color:#92400e;background:#fff7ed;padding:8px 10px;border-radius:8px;margin-top:6px;border:1px solid #fed7aa;}
-.pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
-.muted{color:var(--muted);}
-.wmLocal{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;user-select:none;z-index:0;}
+.wmLocal{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; user-select:none; z-index:0;}
 .wmLocal img{width:62%;max-width:560px;border:none !important;border-radius:0 !important;margin:0 !important;opacity:.06;filter:grayscale(1);object-fit:contain;}
-.sheetContent{position:relative;z-index:1;}
+.sheetContent{position:relative; z-index:1;}
 .footer{display:none;}
 @media print{
-  @page{ size:A4; margin:10mm 10mm 24mm 10mm; }
+  @page{ size:A4; margin:10mm 10mm 22mm 10mm; }
   .no-print{display:none !important;}
   body{margin:0;}
   .page{max-width:none;padding:0;}
-  .box,.meta-item,.att,.att-media,.panel-stack{break-inside:avoid;page-break-inside:avoid;}
-  .attachments{break-inside:auto;}
-  .att-media img,.pdf-pages img,img,canvas,tr{break-inside:avoid;page-break-inside:avoid;}
-  .pdf-pages img{break-after:page;page-break-after:always;}
+  .box,.att,.pdf-block,.att-media,tr,img,canvas{break-inside:avoid;page-break-inside:avoid;}
+  .pdf-pages img{break-inside:avoid;page-break-inside:avoid;break-after:page;page-break-after:always;}
   .pdf-pages img:last-child{break-after:auto;page-break-after:auto;}
-  table{break-inside:auto;}
   .sheet{padding:0;}
   .sheet + .sheet{break-before:page;page-break-before:always;margin-top:0;}
-  .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.5mm 10mm 2.5mm;font-size:9px;color:var(--muted);background:#fff;}
+  .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.5mm 10mm;font-size:9px;color:var(--muted);background:#fff;}
   .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:center;}
 }
   `;
@@ -1129,10 +1123,12 @@ img{max-width:100%;height:auto;display:block;margin:8px auto;border:1px solid va
 
   const attHtml = ((docType === "clinico") || (docType === "clinico_financeiro")) ? (
     atts.length ? atts.map((a, idx)=>{
-      const isPdf = String(a.mime||"")==="application/pdf";
-      const name = esc(a.name||("Anexo "+(idx+1)));
+      const mime = String(a.mime || a.mime_type || "").toLowerCase();
+      const isPdf = mime === "application/pdf" || /\.pdf$/i.test(String(a.name||""));
+      const name = esc(a.name || ("Anexo " + (idx+1)));
       const hasData = !!a.dataUrl;
       const sizeKb = a.size ? Math.round(a.size/1024) + " KB" : "";
+      const desc = esc(a.descricao || a.description || a.desc || "—");
       if(!hasData){
         return `
           <section class="att">
@@ -1143,7 +1139,7 @@ img{max-width:100%;height:auto;display:block;margin:8px auto;border:1px solid va
             <div class="att-nodata">⚠ O arquivo não pôde ser carregado para a impressão.</div>
             <div class="att-desc-wrap">
               <div class="att-desc-label">Descrição clínica do anexo</div>
-              <div class="att-desc">${esc(a.descricao || "—")}</div>
+              <div class="att-desc">${desc}</div>
             </div>
           </section>
         `;
@@ -1155,14 +1151,13 @@ img{max-width:100%;height:auto;display:block;margin:8px auto;border:1px solid va
               <div class="att-title">${name}</div>
               <div class="att-kind">PDF${sizeKb ? ` • ${sizeKb}` : ""}</div>
             </div>
-            <div class="no-print small"><a href="${a.dataUrl}" target="_blank" rel="noopener">Abrir PDF em nova aba</a></div>
             <div class="pdf-block att-media" data-idx="${idx}">
               <div class="pdf-loading">Renderizando PDF para impressão…</div>
               <div class="pdf-pages" data-name="${name}" data-dataurl="${a.dataUrl}"></div>
             </div>
             <div class="att-desc-wrap">
               <div class="att-desc-label">Descrição clínica do anexo</div>
-              <div class="att-desc">${esc(a.descricao || "—")}</div>
+              <div class="att-desc">${desc}</div>
             </div>
           </section>
         `;
@@ -1178,12 +1173,12 @@ img{max-width:100%;height:auto;display:block;margin:8px auto;border:1px solid va
           </div>
           <div class="att-desc-wrap">
             <div class="att-desc-label">Descrição clínica do anexo</div>
-            <div class="att-desc">${esc(a.descricao || "—")}</div>
+            <div class="att-desc">${desc}</div>
           </div>
         </section>
       `;
     }).join("")
-    : `<div class="small muted">Nenhum anexo.</div>`
+    : `<div class="small muted">Nenhum anexo clínico registrado.</div>`
   ) : "";
 
   const vitalsHtml = (animais.length ? animais : (Array.isArray(atd.animal_ids) ? atd.animal_ids.map(id=>({id, nome:id})) : [])).map(a=>{
@@ -1197,53 +1192,41 @@ img{max-width:100%;height:auto;display:block;margin:8px auto;border:1px solid va
   }).join("");
 
   const bodyClinicoMain = `
+    <div class="plain-meta">
+      <div class="k">Especificação</div>
+      <div class="v">${esc(DOC_SPEC)}</div>
+    </div>
 
-    <div class="grid-2">
-      <section class="box">
-        <div class="panel-title">Resumo institucional</div>
-        <div class="panel-stack">
-          <div class="meta-item">
-            <div class="meta-k">Cliente / Proprietário</div>
-            <div class="meta-v">${esc(cli.nome||cli.razao_social||atd.cliente_label||"—")}</div>
-            <div class="small">${esc([cli.doc||cli.cnpj||cli.cpf||"", cli.telefone||cli.fone||"", cli.email||""].filter(Boolean).join(" • "))}</div>
-            <div class="small">${esc([cli.endereco||"", cli.cidade||"", cli.uf||"", cli.cep? ("CEP: "+cli.cep):""].filter(Boolean).join(" • "))}</div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-k">Paciente(s)</div>
-            <div class="meta-v">${esc(animaisTxt||"—")}</div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-k">Veterinário / Responsável</div>
-            <div class="meta-v">${esc(vetLine||"—")}</div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-k">Anexos clínicos</div>
-            <div class="meta-v">${esc(String(atts.length || 0))}</div>
-          </div>
-        </div>
-      </section>
+    <div class="plain-text">Vet System Control • ERP Equine</div>
+    <div class="plain-text">Documento operacional para atendimento, balcão e auditoria clínica.</div>
 
-      <section class="box">
-        <div class="panel-title">Controle do documento</div>
-        <div class="panel-stack">
-          <div class="meta-item">
-            <div class="meta-k">Especificação</div>
-            <div class="meta-v">${esc(DOC_SPEC)}</div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-k">Origem</div>
-            <div class="meta-v">Vet System Control • ERP Equine</div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-k">Finalidade</div>
-            <div class="meta-v">Registro operacional para atendimento, balcão e auditoria clínica.</div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-k">Data clínica</div>
-            <div class="meta-v">${esc(fmtDate(atd.created_at))}</div>
-          </div>
+    <div class="section-label">Controle do documento</div>
+    <div class="section-label" style="margin-top:18px; color:#0f766e;">Resumo institucional</div>
+    <div class="grid-summary">
+      <div>
+        <div class="plain-meta">
+          <div class="k">Cliente / Proprietário</div>
+          <div class="v">${esc(cli.nome||cli.razao_social||atd.cliente_label||"—")}</div>
         </div>
-      </section>
+        <div class="plain-meta">
+          <div class="k">Paciente(s)</div>
+          <div class="v">${esc(animaisTxt||"—")}</div>
+        </div>
+        <div class="plain-meta">
+          <div class="k">Veterinário / Responsável</div>
+          <div class="v">${esc(vetLine||"—")}</div>
+        </div>
+        <div class="plain-meta">
+          <div class="k">Anexos clínicos</div>
+          <div class="v">${esc(String(atts.length || 0))}</div>
+        </div>
+      </div>
+      <div class="summary-date">
+        <div class="plain-meta">
+          <div class="k">Data</div>
+          <div class="v">${esc(fmtDate(atd.created_at))}</div>
+        </div>
+      </div>
     </div>
 
     <div class="section-title">Sinais vitais</div>
@@ -1259,7 +1242,7 @@ img{max-width:100%;height:auto;display:block;margin:8px auto;border:1px solid va
     <div class="box"><div class="pre">${esc(atd.cli_evolucao || "—")}</div></div>
 
     <div class="section-title">Procedimentos / Materiais / Itens utilizados (sem valores)</div>
-    <table>
+    <table class="table-tight">
       <thead><tr>
         <th style="width:110px;">Tipo</th><th>Descrição</th>
         <th style="width:70px;" class="right">Qtd</th>
@@ -1292,21 +1275,6 @@ img{max-width:100%;height:auto;display:block;margin:8px auto;border:1px solid va
   ` : ``;
 
   const bodyFinanceiro = `
-    <div class="box">
-      <div class="grid">
-        <div>
-          <div class="lbl">Referência</div>
-          <div class="val">${esc(animaisTxt||"—")}</div>
-          <div class="small"><strong>Data:</strong> ${esc(fmtDate(atd.created_at))}</div>
-        </div>
-        <div>
-          <div class="lbl">Atendente / Vet</div>
-          <div class="val">${esc(vetLine||"—")}</div>
-          <div class="small"><strong>Documento:</strong> ${esc(atd.numero||"—")}</div>
-        </div>
-      </div>
-    </div>
-
     <div class="section-title">Lançamentos</div>
     <table>
       <thead><tr>
@@ -1335,34 +1303,20 @@ img{max-width:100%;height:auto;display:block;margin:8px auto;border:1px solid va
   `;
 
   const bodyPrescricao = `
-    <div class="grid-2">
-      <section class="box">
-        <div class="panel-title">Resumo da prescrição</div>
-        <div class="panel-stack">
-          <div class="meta-item">
-            <div class="meta-k">Cliente / Proprietário</div>
-            <div class="meta-v">${esc(cli.nome||cli.razao_social||atd.cliente_label||"—")}</div>
-            <div class="small">${esc([cli.doc||cli.cnpj||cli.cpf||"", cli.telefone||cli.fone||""].filter(Boolean).join(" • "))}</div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-k">Paciente(s)</div>
-            <div class="meta-v">${esc(animaisTxt||"—")}</div>
-          </div>
+    <div class="box">
+      <div class="grid">
+        <div>
+          <div class="lbl">Cliente / Proprietário</div>
+          <div class="val">${esc(cli.nome||cli.razao_social||atd.cliente_label||"—")}</div>
+          <div class="small">${esc([cli.doc||cli.cnpj||cli.cpf||"", cli.telefone||cli.fone||""].filter(Boolean).join(" • "))}</div>
         </div>
-      </section>
-      <section class="box">
-        <div class="panel-title">Controle da prescrição</div>
-        <div class="panel-stack">
-          <div class="meta-item">
-            <div class="meta-k">Data</div>
-            <div class="meta-v">${esc(fmtDate(atd.created_at))}</div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-k">Veterinário</div>
-            <div class="meta-v">${esc(vetLine||"—")}</div>
-          </div>
+        <div>
+          <div class="lbl">Paciente(s)</div>
+          <div class="val">${esc(animaisTxt||"—")}</div>
+          <div class="small"><strong>Data:</strong> ${esc(fmtDate(atd.created_at))}</div>
+          <div class="small"><strong>Veterinário:</strong> ${esc(vetLine||"—")}</div>
         </div>
-      </section>
+      </div>
     </div>
 
     <div class="section-title">Prescrição</div>
@@ -1399,35 +1353,35 @@ img{max-width:100%;height:auto;display:block;margin:8px auto;border:1px solid va
         ${(docType === "clinico" && logoB) ? `<div class="wmLocal"><img src="${logoB}" alt="Marca d'água"/></div>` : ``}
         <div class="sheetContent">
           <div class="hdr">
-            <div class="hdr-top">
-              <div>
-                ${logoA ? `<img class="hdr-mark" src="${logoA}" alt="Logo da empresa"/>` : `<div style="width:80px;height:80px;border-radius:14px;background:linear-gradient(135deg,#16a34a,#0369a1);display:flex;align-items:center;justify-content:center;">${SYSTEM_LOGO_SVG}</div>`}
-              </div>
-              <div class="hdr-empresa">
-                <div class="hdr-brand">
-                  <div class="hdr-system-logo"><img src="assets/brand/vsc-logo-horizontal.png" alt="Vet System Control" onerror="this.remove();"/></div>
+            <div class="hdr-grid">
+              <div class="brand-row">
+                <div>
+                  <img class="system-logo" src="assets/brand/vsc-logo-horizontal.png" alt="Vet System Control" onerror="this.outerHTML='<div class=&quot;plain-text&quot;>Vet System Control</div>';" />
                 </div>
-                <div class="emp-nome">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa")}</div>
-                ${empresa.razao_social && (empresa.razao_social !== empresa.nome) ? `<div class="emp-sub">${esc(empresa.razao_social)}</div>` : ""}
-                <div class="emp-dados">${[
-                  empresa.cnpj ? "CNPJ: "+empresa.cnpj : "",
-                  empresa.crmv ? "CRMV: "+empresa.crmv : "",
-                  empresa.endereco||"",
-                  [empresa.cidade, empresa.uf].filter(Boolean).join("/") || "",
-                  [empresa.telefone, empresa.email].filter(Boolean).join(" • ")
-                ].filter(Boolean).join("<br/>")}</div>
+                <div class="company-box">
+                  <div class="emp-nome">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa")}</div>
+                  <div class="emp-dados">${[
+                    empresa.cnpj ? "CNPJ: "+empresa.cnpj : "",
+                    empresa.endereco||"",
+                    empresa.email||""
+                  ].filter(Boolean).join("<br/>")}</div>
+                </div>
               </div>
-              <div class="hdr-doc">
-                <div class="doc-tipo">${esc(DOC_LABEL)}</div>
-                <div class="doc-row"><strong>Nº:</strong> ${esc(atd.numero||"—")}</div>
-                <div class="doc-row"><strong>Status:</strong> ${esc(atd.status||"—")}</div>
-                <div class="doc-row"><strong>Data de emissão:</strong> ${esc(fmtDate(R.gerado_em))}</div>
-                <div class="doc-row"><strong>Paciente(s):</strong> ${esc(animaisTxt||"—")}</div>
+              <div>
+                ${logoA ? `<img class="company-logo" src="${logoA}" alt="Logo da empresa"/>` : `<div style="width:152px;height:152px;border:1px solid #cbd5e1;border-radius:16px;margin-left:auto;display:flex;align-items:center;justify-content:center;background:#fff;">${SYSTEM_LOGO_SVG}</div>`}
               </div>
             </div>
-            <div class="sys-credit">
-              ${SYSTEM_LOGO_SVG}
-              <span>Vet System Control • ERP Equine • Documento operacional para atendimento, balcão e auditoria clínica.</span>
+            <div class="hdr-grid" style="margin-top:10px;grid-template-columns:minmax(360px,1.45fr) minmax(180px,.7fr);">
+              <div></div>
+              <div>
+                <div class="doc-title">${esc(DOC_LABEL)}</div>
+                <div class="doc-meta">
+                  <div><b>Nº:</b> ${esc(atd.numero||"—")}</div>
+                  <div><b>Status:</b> ${esc(atd.status||"—")}</div>
+                  <div><b>Data de emissão:</b> ${esc(fmtDate(R.gerado_em))}</div>
+                  <div><b>Paciente(s):</b> ${esc(animaisTxt||"—")}</div>
+                </div>
+              </div>
             </div>
           </div>
 
