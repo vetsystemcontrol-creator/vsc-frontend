@@ -143,49 +143,77 @@
     return false;
   }
 
-  function _isWranglerDev() {
+  function _isLoopbackHost() {
     try {
       const host = String(location.hostname || '').toLowerCase();
-      const proto = String(location.protocol || '').toLowerCase();
-      // wrangler pages dev serve via http em 127.0.0.1 ou localhost com porta
-      return proto === 'http:' && (host === '127.0.0.1' || host === 'localhost');
+      return host === '127.0.0.1' || host === 'localhost';
     } catch (_) {}
     return false;
   }
 
-  function _apiBase() {
-    // file:// não tem servidor — aponta direto pro remoto
-    if (_isLocalStaticMode()) return REMOTE_BASE;
-    // wrangler pages dev — usa rotas relativas (proxy via Pages Functions)
-    if (_isWranglerDev()) return '';
-    // produção — rotas relativas (mesmo domínio)
-    return '';
+  function _sameOrigin(path) {
+    return `${path}`;
   }
 
-  function _apiUrl(path) {
-    return `${_apiBase()}${path}`;
+  function _absoluteRemote(path) {
+    return `${REMOTE_BASE}${path}`;
+  }
+
+  function _dedupeUrls(urls) {
+    return Array.from(new Set((urls || []).filter(Boolean)));
+  }
+
+  function _capabilitiesCandidates() {
+    if (_isLocalStaticMode()) {
+      return [_absoluteRemote(API_CAPABILITIES_URL)];
+    }
+    if (_isLoopbackHost()) {
+      return _dedupeUrls([
+        _sameOrigin(API_CAPABILITIES_URL),
+        _absoluteRemote(API_CAPABILITIES_URL),
+      ]);
+    }
+    return [_sameOrigin(API_CAPABILITIES_URL)];
+  }
+
+  function _endpointCandidates(path) {
+    if (_isLocalStaticMode()) {
+      return [_absoluteRemote(path)];
+    }
+    if (_isLoopbackHost()) {
+      return _dedupeUrls([
+        _sameOrigin(path),
+        _absoluteRemote(path),
+      ]);
+    }
+    return [_sameOrigin(path)];
   }
 
   async function _readCapabilities() {
     const now = _now();
     if (_capabilities && (now - _capabilitiesCheckedAt) < 15000) return _capabilities;
 
-    try {
-      const res = await fetch(_apiUrl(API_CAPABILITIES_URL), {
-        method: 'GET',
-        headers: { 'Accept': 'application/json' },
-        cache: 'no-store',
-      });
-      if (!res.ok) {
-        _capabilities = {
-          ok: false,
-          available: false,
-          remote_sync_allowed: false,
-          local_static_mode: false,
-          reason: 'capabilities-http-' + res.status,
-          status: res.status,
-        };
-      } else {
+    let lastFailure = null;
+    for (const url of _capabilitiesCandidates()) {
+      try {
+        const res = await fetch(url, {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          cache: 'no-store',
+        });
+        if (!res.ok) {
+          lastFailure = {
+            ok: false,
+            available: false,
+            remote_sync_allowed: false,
+            local_static_mode: false,
+            reason: 'capabilities-http-' + res.status,
+            status: res.status,
+            url,
+          };
+          continue;
+        }
+
         const body = await res.json().catch(() => ({}));
         _capabilities = {
           ok: body.ok !== false,
@@ -194,18 +222,30 @@
           local_static_mode: !!body.local_static_mode,
           reason: body.reason || '',
           status: res.status,
+          url,
           body,
         };
+        _capabilitiesCheckedAt = now;
+        return _capabilities;
+      } catch (err) {
+        lastFailure = {
+          ok: false,
+          available: false,
+          remote_sync_allowed: false,
+          local_static_mode: false,
+          reason: String(err || 'capabilities-fetch-failed'),
+          url,
+        };
       }
-    } catch (err) {
-      _capabilities = {
-        ok: false,
-        available: false,
-        remote_sync_allowed: false,
-        local_static_mode: false,
-        reason: String(err || 'capabilities-fetch-failed'),
-      };
     }
+
+    _capabilities = lastFailure || {
+      ok: false,
+      available: false,
+      remote_sync_allowed: false,
+      local_static_mode: false,
+      reason: 'capabilities-unavailable',
+    };
     _capabilitiesCheckedAt = now;
     return _capabilities;
   }
@@ -359,29 +399,50 @@
   // ──────────────────────────────────────────────────────────
   // Network: push
   // ──────────────────────────────────────────────────────────
+  async function _postJsonWithFallback(path, payload, headers = {}) {
+    let lastError = null;
+    for (const url of _endpointCandidates(path)) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            ...headers,
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          const error = new Error(`${path} failed ${res.status} ${text}`);
+          error.status = res.status;
+          error.url = url;
+          throw error;
+        }
+
+        const body = await res.json().catch(() => ({ ok: true }));
+        return { body, url };
+      } catch (err) {
+        lastError = err;
+        if (!_isLoopbackHost() && !_isLocalStaticMode()) throw err;
+      }
+    }
+    throw lastError || new Error(`${path} failed`);
+  }
+
   async function _pushBatchSyncPush(batch) {
     const tenant = _getTenant();
     const userLabel = _getUserLabel();
     const clientSession = _getClientSession();
 
-    const res = await fetch(_apiUrl('/api/sync/push'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'X-VSC-Tenant': tenant,
-        'X-VSC-User': userLabel,
-        'X-VSC-Client-Session': clientSession,
-      },
-      body: JSON.stringify({ operations: batch }),
+    const result = await _postJsonWithFallback('/api/sync/push', { operations: batch }, {
+      'X-VSC-Tenant': tenant,
+      'X-VSC-User': userLabel,
+      'X-VSC-Client-Session': clientSession,
     });
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`sync/push failed ${res.status} ${text}`);
-    }
-
-    return await res.json().catch(() => ({ ok: true }));
+    return result.body;
   }
 
   async function _pushBatchLegacyOutbox(batch) {
@@ -397,21 +458,11 @@
         payload: ev.payload,
         op_id: ev.op_id,
       };
-      const res = await fetch(_apiUrl('/api/outbox'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'X-VSC-Tenant': tenant,
-          'X-VSC-User': userLabel,
-          'X-VSC-Client-Session': clientSession,
-        },
-        body: JSON.stringify(body),
+      await _postJsonWithFallback('/api/outbox', body, {
+        'X-VSC-Tenant': tenant,
+        'X-VSC-User': userLabel,
+        'X-VSC-Client-Session': clientSession,
       });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`outbox failed ${res.status} ${text}`);
-      }
     }
     return { ok: true };
   }

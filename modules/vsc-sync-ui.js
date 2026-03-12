@@ -6,10 +6,6 @@
 (() => {
   'use strict';
 
-  try {
-    localStorage.setItem('vsc_allow_local_sync_api', '1');
-  } catch (_) {}
-
   function $(selector) {
     return document.querySelector(selector);
   }
