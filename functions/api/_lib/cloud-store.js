@@ -1,63 +1,41 @@
+import {
+  buildOptionsResponse as sharedBuildOptionsResponse,
+  buildRevisionHeaders,
+  corsHeaders as sharedCorsHeaders,
+  jsonResponse as sharedJsonResponse,
+  matchesIfNoneMatch,
+} from "./cors.js";
+
 function json(body, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
-      'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'no-store',
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
       ...extraHeaders,
     },
   });
 }
 
-const ALLOWED_ORIGIN_PATTERNS = [
-  /^https:\/\/app\.vetsystemcontrol\.com\.br$/i,
-  /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i,
-];
-
-const ACCESS_CONTROL_ALLOW_HEADERS = [
-  'Content-Type',
-  'Authorization',
-  'X-Requested-With',
-  'X-VSC-Tenant',
-  'X-VSC-User',
-  'X-VSC-Token',
-].join(', ');
-
-const ACCESS_CONTROL_ALLOW_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
-const ACCESS_CONTROL_EXPOSE_HEADERS = 'Content-Type, Content-Length, ETag';
-
-function resolveOrigin(request) {
-  const origin = String(request?.headers?.get('Origin') || '').trim();
-  if (!origin) return '*';
-  return ALLOWED_ORIGIN_PATTERNS.some((pattern) => pattern.test(origin))
-    ? origin
-    : 'https://app.vetsystemcontrol.com.br';
-}
-
-export function corsHeaders(request) {
-  return {
-    'Access-Control-Allow-Origin': resolveOrigin(request),
-    'Access-Control-Allow-Methods': ACCESS_CONTROL_ALLOW_METHODS,
-    'Access-Control-Allow-Headers': ACCESS_CONTROL_ALLOW_HEADERS,
-    'Access-Control-Expose-Headers': ACCESS_CONTROL_EXPOSE_HEADERS,
-    'Access-Control-Max-Age': '86400',
-    'Vary': 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',
-  };
+function corsHeaders(request) {
+  return sharedCorsHeaders(request);
 }
 
 async function sha256HexFromString(str) {
-  const bytes = new TextEncoder().encode(String(str || ''));
-  const hash = await crypto.subtle.digest('SHA-256', bytes);
-  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const bytes = new TextEncoder().encode(String(str || ""));
+  const hash = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(hash)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function normalizeTenant(raw) {
-  const v = String(raw || 'tenant-default').trim().toLowerCase();
-  return v.replace(/[^a-z0-9._:-]+/g, '-').slice(0, 180) || 'tenant-default';
+  const v = String(raw || "tenant-default").trim().toLowerCase();
+  return v.replace(/[^a-z0-9._:-]+/g, "-").slice(0, 180) || "tenant-default";
 }
 
-export function isD1Like(db) {
-  return !!(db && typeof db.prepare === 'function' && typeof db.exec === 'function');
+function isD1Like(db) {
+  return !!(db && typeof db.prepare === "function" && typeof db.exec === "function");
 }
 
 function getBinding(env) {
@@ -68,14 +46,15 @@ function getBinding(env) {
 
 async function ensureD1Schema(db) {
   const stmts = [
-    'CREATE TABLE IF NOT EXISTS vsc_state_snapshots (tenant TEXT PRIMARY KEY, revision TEXT NOT NULL, sha256 TEXT NOT NULL, bytes INTEGER NOT NULL, saved_at TEXT NOT NULL, exported_at TEXT, source TEXT, snapshot_json TEXT NOT NULL)',
-    'CREATE INDEX IF NOT EXISTS idx_vsc_state_saved_at ON vsc_state_snapshots(saved_at)',
+    "CREATE TABLE IF NOT EXISTS vsc_state_snapshots (tenant TEXT PRIMARY KEY, revision TEXT NOT NULL, sha256 TEXT NOT NULL, bytes INTEGER NOT NULL, saved_at TEXT NOT NULL, exported_at TEXT, source TEXT, snapshot_json TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_vsc_state_saved_at ON vsc_state_snapshots(saved_at)",
   ];
+
   for (const sql of stmts) {
     try {
       await db.prepare(sql).run();
     } catch (e) {
-      if (!String(e?.message || e).includes('already exists')) throw e;
+      if (!String(e?.message || e).includes("already exists")) throw e;
     }
   }
 }
@@ -85,10 +64,17 @@ export async function getCapabilities(env) {
     ok: true,
     available: true,
     local_static_mode: false,
-    remote_sync_allowed: !!(getBinding(env) || env?.VSC_STATE_BUCKET || env?.STATE_BUCKET || env?.R2),
+    remote_sync_allowed: !!(
+      getBinding(env) ||
+      env?.VSC_STATE_BUCKET ||
+      env?.STATE_BUCKET ||
+      env?.R2
+    ),
     storage_mode: getBinding(env)
-      ? 'd1'
-      : ((env?.VSC_STATE_BUCKET || env?.STATE_BUCKET || env?.R2) ? 'object-store' : 'none'),
+      ? "d1"
+      : env?.VSC_STATE_BUCKET || env?.STATE_BUCKET || env?.R2
+      ? "object-store"
+      : "none",
   };
 }
 
@@ -99,49 +85,90 @@ export async function saveSnapshot(env, tenant, snapshot, meta = {}) {
   const snapshotJson = JSON.stringify(snapshot || {});
   const sha256 = await sha256HexFromString(snapshotJson);
   const bytes = new TextEncoder().encode(snapshotJson).length;
-  const revision = meta.revision || `${savedAt.replace(/[-:.TZ]/g, '')}-${sha256.slice(0, 12)}`;
-  const source = String(meta.source || 'manual-sync').slice(0, 120);
+  const revision =
+    meta.revision || `${savedAt.replace(/[-:.TZ]/g, "")}-${sha256.slice(0, 12)}`;
+  const source = String(meta.source || "manual-sync").slice(0, 120);
   const db = getBinding(env);
 
   if (db) {
     await ensureD1Schema(db);
-    await db.prepare(`
-      INSERT INTO vsc_state_snapshots
-        (tenant, revision, sha256, bytes, saved_at, exported_at, source, snapshot_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(tenant) DO UPDATE SET
-        revision=excluded.revision,
-        sha256=excluded.sha256,
-        bytes=excluded.bytes,
-        saved_at=excluded.saved_at,
-        exported_at=excluded.exported_at,
-        source=excluded.source,
-        snapshot_json=excluded.snapshot_json
-    `).bind(normTenant, revision, sha256, bytes, savedAt, exportedAt, source, snapshotJson).run();
+    await db
+      .prepare(`
+        INSERT INTO vsc_state_snapshots
+          (tenant, revision, sha256, bytes, saved_at, exported_at, source, snapshot_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(tenant) DO UPDATE SET
+          revision=excluded.revision,
+          sha256=excluded.sha256,
+          bytes=excluded.bytes,
+          saved_at=excluded.saved_at,
+          exported_at=excluded.exported_at,
+          source=excluded.source,
+          snapshot_json=excluded.snapshot_json
+      `)
+      .bind(
+        normTenant,
+        revision,
+        sha256,
+        bytes,
+        savedAt,
+        exportedAt,
+        source,
+        snapshotJson
+      )
+      .run();
 
     return {
       ok: true,
       exists: true,
-      meta: { tenant: normTenant, revision, sha256, bytes, saved_at: savedAt, exported_at: exportedAt, source },
+      meta: {
+        tenant: normTenant,
+        revision,
+        sha256,
+        bytes,
+        saved_at: savedAt,
+        exported_at: exportedAt,
+        source,
+      },
     };
   }
 
   const bucket = env?.VSC_STATE_BUCKET || env?.STATE_BUCKET || env?.R2 || null;
-  if (bucket && typeof bucket.put === 'function') {
+  if (bucket && typeof bucket.put === "function") {
     const key = `vsc-state/${normTenant}.json`;
     const payload = JSON.stringify({
-      meta: { tenant: normTenant, revision, sha256, bytes, saved_at: savedAt, exported_at: exportedAt, source },
+      meta: {
+        tenant: normTenant,
+        revision,
+        sha256,
+        bytes,
+        saved_at: savedAt,
+        exported_at: exportedAt,
+        source,
+      },
       snapshot,
     });
-    await bucket.put(key, payload, { httpMetadata: { contentType: 'application/json; charset=utf-8' } });
+
+    await bucket.put(key, payload, {
+      httpMetadata: { contentType: "application/json; charset=utf-8" },
+    });
+
     return {
       ok: true,
       exists: true,
-      meta: { tenant: normTenant, revision, sha256, bytes, saved_at: savedAt, exported_at: exportedAt, source },
+      meta: {
+        tenant: normTenant,
+        revision,
+        sha256,
+        bytes,
+        saved_at: savedAt,
+        exported_at: exportedAt,
+        source,
+      },
     };
   }
 
-  return { ok: false, error: 'storage_not_configured' };
+  return { ok: false, error: "storage_not_configured" };
 }
 
 export async function loadSnapshot(env, tenant, metaOnly = false) {
@@ -150,12 +177,15 @@ export async function loadSnapshot(env, tenant, metaOnly = false) {
 
   if (db) {
     await ensureD1Schema(db);
-    const row = await db.prepare(`
-      SELECT tenant, revision, sha256, bytes, saved_at, exported_at, source, snapshot_json
-      FROM vsc_state_snapshots
-      WHERE tenant = ?
-      LIMIT 1
-    `).bind(normTenant).first();
+    const row = await db
+      .prepare(`
+        SELECT tenant, revision, sha256, bytes, saved_at, exported_at, source, snapshot_json
+        FROM vsc_state_snapshots
+        WHERE tenant = ?
+        LIMIT 1
+      `)
+      .bind(normTenant)
+      .first();
 
     if (!row) return { ok: true, exists: false, meta: { tenant: normTenant } };
 
@@ -173,40 +203,51 @@ export async function loadSnapshot(env, tenant, metaOnly = false) {
       ok: true,
       exists: true,
       meta,
-      snapshot: metaOnly ? null : JSON.parse(row.snapshot_json || '{}'),
+      snapshot: metaOnly ? null : JSON.parse(row.snapshot_json || "{}"),
     };
   }
 
   const bucket = env?.VSC_STATE_BUCKET || env?.STATE_BUCKET || env?.R2 || null;
-  if (bucket && typeof bucket.get === 'function') {
+  if (bucket && typeof bucket.get === "function") {
     const obj = await bucket.get(`vsc-state/${normTenant}.json`);
     if (!obj) return { ok: true, exists: false, meta: { tenant: normTenant } };
+
     const text = await obj.text();
-    const payload = JSON.parse(text || '{}');
+    const payload = JSON.parse(text || "{}");
+
     return {
       ok: true,
       exists: !!payload?.meta,
       meta: payload?.meta || { tenant: normTenant },
-      snapshot: metaOnly ? null : (payload?.snapshot || null),
+      snapshot: metaOnly ? null : payload?.snapshot || null,
     };
   }
 
-  return { ok: false, error: 'storage_not_configured', meta: { tenant: normTenant } };
+  return { ok: false, error: "storage_not_configured", meta: { tenant: normTenant } };
 }
 
-export function buildJsonResponse(request, body, status = 200) {
-  return json(body, status, {
-    ...corsHeaders(request),
-    'cache-control': 'no-store',
-  });
+export function buildJsonResponse(request, body, status = 200, extraHeaders = {}) {
+  return sharedJsonResponse(request, body, status, extraHeaders);
 }
 
-export function buildOptionsResponse(request) {
-  return new Response(null, {
-    status: 204,
-    headers: {
-      ...corsHeaders(request),
-      'cache-control': 'no-store',
-    },
-  });
+export function buildOptionsResponse(request, options = {}) {
+  return sharedBuildOptionsResponse(request, options);
 }
+
+export function buildSnapshotMetaHeaders(meta = {}) {
+  const headers = {};
+
+  if (meta?.sha256) {
+    headers.ETag = `"${String(meta.sha256)}"`;
+  } else if (meta?.revision) {
+    Object.assign(headers, buildRevisionHeaders(meta.revision));
+  }
+
+  if (meta?.revision != null && meta?.revision !== "") {
+    headers["X-VSC-State-Revision"] = String(meta.revision);
+  }
+
+  return headers;
+}
+
+export { corsHeaders, json, matchesIfNoneMatch };
