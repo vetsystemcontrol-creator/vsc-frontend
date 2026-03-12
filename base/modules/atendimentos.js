@@ -497,18 +497,15 @@ async function loadEmpresaSnapshot(db){
 // O backend exige token. Sem isso, cai no fallback client-side (about:blank).
 function getPrintAuthHeaders(){
   try{
-    const token = (window.localStorage && (localStorage.getItem('vsc_local_token') || localStorage.getItem('VSC_LOCAL_TOKEN'))) || '';
-    const h = { "Content-Type": "application/json" };
-    if(token){
-      h["X-VSC-Token"] = token;
-      h["Authorization"] = "Bearer " + token;
-    }
-    return h;
+    const tenant = (window.localStorage && (localStorage.getItem('vsc_tenant') || localStorage.getItem('VSC_TENANT'))) || 'tenant-default';
+    return {
+      "Content-Type": "application/json",
+      "X-VSC-Tenant": String(tenant || 'tenant-default')
+    };
   }catch(_){
-    return { "Content-Type": "application/json" };
+    return { "Content-Type": "application/json", "X-VSC-Tenant": "tenant-default" };
   }
 }
-
 
 function getEmpresaSnapshotForPrint(){
   // Fonte canônica: módulo Empresa salva em localStorage (LS_KEY = "vsc_empresa_v1")
