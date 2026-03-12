@@ -1,14 +1,23 @@
-import {
-  getDB,
-  getTenant,
-  getUserLabel,
-  ensureSchema,
-  ingestOperation,
-} from "./_lib/sync-store.js";
-import { buildOptionsResponse, jsonResponse } from "./_lib/cors.js";
+import { json, corsHeaders, getDB, getTenant, getUserLabel, ensureSchema, ingestOperation } from './_lib/sync-store.js';
+
+function optionsHeaders(request) {
+  return {
+    ...corsHeaders(request),
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers':
+      'Content-Type, Authorization, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token',
+    'Access-Control-Expose-Headers': 'Content-Type, Content-Length, ETag, X-VSC-State-Revision',
+    'Access-Control-Max-Age': '86400',
+    'cache-control': 'no-store',
+    Vary: 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',
+  };
+}
 
 export async function onRequestOptions(context) {
-  return buildOptionsResponse(context.request, { methods: "POST, OPTIONS" });
+  return new Response(null, {
+    status: 204,
+    headers: optionsHeaders(context.request),
+  });
 }
 
 export async function onRequestPost(context) {
@@ -17,13 +26,7 @@ export async function onRequestPost(context) {
   try {
     const db = getDB(env);
     if (!db) {
-      return jsonResponse(
-        request,
-        { ok: false, error: "missing_d1_binding", remote_sync_allowed: false },
-        501,
-        {},
-        { methods: "POST, OPTIONS" }
-      );
+      return json({ ok: false, error: 'missing_d1_binding', remote_sync_allowed: false }, 501, request);
     }
 
     const body = await request.json().catch(() => ({}));
@@ -50,17 +53,10 @@ export async function onRequestPost(context) {
     });
 
     if (!result.ok) {
-      return jsonResponse(
-        request,
-        { ok: false, error: result.code },
-        400,
-        {},
-        { methods: "POST, OPTIONS" }
-      );
+      return json({ ok: false, error: result.code }, 400, request);
     }
 
-    return jsonResponse(
-      request,
+    return json(
       {
         ok: true,
         ack_id: result.ack_id,
@@ -69,20 +65,13 @@ export async function onRequestPost(context) {
         store_name: result.store_name || null,
       },
       200,
-      {},
-      { methods: "POST, OPTIONS" }
+      request
     );
   } catch (error) {
-    return jsonResponse(
-      request,
-      {
-        ok: false,
-        error: "legacy_outbox_failed",
-        detail: String(error?.message || error || "unknown_error"),
-      },
+    return json(
+      { ok: false, error: 'legacy_outbox_failed', detail: String(error?.message || error || 'unknown_error') },
       500,
-      {},
-      { methods: "POST, OPTIONS" }
+      request
     );
   }
 }
