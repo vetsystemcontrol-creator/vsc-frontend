@@ -1023,52 +1023,53 @@ function openPrintWindowClient(payload, docType, opts){
   ].filter(Boolean).join(" — ");
 
   const css = `
- :root{--text:#0f172a;--muted:#64748b;--bd:#d8e1ec;--soft:#f8fbfd;--brand:#0f766e;--brand2:#0ea5e9;--brandGreen:#23b26d;}
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--text);margin:0;background:#fff;counter-reset:page;}
-.page{max-width:920px;margin:0 auto;padding:22px 26px 34px;}
+:root{--text:#0f172a;--muted:#64748b;--bd:#cfd8e3;--soft:#f8fbfd;--brand:#0f766e;--brand2:#0ea5e9;}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--text);margin:0;background:#fff;}
+.page{max-width:920px;margin:0 auto;padding:22px 26px 36px;}
 .sheet{position:relative;}
-.sheet + .sheet{margin-top:14px;}
+.sheet + .sheet{margin-top:16px;}
 .sheet--attachments{padding-top:4px;}
-.sheetContent{position:relative; z-index:1;}
-.hdr{border:1px solid #cbd5e1;border-radius:20px;padding:14px 16px 0;background:#fff;overflow:hidden;margin-bottom:12px;}
-.hdr::after{content:"";display:block;height:8px;border-radius:999px;margin:14px -16px 0;background:linear-gradient(90deg,#16a34a 0%, #14b8a6 44%, #0ea5e9 100%);}
-.hdr-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(240px,.72fr);gap:18px;align-items:start;}
-.brand-col{display:grid;grid-template-rows:auto auto;gap:10px;min-width:0;}
-.system-logo{width:100%;max-width:470px;height:auto;display:block;margin:0;}
-.company-box{display:grid;gap:8px;align-content:start;}
-.emp-nome{font-size:18px;line-height:1.1;font-weight:900;letter-spacing:-.02em;margin:0;color:#0f172a;}
+.hdr{border:1px solid var(--bd);border-radius:20px;padding:14px 16px 10px;background:#fff;overflow:hidden;margin-bottom:8px;}
+.hdr::after{content:"";display:block;height:8px;border-radius:999px;margin:10px -10px -10px;background:linear-gradient(90deg,#16a34a 0%, #14b8a6 44%, #0ea5e9 100%);}
+.hdr-top{display:grid;grid-template-columns:minmax(430px,1.4fr) 168px;gap:18px;align-items:start;}
+.hdr-bottom{display:grid;grid-template-columns:minmax(360px,1fr) minmax(260px,.95fr);gap:22px;align-items:start;margin-top:10px;}
+.system-logo-wrap{display:flex;align-items:flex-start;min-height:128px;}
+.system-logo{width:100%;max-width:420px;height:auto;display:block;margin:0;border:none !important;border-radius:0 !important;}
+.company-logo{width:154px;max-width:100%;height:154px;object-fit:contain;display:block;margin:0 0 0 auto;border:none !important;border-radius:0 !important;background:#fff;}
+.company-box{display:grid;gap:6px;align-content:start;}
+.emp-nome{font-size:18px;line-height:1.12;font-weight:900;letter-spacing:-.02em;margin:0;color:#0f172a;text-transform:uppercase;}
 .emp-dados{font-size:12px;line-height:1.55;color:#334155;}
-.doc-col{display:grid;gap:12px;justify-items:end;}
-.doc-logo-wrap{width:152px;min-height:116px;display:flex;align-items:flex-start;justify-content:flex-end;}
-.company-logo{width:152px;max-width:100%;height:152px;object-fit:contain;display:block;margin:0;border:none;}
-.doc-card{width:100%;border:1px solid #cbd5e1;border-radius:18px;padding:14px 16px;background:#fff;}
-.doc-title{font-size:15px;line-height:1.18;font-weight:900;letter-spacing:.06em;text-transform:uppercase;margin:0 0 12px;}
-.doc-meta{display:grid;gap:8px;font-size:12px;line-height:1.45;color:#334155;}
+.doc-title{font-size:15px;line-height:1.16;font-weight:900;letter-spacing:.06em;text-transform:uppercase;margin:0 0 12px;}
+.doc-meta{display:grid;gap:9px;font-size:12px;line-height:1.45;color:#334155;}
 .doc-meta b{font-size:13px;color:#0f172a;}
-.intro-block{margin-top:2px;}
-.meta-stack{display:grid;gap:10px;}
-.meta-item{display:grid;gap:2px;}
-.meta-inline{display:grid;grid-template-columns:minmax(0,1fr) 180px;gap:18px;align-items:end;}
-.meta-inline .meta-item:last-child{text-align:right;}
-.k{font-size:11px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#64748b;}
-.v{font-size:15px;font-weight:900;line-height:1.3;color:#0f172a;}
-.small{font-size:11px;color:var(--muted);line-height:1.45;}
+.plain-meta{display:grid;gap:2px;margin:8px 0 12px;}
+.plain-meta .k{font-size:11px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#64748b;}
+.plain-meta .v{font-size:15px;font-weight:900;line-height:1.28;color:#0f172a;}
 .plain-text{font-size:12px;line-height:1.6;color:#0f172a;font-weight:700;}
-.section-label{margin:18px 0 8px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.14em;color:var(--brand);}
-.section-title{margin-top:18px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.12em;color:#0f766e;}
+.intro-copy{margin-top:8px;}
+.intro-copy .plain-text{margin:0 0 2px;}
+.section-label{margin:18px 0 8px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.16em;color:var(--brand);}
+.section-label--split{display:flex;gap:0;align-items:baseline;flex-wrap:wrap;}
+.section-label--split .section-aux{color:#64748b;letter-spacing:.14em;}
+.summary-plain{display:grid;grid-template-columns:minmax(0,1fr) 210px;gap:26px;align-items:start;margin-top:4px;}
+.summary-date{padding-top:22px;text-align:right;}
+.summary-date .k,.summary-date .v{display:inline-block;vertical-align:baseline;}
+.summary-date .k{margin-right:8px;}
+.small{font-size:11px;color:var(--muted);line-height:1.45;}
 .box{border:1px solid var(--bd);border-radius:14px;padding:12px 14px;margin:10px 0;background:#fff;}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
 .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:800;}
 .val{font-size:13px;font-weight:800;margin-top:3px;}
 .pre{white-space:pre-wrap;font-weight:600;line-height:1.55;}
 .table-tight{margin-top:8px;}
-.page-break{height:0;break-after:page;page-break-after:always;}
 table{width:100%;border-collapse:collapse;margin-top:8px;border-top:1px solid var(--bd);}
 th,td{border-bottom:1px solid var(--bd);padding:8px 10px;font-size:12.5px;vertical-align:top;}
 th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;text-align:left;}
 .right{text-align:right;}
 .tot{display:flex;justify-content:flex-end;margin-top:10px;}
 .tot .box{min-width:320px;}
+.section-title{margin-top:18px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.12em;color:#0f766e;}
+.page-break{display:block;height:0;break-before:page;page-break-before:always;}
 img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid var(--bd);border-radius:10px;}
 .pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
 .muted{color:var(--muted);}
@@ -1082,27 +1083,20 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 .att-nodata{font-size:12px;color:#92400e;background:#fff7ed;padding:8px 10px;border-radius:8px;margin-top:6px;border:1px solid #fed7aa;}
 .wmLocal{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; user-select:none; z-index:0;}
 .wmLocal img{width:62%;max-width:560px;border:none !important;border-radius:0 !important;margin:0 !important;opacity:.06;filter:grayscale(1);object-fit:contain;}
+.sheetContent{position:relative; z-index:1;}
 .footer{display:none;}
 @media print{
-  @page{ size:A4; margin:10mm 10mm 28mm 10mm; }
+  @page{ size:A4; margin:10mm 10mm 18mm 10mm; }
   .no-print{display:none !important;}
   body{margin:0;}
   .page{max-width:none;padding:0;}
-  .sheetContent{padding-bottom:2mm;}
   .box,.att,.pdf-block,.att-media,tr,img,canvas{break-inside:avoid;page-break-inside:avoid;}
   .pdf-pages img{break-inside:avoid;page-break-inside:avoid;break-after:page;page-break-after:always;}
   .pdf-pages img:last-child{break-after:auto;page-break-after:auto;}
   .sheet{padding:0;}
   .sheet + .sheet{break-before:page;page-break-before:always;margin-top:0;}
-  .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.5mm 10mm;font-size:9px;color:var(--muted);background:#fff;}
-  .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;}
-  .footer .pnum::before{content:"Página " counter(page) " de " counter(pages);}
-}
-@media screen and (max-width:760px){
-  .hdr-grid,.meta-inline,.grid{grid-template-columns:1fr;}
-  .doc-col{justify-items:start;}
-  .doc-logo-wrap{justify-content:flex-start;}
-  .meta-inline .meta-item:last-child{text-align:left;}
+  .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.2mm 10mm;font-size:9px;color:var(--muted);background:#fff;}
+  .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:flex-end;}
 }
   `;
 
@@ -1205,55 +1199,48 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     </div>`;
   }).join("");
 
-  const bodyClinicoIntro = `
-    <div class="intro-block">
-      <div class="meta-item">
-        <div class="k">Especificação</div>
-        <div class="v">${esc(DOC_SPEC)}</div>
-      </div>
+  const bodyClinicoMain = `
+    <div class="plain-meta">
+      <div class="k">Especificação</div>
+      <div class="v">${esc(DOC_SPEC)}</div>
+    </div>
 
-      <div class="section-label">Controle do documento</div>
-      <div class="meta-stack">
-        <div class="meta-item">
-          <div class="k">Origem</div>
-          <div class="v">Vet System Control • ERP Equine</div>
-        </div>
-        <div class="meta-item">
-          <div class="k">Finalidade</div>
-          <div class="plain-text">Registro operacional para atendimento, balcão e auditoria clínica.</div>
-        </div>
-      </div>
+    <div class="intro-copy">
+      <div class="plain-text">Vet System Control • ERP Equine</div>
+      <div class="plain-text">Documento operacional para atendimento, balcão e auditoria clínica.</div>
+    </div>
 
-      <div class="section-label">Resumo institucional</div>
-      <div class="meta-stack">
-        <div class="meta-inline">
-          <div class="meta-item">
-            <div class="k">Cliente / Proprietário</div>
-            <div class="v">${esc(cli.nome||cli.razao_social||atd.cliente_label||"—")}</div>
-            ${(cli.telefone||cli.fone) ? `<div class="plain-text" style="font-size:12px;font-weight:700;">${esc(cli.telefone||cli.fone)}</div>` : ``}
-          </div>
-          <div class="meta-item">
-            <div class="k">Data</div>
-            <div class="v">${esc(fmtDate(atd.created_at))}</div>
-          </div>
+    <div class="section-label">Controle do documento</div>
+    <div class="section-label section-label--split"><span>Resumo institucional</span><span class="section-aux">&nbsp;Cliente / Proprietário</span></div>
+    <div class="summary-plain">
+      <div>
+        <div class="plain-meta">
+          <div class="k">Cliente / Proprietário</div>
+          <div class="v">${esc(cli.nome||cli.razao_social||atd.cliente_label||"—")}</div>
         </div>
-        <div class="meta-item">
+        <div class="plain-meta">
           <div class="k">Paciente(s)</div>
           <div class="v">${esc(animaisTxt||"—")}</div>
         </div>
-        <div class="meta-item">
+        <div class="plain-meta">
           <div class="k">Veterinário / Responsável</div>
           <div class="v">${esc(vetLine||"—")}</div>
         </div>
-        <div class="meta-item">
+        <div class="plain-meta">
           <div class="k">Anexos clínicos</div>
           <div class="v">${esc(String(atts.length || 0))}</div>
         </div>
       </div>
+      <div class="summary-date">
+        <div class="plain-meta">
+          <div class="k">Data:</div>
+          <div class="v">${esc(fmtDate(atd.created_at))}</div>
+        </div>
+      </div>
     </div>
-  `;
 
-  const bodyClinicoSections = `
+    <div class="page-break"></div>
+
     <div class="section-title">Sinais vitais</div>
     ${vitalsHtml || `<div class="small muted">Nenhum sinal vital registrado.</div>`}
 
@@ -1275,13 +1262,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       <tbody>${rowsClinico}</tbody>
     </table>
   `;
-
-  const bodyClinicoMain = bodyClinicoIntro + `
-
-<div class="page-break"></div>
-
-` + bodyClinicoSections;
-
 
   const bodyClinicoAttachments = `
     <div class="section-title">Anexos</div>
@@ -1368,7 +1348,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   `;
 
 
-  const bodyClinicoFinanceiro = bodyClinicoIntro + `\n\n<div class="page-break"></div>\n\n` + bodyClinicoSections + `\n\n<div class="page-break"></div>\n\n` + bodyFinanceiro;
+  const bodyClinicoFinanceiro = bodyClinicoMain + `\n\n<div class="page-break"></div>\n\n` + bodyFinanceiro;
   const html = `<!doctype html><html lang="pt-BR"><head>
     <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>Impressão — ${esc(DOC_LABEL)}</title>
@@ -1385,32 +1365,30 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         ${(docType === "clinico" && logoB) ? `<div class="wmLocal"><img src="${logoB}" alt="Marca d'água"/></div>` : ``}
         <div class="sheetContent">
           <div class="hdr">
-            <div class="hdr-grid">
-              <div class="brand-col">
-                <div>
-                  <img class="system-logo" src="assets/brand/vsc-logo-horizontal.png" alt="Vet System Control" onerror="this.outerHTML='<div class=&quot;plain-text&quot;>Vet System Control</div>';" />
-                </div>
-                <div class="company-box">
-                  <div class="emp-nome">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa")}</div>
-                  <div class="emp-dados">${[
-                    empresa.cnpj ? "CNPJ: "+empresa.cnpj : "",
-                    empresa.email||"",
-                    pixKey ? "PIX" : ""
-                  ].filter(Boolean).join("<br/>")}</div>
-                </div>
+            <div class="hdr-top">
+              <div class="system-logo-wrap">
+                <img class="system-logo" src="assets/brand/vsc-logo-horizontal.png" alt="Vet System Control" onerror="this.outerHTML='<div class=&quot;plain-text&quot;>Vet System Control</div>';" />
               </div>
-              <div class="doc-col">
-                <div class="doc-logo-wrap">
-                  ${logoA ? `<img class="company-logo" src="${logoA}" alt="Logo da empresa"/>` : `<div style="width:152px;height:152px;border:1px solid #cbd5e1;border-radius:16px;margin-left:auto;display:flex;align-items:center;justify-content:center;background:#fff;">${SYSTEM_LOGO_SVG}</div>`}
-                </div>
-                <div class="doc-card">
-                  <div class="doc-title">${esc(DOC_LABEL)}</div>
-                  <div class="doc-meta">
-                    <div><b>Nº:</b> ${esc(atd.numero||"—")}</div>
-                    <div><b>Status:</b> ${esc(atd.status||"—")}</div>
-                    <div><b>Data de emissão:</b> ${esc(fmtDate(R.gerado_em))}</div>
-                    <div><b>Paciente(s):</b> ${esc(animaisTxt||"—")}</div>
-                  </div>
+              <div>
+                ${logoA ? `<img class="company-logo" src="${logoA}" alt="Logo da empresa"/>` : `<div style="width:154px;height:154px;border:1px solid #cbd5e1;border-radius:16px;margin-left:auto;display:flex;align-items:center;justify-content:center;background:#fff;">${SYSTEM_LOGO_SVG}</div>`}
+              </div>
+            </div>
+            <div class="hdr-bottom">
+              <div class="company-box">
+                <div class="emp-nome">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa")}</div>
+                <div class="emp-dados">${[
+                  empresa.cnpj ? "CNPJ: "+empresa.cnpj : "",
+                  empresa.email||"",
+                  pixKey ? "PIX" : ""
+                ].filter(Boolean).join("<br/>")}</div>
+              </div>
+              <div>
+                <div class="doc-title">${esc(DOC_LABEL)}</div>
+                <div class="doc-meta">
+                  <div><b>Nº:</b> ${esc(atd.numero||"—")}</div>
+                  <div><b>Status:</b> ${esc(atd.status||"—")}</div>
+                  <div><b>Data de emissão:</b> ${esc(fmtDate(R.gerado_em))}</div>
+                  <div><b>Paciente(s):</b> ${esc(animaisTxt||"—")}</div>
                 </div>
               </div>
             </div>
