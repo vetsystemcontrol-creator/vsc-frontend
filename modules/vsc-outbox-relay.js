@@ -75,14 +75,7 @@
   // ──────────────────────────────────────────────────────────
   function _now() { return Date.now(); }
 
-  function _getToken() {
-    return (
-      localStorage.getItem('vsc_local_token') ||
-      sessionStorage.getItem('vsc_local_token') ||
-      ''
-    );
-  }
-
+  
   function _emitProgress(extra = {}) {
     const detail = {
       ok: !_lastError,
@@ -338,7 +331,7 @@
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'X-VSC-Token': token,
+        
         'X-VSC-Tenant': (window.VSC_CLOUD_SYNC && window.VSC_CLOUD_SYNC.status ? window.VSC_CLOUD_SYNC.status().tenant : 'tenant-default'),
         'X-VSC-User': (() => { try { const u = JSON.parse(localStorage.getItem('vsc_user') || 'null'); return String((u && (u.username || u.nome || u.name || u.id)) || 'anonymous').slice(0,120); } catch (_) { return 'anonymous'; } })(),
       },
@@ -369,7 +362,7 @@
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
-          'X-VSC-Token': token,
+          
           'X-VSC-Tenant': (window.VSC_CLOUD_SYNC && window.VSC_CLOUD_SYNC.status ? window.VSC_CLOUD_SYNC.status().tenant : 'tenant-default'),
           'X-VSC-User': (() => { try { const u = JSON.parse(localStorage.getItem('vsc_user') || 'null'); return String((u && (u.username || u.nome || u.name || u.id)) || 'anonymous').slice(0,120); } catch (_) { return 'anonymous'; } })(),
         },
