@@ -1,4 +1,4 @@
-/* 
+/*
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   X-Frame-Options: SAMEORIGIN
@@ -9,6 +9,11 @@
 
 /api/*
   Cache-Control: no-store, max-age=0, must-revalidate
+  Access-Control-Allow-Origin: *
+  Access-Control-Allow-Methods: GET, POST, OPTIONS
+  Access-Control-Allow-Headers: Content-Type, Accept, Authorization, Origin, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token
+  Access-Control-Expose-Headers: Content-Type, Cache-Control, ETag
+  Access-Control-Max-Age: 86400
 
 /sw.js
   Cache-Control: no-store, max-age=0, must-revalidate
