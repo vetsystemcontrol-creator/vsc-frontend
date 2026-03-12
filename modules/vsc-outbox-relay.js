@@ -258,6 +258,66 @@
     }
   }
 
+  async function _applyPushResult(db, batch, resp) {
+    const rows = Array.isArray(batch) ? batch : [];
+    if (!rows.length) return { acked: 0, rejected: 0, pending: 0 };
+
+    const ackIds = new Set(((resp && Array.isArray(resp.ack_ids)) ? resp.ack_ids : []).map((v) => String(v || '')));
+    const rejectedRaw = (resp && Array.isArray(resp.rejected)) ? resp.rejected : [];
+    const rejectedByOpId = new Map(
+      rejectedRaw
+        .filter((item) => item && (item.op_id || item.id))
+        .map((item) => [String(item.op_id || item.id), item])
+    );
+
+    const granularAckAvailable = ackIds.size > 0 || rejectedRaw.length > 0;
+    const canAckWholeBatch = !granularAckAvailable && resp && resp.ok === true;
+
+    const store = _tx(db, 'readwrite');
+    const now = _now();
+    let acked = 0;
+    let rejected = 0;
+    let pending = 0;
+
+    for (const ev of rows) {
+      if (!ev || !ev.id) continue;
+      const rec = await _reqToPromise(store.get(ev.id));
+      if (!rec) continue;
+
+      const ackedById = ackIds.has(String(ev.id));
+      const rejectedMeta = rejectedByOpId.get(String(ev.op_id || ev.id || '')) || null;
+
+      if (ackedById || canAckWholeBatch) {
+        rec.status = 'DONE';
+        rec.done_at = now;
+        rec.last_ack = resp || null;
+        rec.last_error = null;
+        acked += 1;
+      } else if (rejectedMeta) {
+        rec.retry_count = Number(rec.retry_count || 0) + 1;
+        rec.last_error = String(rejectedMeta.code || rejectedMeta.error || 'sync_rejected');
+        rec.last_rejected = rejectedMeta;
+        if (rec.retry_count >= MAX_RETRIES) {
+          rec.status = 'DEAD';
+          rec.dead_at = now;
+        } else {
+          rec.status = 'PENDING';
+        }
+        rejected += 1;
+      } else {
+        // Resposta parcial/indeterminada: nunca confirmar como DONE.
+        rec.status = 'PENDING';
+        rec.last_error = 'sync_ack_indeterminate';
+        rec.last_ack = resp || null;
+        pending += 1;
+      }
+
+      await _reqToPromise(store.put(rec));
+    }
+
+    return { acked, rejected, pending };
+  }
+
   function _computeBatchSize(pending) {
     if (pending <= 0) return 0;
     // Heurística simples: mais backlog → lote maior
@@ -405,14 +465,10 @@
             }
 
             const resp = await _pushBatch(batch);
-
-            // Ack
-            if (ids.length) {
-              await _markBatch(db, ids, { status: 'DONE', done_at: _now(), last_ack: resp || null });
-            }
+            const applyResult = await _applyPushResult(db, batch, resp);
 
             _stats.sent += batch.length;
-            _stats.acked += batch.length;
+            _stats.acked += Number(applyResult.acked || 0);
 
             const dt = _now() - t0;
             _stats.lastDurationMs = dt;

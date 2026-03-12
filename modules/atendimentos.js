@@ -1884,13 +1884,18 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       return `ATD-${year}-${Date.now().toString().slice(-5)}`;
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       try {
         const tx = db.transaction([STORE], "readwrite");
         const st = tx.objectStore(STORE);
         const rq = st.get(KEY);
         rq.onsuccess = () => {
-          const current = rq.result || { key: KEY, value: 0, year: year };
+          const current = rq.result || { id: KEY, key: KEY, value: 0, year: year };
+          // Compatibilidade: a store usa keyPath "id", mas mantemos também "key"
+          // para leitura legada e para evitar DataError ao salvar o contador.
+          current.id = KEY;
+          current.key = KEY;
+
           // Resetar se virou ano
           if (Number(current.year || 0) !== year) {
             current.value = 0;
@@ -4438,6 +4443,23 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     updateTotaisUI();
     updateStatusBadges("orcamento");
     updateEditorTitle();
+
+    // Persistência imediata do rascunho: o botão "Novo atendimento" precisa
+    // criar um registro local válido já no início do fluxo offline-first.
+    try {
+      const shell = buildPayload();
+      shell.id = shell.id || ATD.atendimento_id || uuidv4();
+      ATD.atendimento_id = shell.id;
+      shell.numero = shell.numero || ATD.numero;
+      shell.created_at = ATD.created_at || shell.created_at || isoNow();
+      shell.updated_at = isoNow();
+      await idbPut(db, "atendimentos_master", shell);
+    } catch (e) {
+      console.error("[ATD] Falha ao criar rascunho local do atendimento:", e);
+      snack("Falha ao iniciar atendimento: " + (e?.message || e || "erro desconhecido"), "err");
+      return;
+    }
+
     renderLista(db);
     goDetailView();
     renderExecutivePanels(db).catch(()=>{});
