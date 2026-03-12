@@ -693,9 +693,9 @@
         </div>
         <div class="row mt12 finance-decision-fields">
           <div class="field" style="flex:1;min-width:220px;">
-            <label>Forma preferencial</label>
+            <label>Tipo de pagamento</label>
             <select id="financeDecisionPaymentMethod">
-              <option value="definir_depois">Definir depois</option>
+              <option value="" selected>Selecione o tipo de pagamento</option>
               <option value="pix">PIX</option>
               <option value="dinheiro">Dinheiro</option>
               <option value="boleto">Boleto bancário</option>
@@ -707,7 +707,10 @@
               <option value="recorrencia_cartao">Recorrência no cartão</option>
               <option value="cheque">Cheque</option>
               <option value="credito_cliente">Crédito em conta cliente</option>
+              <option value="nao_informado">Não informado</option>
+              <option value="definir_depois">Definir depois</option>
             </select>
+            <div class="hint" style="margin-top:6px;font-size:12px;color:#64748b;">Exemplos: dinheiro, PIX, boleto, cartão de crédito ou débito.</div>
           </div>
           <div class="field" style="min-width:220px;">
             <label>Condição / prazo</label>

@@ -1990,6 +1990,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     financeiro_gerado: false,
     financeiro_fechamento_modo: "aberto",
     financeiro_fechamento_label: "Em aberto",
+    financeiro_tipo_pagamento: "definir_depois",
     financeiro_preferencia_pagamento: "definir_depois",
     financeiro_condicao_pagamento: "avista",
     financeiro_baixa_modo: "manual",
@@ -2239,7 +2240,8 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     ATD.financeiro_fechamento_modo = rec.financeiro_fechamento_modo || (ATD.financeiro_gerado ? "gerar_agora" : "aberto");
     ATD.financeiro_fechamento_label = rec.financeiro_fechamento_label || (ATD.financeiro_gerado ? "Gerado agora" : "Em aberto");
     ATD.financeiro_observacao = rec.financeiro_observacao || "";
-    ATD.financeiro_preferencia_pagamento = rec.financeiro_preferencia_pagamento || "definir_depois";
+    ATD.financeiro_tipo_pagamento = rec.financeiro_tipo_pagamento || rec.financeiro_preferencia_pagamento || "definir_depois";
+    ATD.financeiro_preferencia_pagamento = rec.financeiro_preferencia_pagamento || rec.financeiro_tipo_pagamento || "definir_depois";
     ATD.financeiro_condicao_pagamento = rec.financeiro_condicao_pagamento || "avista";
     ATD.financeiro_baixa_modo = rec.financeiro_baixa_modo || "manual";
     ATD.financeiro_vencimento = rec.financeiro_vencimento || rec.data_atendimento || todayYMD();
@@ -3787,7 +3789,9 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       ref_id: ATD.atendimento_id,
       billing_cycle: ATD.financeiro_fechamento_modo || "gerar_agora",
       billing_mode: ATD.financeiro_gerado ? "imediato" : "posterior",
-      payment_preference: ATD.financeiro_preferencia_pagamento || "definir_depois",
+      payment_type: ATD.financeiro_tipo_pagamento || ATD.financeiro_preferencia_pagamento || "definir_depois",
+      forma_pagamento: ATD.financeiro_tipo_pagamento || ATD.financeiro_preferencia_pagamento || "definir_depois",
+      payment_preference: ATD.financeiro_preferencia_pagamento || ATD.financeiro_tipo_pagamento || "definir_depois",
       payment_terms: ATD.financeiro_condicao_pagamento || "avista",
       settlement_mode: ATD.financeiro_baixa_modo || "manual",
       installments: Math.max(1, Number(ATD.financeiro_parcelas || 1)),
@@ -3906,7 +3910,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     syncFinanceChoiceVisualState(current);
 
     $('financeDecisionObs') && ($('financeDecisionObs').value = String(ATD.financeiro_observacao || ''));
-    $('financeDecisionPaymentMethod') && ($('financeDecisionPaymentMethod').value = String(ATD.financeiro_preferencia_pagamento || 'definir_depois'));
+    $('financeDecisionPaymentMethod') && ($('financeDecisionPaymentMethod').value = String(ATD.financeiro_tipo_pagamento || ATD.financeiro_preferencia_pagamento || ''));
     $('financeDecisionTerms') && ($('financeDecisionTerms').value = String(ATD.financeiro_condicao_pagamento || 'avista'));
     $('financeDecisionSettlementMode') && ($('financeDecisionSettlementMode').value = String(ATD.financeiro_baixa_modo || 'manual'));
     $('financeDecisionDueDate') && ($('financeDecisionDueDate').value = String(ATD.financeiro_vencimento || ATD.data_atendimento || todayYMD()));
@@ -4109,7 +4113,8 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       ATD.financeiro_fechamento_modo = decision;
       ATD.financeiro_fechamento_label = mapFinanceDecisionLabel(decision);
       ATD.financeiro_observacao = ($('financeDecisionObs')?.value || '').trim();
-      ATD.financeiro_preferencia_pagamento = ($('financeDecisionPaymentMethod')?.value || 'definir_depois').trim();
+      ATD.financeiro_tipo_pagamento = ($('financeDecisionPaymentMethod')?.value || '').trim() || 'definir_depois';
+      ATD.financeiro_preferencia_pagamento = ATD.financeiro_tipo_pagamento;
       ATD.financeiro_condicao_pagamento = ($('financeDecisionTerms')?.value || 'avista').trim();
       ATD.financeiro_baixa_modo = ($('financeDecisionSettlementMode')?.value || 'manual').trim();
       ATD.financeiro_vencimento = ($('financeDecisionDueDate')?.value || ATD.data_atendimento || todayYMD()).trim();
@@ -4159,6 +4164,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         ATD.financeiro_gerado = false;
         ATD.financeiro_fechamento_modo = "aberto";
         ATD.financeiro_fechamento_label = "Em aberto";
+        ATD.financeiro_tipo_pagamento = "definir_depois";
         ATD.financeiro_preferencia_pagamento = "definir_depois";
         ATD.financeiro_condicao_pagamento = "avista";
         ATD.financeiro_baixa_modo = "manual";
@@ -4230,7 +4236,8 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       financeiro_fechamento_modo: ATD.financeiro_fechamento_modo || (ATD.financeiro_gerado ? "gerar_agora" : "aberto"),
       financeiro_fechamento_label: ATD.financeiro_fechamento_label || (ATD.financeiro_gerado ? "Gerado agora" : "Em aberto"),
       financeiro_observacao: ATD.financeiro_observacao || "",
-      financeiro_preferencia_pagamento: ATD.financeiro_preferencia_pagamento || "definir_depois",
+      financeiro_tipo_pagamento: ATD.financeiro_tipo_pagamento || ATD.financeiro_preferencia_pagamento || "definir_depois",
+      financeiro_preferencia_pagamento: ATD.financeiro_preferencia_pagamento || ATD.financeiro_tipo_pagamento || "definir_depois",
       financeiro_condicao_pagamento: ATD.financeiro_condicao_pagamento || "avista",
       financeiro_baixa_modo: ATD.financeiro_baixa_modo || "manual",
       financeiro_vencimento: ATD.financeiro_vencimento || ATD.data_atendimento || todayYMD(),
@@ -4351,6 +4358,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     ATD.financeiro_gerado = false;
     ATD.financeiro_fechamento_modo = "aberto";
     ATD.financeiro_fechamento_label = "Em aberto";
+    ATD.financeiro_tipo_pagamento = "definir_depois";
     ATD.financeiro_preferencia_pagamento = "definir_depois";
     ATD.financeiro_condicao_pagamento = "avista";
     ATD.financeiro_baixa_modo = "manual";
