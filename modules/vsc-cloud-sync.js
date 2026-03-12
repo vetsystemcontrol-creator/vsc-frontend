@@ -9,6 +9,33 @@
   const SNAPSHOT_PUSH_TIMEOUT_MS = 60_000;
   const MANUAL_PUSH_BUDGET_MS = 45_000;
 
+  function getSyncToken() {
+    try {
+      const candidates = [
+        localStorage.getItem('vsc_local_token'),
+        sessionStorage.getItem('vsc_local_token'),
+        localStorage.getItem('vsc_token'),
+        sessionStorage.getItem('vsc_token'),
+        localStorage.getItem('auth_token'),
+        sessionStorage.getItem('auth_token'),
+      ];
+      for (const value of candidates) {
+        const token = String(value || '').trim();
+        if (token) return token;
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  function buildSyncHeaders(extra = {}) {
+    const token = getSyncToken();
+    const headers = { ...extra };
+    if (token) {
+      headers['X-VSC-Token'] = token;
+    }
+    return headers;
+  }
+
   let isSyncing = false;
 
   function nowIso() {
@@ -117,10 +144,10 @@
           url,
           {
             method: 'GET',
-            headers: {
+            headers: buildSyncHeaders({
               'Accept': 'application/json',
               'X-VSC-Tenant': TENANT,
-            },
+            }),
             cache: 'no-store',
           },
           SNAPSHOT_TIMEOUT_MS,
@@ -205,11 +232,11 @@
           url,
           {
             method: 'POST',
-            headers: {
+            headers: buildSyncHeaders({
               'Accept': 'application/json',
               'Content-Type': 'application/json',
               'X-VSC-Tenant': TENANT,
-            },
+            }),
             body: JSON.stringify({
               snapshot,
               source: 'browser-local-bootstrap',

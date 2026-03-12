@@ -6,6 +6,8 @@ import {
   getUserLabel,
   ensureSchema,
   ingestOperation,
+  isSyncAuthorized,
+  buildUnauthorizedResponse,
 } from '../_lib/sync-store.js';
 
 function optionsHeaders(request) {
@@ -27,6 +29,8 @@ export async function onRequestOptions(context) {
 
 export async function onRequestPost(context) {
   const { request, env } = context;
+  const auth = isSyncAuthorized(request, env);
+  if (!auth.ok) return buildUnauthorizedResponse(request);
 
   try {
     const db = getDB(env);

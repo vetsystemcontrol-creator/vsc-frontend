@@ -110,16 +110,6 @@
             this._last.lastSync = localStorage.getItem('vsc_last_sync');
           } catch (_) {}
 
-          try {
-            const parentWin = window.parent;
-            if (parentWin && parentWin !== window && !this._firstSyncDone) {
-              this._firstSyncDone = true;
-              setTimeout(() => {
-                try { parentWin.location.reload(); } catch (_) {}
-              }, 800);
-            }
-          } catch (_) {}
-
           this._render();
           return;
         }

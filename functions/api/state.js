@@ -5,6 +5,9 @@ import {
   ensureSchema,
   ingestOperation,
   loadCanonicalSnapshot,
+  importCanonicalSnapshot,
+  isSyncAuthorized,
+  buildUnauthorizedResponse,
 } from './_lib/sync-store.js';
 import {
   buildJsonResponse,
@@ -215,6 +218,36 @@ async function handlePush(request, env, tenant) {
   }
 
   if (body && typeof body === 'object' && body.snapshot && typeof body.snapshot === 'object') {
+    if (db) {
+      await ensureSchema(db);
+      const current = await loadCanonicalSnapshot(db, tenant);
+      const shouldReplace = body.replace === true || Number(current?.revision || 0) === 0;
+      const result = await importCanonicalSnapshot(db, tenant, body.snapshot, {
+        source: body.source || 'manual-browser-sync',
+        userLabel: getUserLabel(request),
+        replace: shouldReplace,
+      });
+
+      return buildJsonResponse(
+        request,
+        {
+          ok: true,
+          action: 'push',
+          tenant,
+          mode: 'canonical_snapshot_import',
+          imported_rows: result.imported_rows,
+          imported_stores: result.imported_stores,
+          state_revision: result.state_revision,
+          replace: result.replace,
+          source: result.source,
+          imported_at: result.imported_at,
+        },
+        200,
+        buildRevisionHeaders(result.state_revision),
+        'POST, OPTIONS'
+      );
+    }
+
     const result = await saveSnapshot(env, tenant, body.snapshot, {
       source: body.source || 'manual-browser-sync',
       exported_at: body.snapshot?.meta?.exported_at,
@@ -261,7 +294,11 @@ export async function onRequestGet(context) {
     const tenant = readTenant(request, url);
 
     if (action === 'capabilities') return buildCapabilities(request, env);
-    if (action === 'pull') return handlePull(request, env, tenant);
+    if (action === 'pull') {
+      const auth = isSyncAuthorized(request, env);
+      if (!auth.ok) return buildUnauthorizedResponse(request);
+      return handlePull(request, env, tenant);
+    }
 
     return buildJsonResponse(request, { ok: false, error: 'unsupported_action', action }, 400);
   } catch (error) {
@@ -285,7 +322,11 @@ export async function onRequestPost(context) {
     const action = String(url.searchParams.get('action') || '').trim().toLowerCase();
     const tenant = readTenant(request, url);
 
-    if (action === 'push') return handlePush(request, env, tenant);
+    if (action === 'push') {
+      const auth = isSyncAuthorized(request, env);
+      if (!auth.ok) return buildUnauthorizedResponse(request);
+      return handlePush(request, env, tenant);
+    }
 
     return buildJsonResponse(request, { ok: false, error: 'unsupported_action', action }, 400);
   } catch (error) {

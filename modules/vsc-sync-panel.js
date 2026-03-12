@@ -180,6 +180,12 @@
           if (!db.objectStoreNames.contains('sync_queue')) { cb(0); return; }
           const tx = db.transaction('sync_queue', 'readonly');
           const store = tx.objectStore('sync_queue');
+          if (store.indexNames && store.indexNames.contains('status')) {
+            const countReq = store.index('status').count('PENDING');
+            countReq.onsuccess = () => cb(Number(countReq.result || 0) || 0);
+            countReq.onerror = () => cb(0);
+            return;
+          }
           const all = store.getAll();
           all.onsuccess = e => {
             const pending = (e.target.result || []).filter(r => r && r.status === 'PENDING').length;
@@ -367,12 +373,18 @@
       const sync = _getVSC_CLOUD_SYNC();
       if (!sync) throw new Error('VSC_CLOUD_SYNC não disponível');
       const result = await sync.manualSync();
-      const pushed = result && result.pushed;
+      const pushed = !!(result && result.pushed);
+      const partial = !!(result && result.partial);
+      const bootstrapped = !!(result && result.bootstrapped);
       const stores = result && result.applied && result.applied.importedStores;
-      const msg = 'Push: ' + (pushed ? 'enviado' : 'sem pendências') +
-                  (stores ? ' · Pull: ' + stores.length + ' stores' : '');
+      const msg = (partial
+        ? 'Push parcial em segundo plano'
+        : ('Push: ' + (pushed ? 'enviado' : 'sem pendências'))) +
+        (bootstrapped ? ' · Bootstrap do servidor concluído' : '') +
+        (stores ? ' · Pull: ' + stores.length + ' stores' : '');
       _addHistory({ ok: true, msg });
       _render({ syncing: false, error: null });
+      setTimeout(() => _render({ syncing: false, error: null }), 150);
     } catch(e) {
       const err = String(e && (e.message || e));
       _addHistory({ ok: false, error: err });

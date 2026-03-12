@@ -53,6 +53,21 @@ const STORE_NAME_MAP = Object.freeze({
   documents: 'documents',
 });
 
+const SNAPSHOT_IMPORT_EXCLUDED_STORES = new Set([
+  'auth_users',
+  'auth_roles',
+  'auth_role_permissions',
+  'auth_sessions',
+  'auth_audit_log',
+  'backup_events',
+  'db_backups',
+  'attachments_queue',
+]);
+
+const SNAPSHOT_IMPORT_ALLOWED_STORES = Array.from(new Set(Object.values(STORE_NAME_MAP)))
+  .filter((store) => !SNAPSHOT_IMPORT_EXCLUDED_STORES.has(store));
+
+
 function corsHeaders(request) {
   const origin = request?.headers?.get('Origin') || '';
   if (!origin) return { 'Access-Control-Allow-Origin': '*' };
@@ -388,6 +403,176 @@ async function loadCanonicalSnapshot(db, tenant) {
   };
 }
 
+function pickRecordId(storeName, row) {
+  if (!row || typeof row !== 'object') return '';
+  if (row.id != null && String(row.id).trim()) return String(row.id).trim().slice(0, 160);
+  if (storeName === 'produtos_lotes' && row.lote_id != null && String(row.lote_id).trim()) return String(row.lote_id).trim().slice(0, 160);
+  if (row.produto_id != null && String(row.produto_id).trim()) return String(row.produto_id).trim().slice(0, 160);
+  if (row.uuid != null && String(row.uuid).trim()) return String(row.uuid).trim().slice(0, 160);
+  if (row.key != null && String(row.key).trim()) return String(row.key).trim().slice(0, 160);
+  return '';
+}
+
+function normalizeSnapshotRecord(storeName, row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+  const recordId = pickRecordId(storeName, row);
+  if (!recordId) return null;
+  const clone = JSON.parse(JSON.stringify(row));
+  if (!clone.id && storeName !== 'produtos_lotes') clone.id = recordId;
+  if (storeName === 'produtos_master' && !clone.produto_id) clone.produto_id = recordId;
+  if (!clone.updated_at) clone.updated_at = clone.updatedAt || nowIso();
+  if (!clone.sync_rev) clone.sync_rev = normNum(clone.sync_rev || clone.entity_revision || 1, 1);
+  if (!clone.entity_revision) clone.entity_revision = normNum(clone.entity_revision || clone.sync_rev || 1, 1);
+  return { recordId, payload: clone };
+}
+
+async function importCanonicalSnapshot(db, tenant, snapshot, options = {}) {
+  await ensureSchema(db);
+
+  if (!snapshot || typeof snapshot !== 'object' || typeof snapshot.data !== 'object' || snapshot.data === null) {
+    throw new Error('invalid_snapshot_payload');
+  }
+
+  const replace = !!options.replace;
+  const source = normStr(options.source || snapshot?.meta?.source || 'snapshot-import', 120) || 'snapshot-import';
+  const deviceId = normStr(options.device_id || 'snapshot-import', 160) || 'snapshot-import';
+  const userLabel = normStr(options.userLabel || 'snapshot-import', 120) || 'snapshot-import';
+  const importedAt = nowIso();
+  const currentMeta = await db.prepare(`
+    SELECT tenant, state_revision
+    FROM canonical_state_meta
+    WHERE tenant = ?1
+    LIMIT 1
+  `).bind(tenant).first();
+  const currentRevision = Number(currentMeta?.state_revision || 0) || 0;
+
+  const importedStores = [];
+  let importedRows = 0;
+
+  for (const storeName of SNAPSHOT_IMPORT_ALLOWED_STORES) {
+    if (!Object.prototype.hasOwnProperty.call(snapshot.data || {}, storeName)) continue;
+
+    const rows = Array.isArray(snapshot.data[storeName]) ? snapshot.data[storeName] : [];
+
+    if (replace) {
+      await db.prepare(`DELETE FROM canonical_records WHERE tenant = ?1 AND store_name = ?2`).bind(tenant, storeName).run();
+    }
+
+    let storeImported = 0;
+    for (const row of rows) {
+      const normalized = normalizeSnapshotRecord(storeName, row);
+      if (!normalized) continue;
+
+      const payload = normalized.payload;
+      const entityRevision = Math.max(1, normNum(payload.entity_revision || payload.sync_rev || 1, 1));
+      const sourceOpId = `${source}:${storeName}:${normalized.recordId}:${payload.updated_at || importedAt}`.slice(0, 160);
+
+      await db.prepare(`
+        INSERT INTO canonical_records (
+          tenant, store_name, record_id, payload_json, deleted, deleted_at, updated_at,
+          source_op_id, device_id, entity_revision
+        ) VALUES (?1, ?2, ?3, ?4, 0, NULL, ?5, ?6, ?7, ?8)
+        ON CONFLICT(tenant, store_name, record_id) DO UPDATE SET
+          payload_json = excluded.payload_json,
+          deleted = 0,
+          deleted_at = NULL,
+          updated_at = excluded.updated_at,
+          source_op_id = excluded.source_op_id,
+          device_id = excluded.device_id,
+          entity_revision = excluded.entity_revision
+      `).bind(
+        tenant,
+        storeName,
+        normalized.recordId,
+        JSON.stringify(payload),
+        payload.updated_at || importedAt,
+        sourceOpId,
+        deviceId,
+        entityRevision,
+      ).run();
+
+      await db.prepare(`
+        INSERT OR IGNORE INTO sync_operations (
+          tenant, op_id, dedupe_key, entity, store_name, entity_id, action, payload_json,
+          device_id, user_label, created_at_client, received_at,
+          base_revision, entity_revision, status
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'SNAPSHOT_IMPORT', ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'ACKED')
+      `).bind(
+        tenant,
+        sourceOpId,
+        `${source}:${storeName}:${normalized.recordId}`.slice(0, 300),
+        storeName,
+        storeName,
+        normalized.recordId,
+        JSON.stringify(payload),
+        deviceId,
+        userLabel,
+        payload.updated_at || importedAt,
+        importedAt,
+        currentRevision,
+        entityRevision,
+      ).run();
+
+      storeImported += 1;
+      importedRows += 1;
+    }
+
+    if (storeImported > 0 || replace) importedStores.push(storeName);
+  }
+
+  const nextRevision = Math.max(currentRevision + 1, importedRows > 0 ? 1 : currentRevision);
+  await db.prepare(`
+    INSERT INTO canonical_state_meta (tenant, state_revision, updated_at, last_op_id, last_store_name, last_record_id)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+    ON CONFLICT(tenant) DO UPDATE SET
+      state_revision = excluded.state_revision,
+      updated_at = excluded.updated_at,
+      last_op_id = excluded.last_op_id,
+      last_store_name = excluded.last_store_name,
+      last_record_id = excluded.last_record_id
+  `).bind(
+    tenant,
+    nextRevision,
+    importedAt,
+    `${source}:snapshot`.slice(0, 160),
+    importedStores[importedStores.length - 1] || null,
+    null,
+  ).run();
+
+  return {
+    ok: true,
+    imported_rows: importedRows,
+    imported_stores: importedStores,
+    state_revision: nextRevision,
+    replace,
+    source,
+    imported_at: importedAt,
+  };
+}
+
+function getSyncSecret(env) {
+  return normStr(env?.VSC_SYNC_SECRET || env?.SYNC_SECRET || '', 512);
+}
+
+function getRequestToken(request) {
+  return normStr(
+    request?.headers?.get('X-VSC-Token') || request?.headers?.get('x-vsc-token') || '',
+    512
+  );
+}
+
+function isSyncAuthorized(request, env) {
+  const secret = getSyncSecret(env);
+  if (!secret) return { ok: true, enforced: false };
+  const token = getRequestToken(request);
+  if (token && token === secret) return { ok: true, enforced: true };
+  return { ok: false, enforced: true, error: 'unauthorized' };
+}
+
+function buildUnauthorizedResponse(request) {
+  return json({ ok: false, error: 'unauthorized' }, 401, request);
+}
+
 export {
   JSON_HEADERS,
   json,
@@ -399,4 +584,9 @@ export {
   ensureSchema,
   ingestOperation,
   loadCanonicalSnapshot,
+  importCanonicalSnapshot,
+  getSyncSecret,
+  getRequestToken,
+  isSyncAuthorized,
+  buildUnauthorizedResponse,
 };
