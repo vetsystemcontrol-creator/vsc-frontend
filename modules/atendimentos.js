@@ -96,6 +96,33 @@
     try { return d.toLocaleDateString("pt-BR"); } catch (_) { return "—"; }
   }
 
+  function fmtDateTime(iso) {
+    const d = parseDateFlexible(iso);
+    if (!d) return "—";
+    try { return d.toLocaleString("pt-BR"); } catch (_) { return "—"; }
+  }
+
+  function addDaysYMD(ymd, days){
+    const d = parseDateFlexible(ymd || todayYMD()) || new Date();
+    d.setDate(d.getDate() + Number(days || 0));
+    return d.toISOString().slice(0,10);
+  }
+
+  function boolish(v){
+    if (typeof v === "boolean") return v;
+    const s = norm(v);
+    return ["1","true","sim","yes","ativo","enabled"].includes(s);
+  }
+
+  function pickFirstNonEmpty(){
+    for (const v of arguments){
+      if (v == null) continue;
+      if (Array.isArray(v) && v.length) return v[0];
+      if (String(v).trim()) return v;
+    }
+    return "";
+  }
+
   
   
   // ─── UX ENTERPRISE: normalização/máscara determinística (pt-BR) ───────
@@ -209,6 +236,9 @@
     wireIntInput("v_fc", { min: 0, allowEmpty:true });
     wireIntInput("v_fr", { min: 0, allowEmpty:true });
     wireDecimalInput("v_peso", 1, { min: 0, allowEmpty:true });
+
+    // Campos financeiros
+    wireDecimalInput("financeDecisionEntryAmount", 2, { min: 0, allowEmpty:true });
 
     // Campos readonly monetários são calculados via JS (não edita)
   }
@@ -335,16 +365,50 @@
     snack("Anexos adicionados. Preencha as descrições e clique em Salvar.", "ok");
   }
 
-  function openAttachmentInNewTab(att){
-    if(!att || !att.dataUrl) return;
+  async function openAttachmentInNewTab(att){
+    if(!att) return;
+
+    // Se tem dataUrl local, abre direto
+    if(att.dataUrl){
+      _renderAttachWindow(att, att.dataUrl);
+      return;
+    }
+
+    // Sem dataUrl — busca do R2
+    if(!att.synced_to_r2){ snack("Anexo sem dados locais e não sincronizado com o servidor.", "err"); return; }
+    if(!ATD.atendimento_id){ snack("ID do atendimento não encontrado.", "err"); return; }
+
+    snack("Baixando anexo do servidor...", "ok");
+    try {
+      const base = (location.hostname==='127.0.0.1'||location.hostname==='localhost')
+        ? 'https://app.vetsystemcontrol.com.br' : '';
+      const tenant = localStorage.getItem('vsc_tenant') || 'tenant-default';
+      const url = `${base}/api/attachments?action=download&atendimento_id=${encodeURIComponent(ATD.atendimento_id)}&attachment_id=${encodeURIComponent(att.id)}`;
+      const res = await fetch(url, { headers: { 'X-VSC-Tenant': tenant } });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
+      // Salva localmente para próxima vez
+      att.dataUrl = dataUrl;
+      _renderAttachWindow(att, dataUrl);
+    } catch(e) {
+      snack("Erro ao baixar anexo: " + (e.message||"erro"), "err");
+    }
+  }
+
+  function _renderAttachWindow(att, dataUrl){
     const attWin = window.open("about:blank", "_blank");
     if(!attWin){ snack("Pop-up bloqueado. Libere pop-ups para visualizar anexos.", "warn"); return; }
     const title = esc(att.name || "Anexo");
     const isPdf = String(att.mime||"") === "application/pdf";
     const body = isPdf
-      ? `<embed src="${att.dataUrl}" type="application/pdf" style="width:100%;height:100vh;"/>`
-      : `<img src="${att.dataUrl}" style="max-width:100%;height:auto;display:block;margin:0 auto;"/>`;
-
+      ? `<embed src="${dataUrl}" type="application/pdf" style="width:100%;height:100vh;"/>`
+      : `<img src="${dataUrl}" style="max-width:100%;height:auto;display:block;margin:0 auto;"/>`;
     attWin.document.open();
     attWin.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="margin:0;padding:0;background:#111;color:#fff;">${body}</body></html>`);
     attWin.document.close();
@@ -467,19 +531,59 @@ async function loadEmpresaSnapshot(db){
         };
       }
     }
-    // fallback: config_params
+    // Fallback canônico: config_params (empresa.js persiste aqui via IDB)
     if(hasStore(db,"config_params")){
       const rows = await idbGetAll(db,"config_params");
-      function getKey(k){ const r = rows.find(x=>String(x.key||x.nome||"")==k); return r? String(r.value||""):""; }
+      function getKey(k){ const r = rows.find(x=>String(x.key||x.nome||x.id||"")===k); return r ? String(r.value||"") : ""; }
+
+      // Tenta ler o snapshot completo (salvo pelo empresa.js como JSON)
+      const snapRaw = getKey("vsc_empresa_v1");
+      if(snapRaw){
+        try{
+          const snap = JSON.parse(snapRaw);
+          if(snap && snap.nome){
+            const logoAKey = getKey("vsc_empresa_logo_a") || snap.__logoA || "";
+            const logoBKey = getKey("vsc_empresa_logo_b") || snap.__logoB || "";
+            return {
+              nome:     snap.nome || snap.razao_social || snap.fantasia || "",
+              cnpj:     snap.cnpj || "",
+              endereco: snap.endereco || "",
+              cidade:   snap.cidade || "",
+              uf:       snap.uf || "",
+              cep:      snap.cep || "",
+              telefone: snap.telefone || snap.celular || "",
+              email:    snap.email || "",
+              site:     snap.site || "",
+              crmv:     snap.crmv || "",
+              __logoA:  logoAKey || (await getEmpresaLogoAFromLocalStorage()),
+              __logoB:  logoBKey || "",
+              pix_tipo:       snap.pix_tipo || "",
+              pix_chave:      snap.pix_chave || (await getEmpresaPixFromLocalStorage()),
+              pix_chave_norm: snap.pix_chave_norm || "",
+              pix_nome:       snap.pix_nome || "",
+            };
+          }
+        }catch(_){}
+      }
+
+      // Fallback por chaves individuais legacy
       return {
-        nome: getKey("empresa_nome") || getKey("razao_social") || "",
-        cnpj: getKey("empresa_cnpj") || getKey("cnpj") || "",
+        nome:     getKey("empresa_nome") || getKey("razao_social") || "",
+        cnpj:     getKey("empresa_cnpj") || getKey("cnpj") || "",
         endereco: getKey("empresa_endereco") || getKey("endereco") || "",
         telefone: getKey("empresa_telefone") || getKey("telefone") || "",
-        email: getKey("empresa_email") || getKey("email") || "",
-        __logoA: getKey("empresa_logo_a") || getKey("logo_a") || (await getEmpresaLogoAFromLocalStorage()),
+        email:    getKey("empresa_email") || getKey("email") || "",
+        __logoA:  getKey("empresa_logo_a") || getKey("logo_a") || (await getEmpresaLogoAFromLocalStorage()),
         pix_chave: getKey("pix_chave") || getKey("chave_pix") || getKey("pix") || (await getEmpresaPixFromLocalStorage()),
       };
+    }
+    // Último recurso: só localStorage
+    const lsRaw = localStorage.getItem("vsc_empresa_v1");
+    if(lsRaw){
+      try{
+        const ls = JSON.parse(lsRaw);
+        if(ls && ls.nome) return Object.assign({ __logoA:"", pix_chave:"" }, ls);
+      }catch(_){}
     }
     return { nome:"", cnpj:"", endereco:"", telefone:"", email:"" };
   }
@@ -719,6 +823,14 @@ async function openPrintWindow(payload, docType){
   const ui = ensurePrintPreviewModal();
   ui.setState("loading", "Gerando PDF premium (incluindo anexos)…");
 
+  // Anexos: usa apenas o que já está em memória local (dataUrl).
+  // NÃO faz download em tempo de impressão — evita travamento da UI.
+  // Arquivos apenas no servidor aparecem com aviso no documento impresso.
+  if(doc.atendimento && Array.isArray(doc.atendimento.attachments)){
+    const sem = doc.atendimento.attachments.filter(a => a && !a.dataUrl && a.synced_to_r2);
+    if(sem.length) console.info('[PRINT] ' + sem.length + ' anexo(s) só no servidor (exibidos como referência no doc):', sem.map(a=>a.name));
+  }
+
   let r;
   try{
     r = await fetch("/api/atendimentos/print-pack", {
@@ -730,16 +842,16 @@ async function openPrintWindow(payload, docType){
   }catch(e){
     console.error("[SGQT-PRINT][NET] erro:", e);
     ui.setState("loading", "Backend indisponível. Gerando impressão local...");
-    return openPrintWindowClient(payload, docType, { openPreview:true });
+    return openPrintWindowClient(doc, docType, { openPreview:true });
   }
 
   if(!r.ok){
     let detail = "";
     try{ detail = await r.text(); }catch(_){ }
     console.error("[SGQT-PRINT][HTTP] status:", r.status, detail);
-    if(r.status === 404 || r.status === 501){
+    if(r.status === 404 || r.status === 405 || r.status === 501){
       ui.setState("loading", "Backend de impressão ausente. Gerando impressão local...");
-      return openPrintWindowClient(payload, docType, { openPreview:true });
+      return openPrintWindowClient(doc, docType, { openPreview:true });
     }
     ui.setState("error", "Backend retornou erro ("+r.status+").");
     if(r.status === 413){
@@ -842,8 +954,8 @@ body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:
 .sysSub{font-size:11px;color:var(--muted);font-weight:800;}
 .logoA{width:54px;height:54px;object-fit:contain;border:none;border-radius:0;margin:0;}
 .hdr h1{font-size:16px;margin:0;font-weight:900;letter-spacing:-.02em;}
-.small{font-size:12px;color:var(--muted);line-height:1.35;}
-.box{border:1px solid var(--bd);border-radius:12px;padding:12px 14px;margin:12px 0;}
+.small{font-size:11px;color:var(--muted);line-height:1.4;}
+.box{border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin:10px 0;}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
 .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700;}
 .val{font-size:13px;font-weight:800;margin-top:2px;}
@@ -858,6 +970,10 @@ th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06
 img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid var(--bd);border-radius:10px;}
 .pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
 .muted{color:var(--muted);}
+.att{margin:14px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:10px;break-inside:avoid;}
+.att-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:#334155;margin-bottom:6px;}
+.att-desc{font-size:12px;color:var(--muted);margin-top:6px;font-style:italic;}
+.att-nodata{font-size:12px;color:#b45309;background:#fef3c7;padding:8px 10px;border-radius:6px;margin-top:6px;}
 
 /* Marca d'água (somente relatório) */
 .wmLocal{
@@ -901,12 +1017,13 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   .footer{
     display:block;
     position:fixed; left:0; right:0; bottom:0;
-    padding:4mm 12mm 3mm;
-    font-size:10px; color:var(--muted);
+    border-top:1px solid var(--bd);
+    padding:3mm 12mm 3mm;
+    font-size:9px; color:var(--muted);
     background:#fff;
   }
-  .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:flex-end;}
-  .pnum:before{content:"Página " counter(page) " de " counter(pages);} 
+  .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:center;}
+  /* counter(pages) não funciona no Chrome para about:blank - JS preenche .pnum */
 }
   `;
 
@@ -943,27 +1060,43 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     atts.length ? atts.map((a, idx)=>{
       const isPdf = String(a.mime||"")==="application/pdf";
       const name = esc(a.name||("Anexo "+(idx+1)));
+      const hasData = !!a.dataUrl;
+      const sizeKb = a.size ? Math.round(a.size/1024) + " KB" : "";
+      if(!hasData){
+        // Sem dataUrl — mostra referência (arquivo está no servidor)
+        return `
+          <section class="att">
+            <div class="att-title">${name} ${isPdf ? "• PDF" : "• Imagem"} ${sizeKb ? "• "+sizeKb : ""}</div>
+            ${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ""}
+            <div class="att-nodata">⚠ Arquivo disponível no servidor (${sizeKb}). Abra o atendimento para visualizar.</div>
+          </section>
+        `;
+      }
       if(isPdf){
         return `
           <section class="att">
-            <div class="att-title">${name} • PDF</div>
+            <div class="att-title">${name} • PDF ${sizeKb ? "• "+sizeKb : ""}</div>
             <div class="no-print small"><a href="${a.dataUrl}" target="_blank" rel="noopener">Abrir PDF em nova aba</a></div>
             <div class="pdf-block att-media" data-idx="${idx}">
               <div class="pdf-loading">Renderizando PDF para impressão…</div>
               <div class="pdf-pages" data-name="${name}" data-dataurl="${a.dataUrl}"></div>
             </div>
-            ${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ``}
+            ${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ""}
           </section>
         `;
       }
+      // Imagem — usa canvas para redimensionar antes de imprimir (evita travamento com imagens grandes)
       return `
         <section class="att">
-          <div class="att-title">${name} • Imagem</div>
-          <div class="att-media"><img src="${a.dataUrl}" alt="${name}"/></div>${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ``}
+          <div class="att-title">${name} • Imagem ${sizeKb ? "• "+sizeKb : ""}</div>
+          <div class="att-media">
+            <canvas class="att-img-canvas" data-src="${a.dataUrl}" style="max-width:100%;display:block;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;"></canvas>
+          </div>
+          ${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ""}
         </section>
       `;
     }).join("")
-    : `<div class="small muted">Nenhum anexo.</div>`
+    : `<div class="small muted">Nenhum anexo clínico registrado.</div>`
   ) : "";
 
   const vitalsHtml = (animais.length ? animais : (Array.isArray(atd.animal_ids) ? atd.animal_ids.map(id=>({id, nome:id})) : [])).map(a=>{
@@ -1135,27 +1268,34 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         ${(docType === "clinico" && logoB) ? `<div class="wmLocal"><img src="${logoB}" alt="Marca d'água"/></div>` : ``}
         <div class="sheetContent">
           <div class="hdr">
-            <div class="hdr-left">
-              <div class="sysBrand">
-                <div class="sysIcon">${SYSTEM_LOGO_SVG}</div>
-                <div class="sysName">
-                  <div class="sysMain">Vet System Control</div>
-                  <div class="sysSub">| Equine</div>
-                </div>
-              </div>
-              ${logoA ? `<img class="logoA" src="${logoA}" alt="Logo A"/>` : ``}
-              <div>
-                <h1>${esc(DOC_LABEL)}</h1>
-                <div class="small">
-                  <div><strong>Nº:</strong> <span class="muted">${esc(atd.numero||"—")}</span></div>
-                  <div><strong>Status:</strong> <span class="muted">${esc(atd.status||"—")}</span></div>
-                  <div><strong>Gerado em:</strong> <span class="muted">${esc(fmtDate(R.gerado_em))}</span></div>
-                </div>
-              </div>
+            <!-- Logo empresa (destaque, lado esquerdo) -->
+            <div class="hdr-logos">
+              ${logoA ? `<img class="logoA" src="${logoA}" alt="Logo"/>` : `<div style="width:56px;height:56px;border-radius:4px;background:linear-gradient(135deg,#16a34a,#0369a1);display:flex;align-items:center;justify-content:center;">${SYSTEM_LOGO_SVG}</div>`}
             </div>
-            <div class="small" style="text-align:right;">
-              <div style="font-weight:900;color:#0b1220;">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"")}</div>
-              ${empLine ? `<div>${empLine}</div>`:""}
+            <!-- Dados da empresa (centro) -->
+            <div class="hdr-empresa">
+              <div class="emp-nome">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa")}</div>
+              ${empresa.razao_social && (empresa.razao_social !== empresa.nome) ? `<div class="emp-sub">${esc(empresa.razao_social)}</div>` : ""}
+              <div class="emp-dados">${[
+                empresa.cnpj ? "CNPJ: "+empresa.cnpj : "",
+                empresa.crmv ? "CRMV: "+empresa.crmv : "",
+                empresa.endereco||"",
+                [empresa.cidade, empresa.uf].filter(Boolean).join("/"),
+                [empresa.telefone, empresa.email].filter(Boolean).join("  •  ")
+              ].filter(Boolean).join("<br/>")}</div>
+            </div>
+            <!-- Identificação do documento (direita) -->
+            <div class="hdr-doc">
+              <div class="doc-tipo">${esc(DOC_LABEL)}</div>
+              <div class="doc-num"><strong>Nº:</strong> ${esc(atd.numero||"—")}</div>
+              <div class="doc-status"><strong>Status:</strong> ${esc(atd.status||"—")}</div>
+              <div class="doc-data"><strong>Data:</strong> ${esc(fmtDate(R.gerado_em))}</div>
+            </div>
+            <!-- Crédito sistema (rodapé do cabeçalho) -->
+            <div class="sys-credit">
+              ${SYSTEM_LOGO_SVG}
+              <span class="sysMain">Vet System Control</span>
+              <span class="sysSub">| Equine — Sistema de Gestão Veterinária</span>
             </div>
           </div>
 
@@ -1280,7 +1420,42 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           }catch(_e){}
         }
 
+        // Renderiza imagens grandes via canvas (evita travamento)
+        async function renderCanvasImages(){
+          var canvases = Array.from(document.querySelectorAll('.att-img-canvas'));
+          for(var cv of canvases){
+            var src = cv.getAttribute('data-src');
+            if(!src) continue;
+            try{
+              var MAX_W = 900, MAX_H = 1200;
+              var img = new Image();
+              await new Promise(function(res,rej){ img.onload=res; img.onerror=rej; img.src=src; });
+              var w = img.naturalWidth, h = img.naturalHeight;
+              var scale = Math.min(1, MAX_W/w, MAX_H/h);
+              cv.width = Math.floor(w*scale);
+              cv.height = Math.floor(h*scale);
+              var ctx = cv.getContext('2d');
+              ctx.drawImage(img, 0, 0, cv.width, cv.height);
+            }catch(e){ cv.style.display='none'; }
+          }
+        }
+
+        // Preenche número de páginas no rodapé (Chrome não suporta counter(pages) em about:blank)
+        function fillPageNumbers(){
+          try{
+            var body = document.body;
+            var pageH = 1122; // altura aproximada A4 a 96dpi (297mm)
+            var total = Math.max(1, Math.ceil(body.scrollHeight / pageH));
+            document.querySelectorAll('.pnum').forEach(function(el, i){
+              el.textContent = 'Página ' + (i+1) + ' de ' + total;
+            });
+          }catch(_){}
+        }
+
         window.addEventListener('load', async function(){
+          // 0) Renderizar imagens via canvas (redimensiona grandes)
+          try{ await renderCanvasImages(); } catch(e){}
+
           // 1) Renderizar PDFs (se houver) e inserir como imagens (efeito "escaneado")
           try{ await renderAllPdfs(); } catch(e){}
 
@@ -1344,6 +1519,9 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
           try{ await waitForImages(12000); }catch(_){}
 
+          // Preenche "Página X de Y"
+          try{ fillPageNumbers(); }catch(_){}
+
           await new Promise(function(r){ requestAnimationFrame(function(){ requestAnimationFrame(r); }); });
 
           // 5) Imprimir somente após anexos prontos
@@ -1361,6 +1539,11 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   w.document.open();
   w.document.write(html);
   w.document.close();
+
+  // Auto-abre diálogo de impressão após carregar (inclui opção "Salvar como PDF")
+  w.addEventListener("load", () => {
+    setTimeout(() => { try{ w.print(); }catch(_){} }, 800);
+  });
 }
 
   async function imprimirAtendimento(db, docType){
@@ -1705,22 +1888,15 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       try {
         const tx = db.transaction([STORE], "readwrite");
         const st = tx.objectStore(STORE);
-        // config_params keyPath = "id" (não "key") — precisamos varrer e filtrar por .key
-        const rqAll = st.getAll();
-        rqAll.onsuccess = () => {
-          const all = rqAll.result || [];
-          const existing = all.find(r => String(r.key || r.nome || "") === KEY) || null;
-          const current = existing
-            ? { ...existing }
-            : { id: KEY, key: KEY, value: 0, year: year };
+        const rq = st.get(KEY);
+        rq.onsuccess = () => {
+          const current = rq.result || { key: KEY, value: 0, year: year };
           // Resetar se virou ano
           if (Number(current.year || 0) !== year) {
             current.value = 0;
             current.year = year;
           }
           const next = (Number(current.value || 0)) + 1;
-          current.id  = KEY;   // garante keyPath correto
-          current.key = KEY;
           current.value = next;
           current.year = year;
           current.updated_at = isoNow();
@@ -1731,7 +1907,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           };
           tx.onerror = () => resolve(`ATD-${year}-${Date.now().toString().slice(-5)}`);
         };
-        rqAll.onerror = () => resolve(`ATD-${year}-${Date.now().toString().slice(-5)}`);
+        rq.onerror = () => resolve(`ATD-${year}-${Date.now().toString().slice(-5)}`);
       } catch (_) {
         resolve(`ATD-${year}-${Date.now().toString().slice(-5)}`);
       }
@@ -1766,6 +1942,22 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     setText('uiSummaryFlow', flowMap[resolved] || 'Prontuário em atualização.', 'Fluxo inicial sem movimentação.');
     const sel = $("status");
     if (sel) sel.value = resolved;
+    refreshFinalizadoActionButtons();
+  }
+
+  function refreshFinalizadoActionButtons(){
+    const isFinalizado = String(ATD.status || "") === "finalizado";
+    ["btnAlterarFinalizadoTop","btnAlterarFinalizado"].forEach(id => {
+      const b = $(id);
+      if(!b) return;
+      b.style.display = isFinalizado ? "" : "none";
+      b.disabled = !ATD.atendimento_id;
+    });
+    ["btnFinalizarTop","btnFinalizar"].forEach(id => {
+      const b = $(id);
+      if(!b) return;
+      b.style.display = isFinalizado ? "none" : "";
+    });
   }
 
   // ─── Estado do módulo ─────────────────────────────────────────────────
@@ -1784,6 +1976,9 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     animal_ids: [],
     vitals_by_animal: {},
     vitals_active_animal_id: "",
+    vitals_prefill_by_animal: {},
+    vitals_prefill_pending_by_animal: {},
+    vitals_prefill_dirty_by_animal: {},
     itens: [],
     desconto_tipo: "R$",
     desconto_valor: 0,
@@ -1796,9 +1991,15 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     financeiro_fechamento_modo: "aberto",
     financeiro_fechamento_label: "Em aberto",
     financeiro_preferencia_pagamento: "definir_depois",
+    financeiro_condicao_pagamento: "avista",
     financeiro_baixa_modo: "manual",
     financeiro_vencimento: "",
     financeiro_parcelas: 1,
+    financeiro_intervalo_dias: 30,
+    financeiro_valor_entrada: 0,
+    financeiro_tipo_cobranca: "avulsa",
+    financeiro_aceita_parcial: "sim",
+    financeiro_prazo_custom_dias: 0,
     cr_id: null, // ID do título em contas_receber
     created_at: null,
     updated_at: null,
@@ -2024,6 +2225,9 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     ATD.animal_ids = Array.isArray(rec.animal_ids) ? [...rec.animal_ids] : [];
     ATD.vitals_by_animal = rec.vitals_by_animal || {};
     ATD.vitals_active_animal_id = rec.vitals_active_animal_id || "";
+    ATD.vitals_prefill_by_animal = {};
+    ATD.vitals_prefill_pending_by_animal = {};
+    ATD.vitals_prefill_dirty_by_animal = {};
     ATD.itens = Array.isArray(rec.itens) ? [...rec.itens] : [];
     ATD.desconto_tipo = rec.totals?.desconto_tipo || "R$";
     ATD.desconto_valor = rec.totals?.desconto_valor || 0;
@@ -2036,15 +2240,20 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     ATD.financeiro_fechamento_label = rec.financeiro_fechamento_label || (ATD.financeiro_gerado ? "Gerado agora" : "Em aberto");
     ATD.financeiro_observacao = rec.financeiro_observacao || "";
     ATD.financeiro_preferencia_pagamento = rec.financeiro_preferencia_pagamento || "definir_depois";
+    ATD.financeiro_condicao_pagamento = rec.financeiro_condicao_pagamento || "avista";
     ATD.financeiro_baixa_modo = rec.financeiro_baixa_modo || "manual";
     ATD.financeiro_vencimento = rec.financeiro_vencimento || rec.data_atendimento || todayYMD();
     ATD.financeiro_parcelas = Math.max(1, Number(rec.financeiro_parcelas || 1));
+    ATD.financeiro_intervalo_dias = Math.max(0, Number(rec.financeiro_intervalo_dias ?? 30));
+    ATD.financeiro_valor_entrada = Number(rec.financeiro_valor_entrada || 0);
+    ATD.financeiro_tipo_cobranca = rec.financeiro_tipo_cobranca || "avulsa";
+    ATD.financeiro_aceita_parcial = rec.financeiro_aceita_parcial || "sim";
+    ATD.financeiro_prazo_custom_dias = Math.max(0, Number(rec.financeiro_prazo_custom_dias || 0));
     ATD.cr_id = rec.cr_id || null;
     ATD.created_at = rec.created_at || null;
     // Anexos
     ATD.attachments = Array.isArray(rec.attachments) ? [...rec.attachments] : [];
     ATD.vaccine_events = Array.isArray(rec.vaccine_events) ? [...rec.vaccine_events] : [];
-    ATD.animais_snapshot = Array.isArray(rec.animais_snapshot) ? [...rec.animais_snapshot] : [];
     renderAttachPills();
 
 
@@ -2493,7 +2702,8 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     $("vscAnimalModalStepAsk")?.classList.remove("hidden");
     $("vscAnimalModalStepPick")?.classList.add("hidden");
     m.classList.remove("hidden"); m.setAttribute("aria-hidden", "false");
-    m._getDb = getDb;  // ref salva no elemento modal para callbacks
+    $("vscAnimalModalAskGetDb") && delete $("vscAnimalModalAskGetDb");
+    m._getDb = getDb;
   }
 
   function VSC_ATD_closeAnimalModal() {
@@ -2624,6 +2834,10 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     });
     $("btnVitalsApply")?.addEventListener("click", (ev) => { ev.preventDefault(); applyVitalsFromUI(); });
     $("btnVitalsClear")?.addEventListener("click", (ev) => { ev.preventDefault(); clearVitalsUI(); });
+    VITALS_FIELD_IDS.forEach(id => {
+      $(id)?.addEventListener('input', markVitalsPrefillDirty);
+      $(id)?.addEventListener('change', markVitalsPrefillDirty);
+    });
   }
 
   function applyPickedAnimals(showSnack) {
@@ -2748,6 +2962,44 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     return parts.length ? parts.join(" · ") : "—";
   }
 
+  const VITALS_FIELD_IDS = ["v_temp","v_fc","v_fr","v_peso","v_mm","v_trc","v_hid","v_dor"];
+
+  function vitalsMatch(a, b){
+    const va = a || {};
+    const vb = b || {};
+    return ['temp','fc','fr','peso','mm','trc','hid','dor'].every(k => String(va[k] ?? '').trim() === String(vb[k] ?? '').trim());
+  }
+
+  function refreshVitalsResumoStatus(aid){
+    aid = aid || getActiveAnimalIdForVitals();
+    const label = $('uiVitalsResumo');
+    if(!label || !aid) return;
+    const current = ATD.vitals_by_animal[aid] || null;
+    if(current){
+      label.textContent = vitalsResumo(current);
+      return;
+    }
+    const pending = !!ATD.vitals_prefill_pending_by_animal?.[aid];
+    const dirty = !!ATD.vitals_prefill_dirty_by_animal?.[aid];
+    const prefill = ATD.vitals_prefill_by_animal?.[aid] || null;
+    if(pending && prefill){
+      label.textContent = dirty
+        ? 'Histórico ajustado no formulário · salvar ou aplicar para registrar'
+        : 'Histórico carregado · clique Aplicar se os dados permanecerem iguais';
+      return;
+    }
+    label.textContent = prefill ? vitalsResumo(prefill) : '—';
+  }
+
+  function markVitalsPrefillDirty(){
+    const aid = getActiveAnimalIdForVitals();
+    if(!aid || !ATD.vitals_prefill_pending_by_animal?.[aid]) return;
+    const current = vitalsReadFromUI();
+    const original = ATD.vitals_prefill_by_animal?.[aid] || null;
+    ATD.vitals_prefill_dirty_by_animal[aid] = !vitalsMatch(current, original);
+    refreshVitalsResumoStatus(aid);
+  }
+
   async function fetchVitalsHistory(db, animalId){
     if(!db || !animalId || !hasStore(db, "animal_vitals_history")) return [];
     const all = await idbGetAll(db, "animal_vitals_history");
@@ -2765,17 +3017,88 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     $("v_last_seen") && ($("v_last_seen").value = prev ? fmtDate(prev.recorded_at||prev.updated_at||"") : '—');
   }
 
+  function vitalsHasContent(v){
+    if(!v) return false;
+    return ['temp','fc','fr','peso','mm','trc','hid','dor'].some(k => {
+      const value = v[k];
+      return value !== '' && value != null && !(typeof value === 'number' && value === 0);
+    });
+  }
+
+  async function persistVitalsSnapshot(db, aid, v, source){
+    if(!db || !aid || !vitalsHasContent(v) || !hasStore(db, 'animal_vitals_history')) return;
+    const id = `${ATD.atendimento_id || 'draft'}::${aid}`;
+    await idbPut(db, 'animal_vitals_history', Object.assign({
+      id,
+      animal_id: aid,
+      atendimento_id: ATD.atendimento_id || null,
+      recorded_at: ATD.data_atendimento ? `${ATD.data_atendimento}T12:00:00` : isoNow(),
+      updated_at: isoNow(),
+      user_id: ATD.responsavel_user_id || null,
+      source: source || 'save'
+    }, v));
+  }
+
+  function captureActiveVitalsFromUI(){
+    const aid = getActiveAnimalIdForVitals();
+    if(!aid) return null;
+    const v = vitalsReadFromUI();
+    const pending = !!ATD.vitals_prefill_pending_by_animal?.[aid];
+    const dirty = !!ATD.vitals_prefill_dirty_by_animal?.[aid];
+    if(vitalsHasContent(v)){
+      if(pending && !dirty){
+        delete ATD.vitals_by_animal[aid];
+        refreshVitalsResumoStatus(aid);
+        return { aid, v:null, skipped_prefill:true };
+      }
+      ATD.vitals_by_animal[aid] = v;
+      delete ATD.vitals_prefill_by_animal[aid];
+      delete ATD.vitals_prefill_pending_by_animal[aid];
+      delete ATD.vitals_prefill_dirty_by_animal[aid];
+      refreshVitalsResumoStatus(aid);
+      return { aid, v };
+    }
+    if(!pending){
+      delete ATD.vitals_by_animal[aid];
+    }
+    refreshVitalsResumoStatus(aid);
+    return { aid, v:null };
+  }
+
+  async function captureAllVitalsForSave(db){
+    const current = captureActiveVitalsFromUI();
+    if(current && current.v){
+      try{ await persistVitalsSnapshot(db, current.aid, current.v, 'save'); }catch(_){ }
+    }
+  }
+
   async function loadVitalsForActiveAnimal() {
     const aid = getActiveAnimalIdForVitals();
     setVitalsVisible(!!aid);
-    if (!aid) { $("uiVitalsResumo") && ($("uiVitalsResumo").textContent = "—"); renderVitalsHistoryUI([]); renderExecutivePanels(_dbRef).catch(()=>{}); return; }
-    const v = ATD.vitals_by_animal[aid] || null;
-    vitalsWriteToUI(v);
-    $("uiVitalsResumo") && ($("uiVitalsResumo").textContent = v ? vitalsResumo(v) : "—");
+    if (!aid) { $('uiVitalsResumo') && ($('uiVitalsResumo').textContent = '—'); renderVitalsHistoryUI([]); renderExecutivePanels(_dbRef).catch(()=>{}); return; }
     renderVitalsAnimalSelector();
     try{
       const db = await window.VSC_DB.openDB();
       const hist = await fetchVitalsHistory(db, aid);
+      const current = ATD.vitals_by_animal[aid] || null;
+      const prefill = !current && hist.length ? hist[0] : null;
+      if(current){
+        vitalsWriteToUI(current);
+        delete ATD.vitals_prefill_by_animal[aid];
+        delete ATD.vitals_prefill_pending_by_animal[aid];
+        delete ATD.vitals_prefill_dirty_by_animal[aid];
+      }else if(prefill){
+        ATD.vitals_prefill_by_animal[aid] = prefill;
+        ATD.vitals_prefill_pending_by_animal[aid] = true;
+        ATD.vitals_prefill_dirty_by_animal[aid] = false;
+        vitalsWriteToUI(prefill);
+      }else{
+        vitalsWriteToUI(null);
+        delete ATD.vitals_prefill_by_animal[aid];
+        delete ATD.vitals_prefill_pending_by_animal[aid];
+        delete ATD.vitals_prefill_dirty_by_animal[aid];
+      }
+      refreshVitalsResumoStatus(aid);
       renderVitalsHistoryUI(hist);
       try{ db.close(); }catch(_){}
     }catch(_){ renderVitalsHistoryUI([]); }
@@ -2783,45 +3106,40 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
   async function applyVitalsFromUI() {
     const aid = getActiveAnimalIdForVitals();
-    if (!aid) { snack("Selecione um animal para registrar vitais.", "err"); return; }
+    if (!aid) { snack('Selecione um animal para registrar vitais.', 'err'); return; }
     const v = vitalsReadFromUI();
-    ATD.vitals_by_animal[aid] = v;
-    $("uiVitalsResumo") && ($("uiVitalsResumo").textContent = vitalsResumo(v));
+    if(!vitalsHasContent(v) && ATD.vitals_prefill_by_animal[aid]){
+      vitalsWriteToUI(ATD.vitals_prefill_by_animal[aid]);
+      ATD.vitals_by_animal[aid] = Object.assign({}, ATD.vitals_prefill_by_animal[aid], { updated_at: isoNow() });
+    } else {
+      ATD.vitals_by_animal[aid] = v;
+    }
+    delete ATD.vitals_prefill_by_animal[aid];
+    delete ATD.vitals_prefill_pending_by_animal[aid];
+    delete ATD.vitals_prefill_dirty_by_animal[aid];
+    refreshVitalsResumoStatus(aid);
     try{
       const db = await window.VSC_DB.openDB();
-      if(hasStore(db, "animal_vitals_history")){
-        const vhRec = Object.assign({
-          id: uuidv4(),
-          animal_id: aid,
-          atendimento_id: ATD.atendimento_id || null,
-          recorded_at: isoNow(),
-          user_id: ATD.responsavel_user_id || null
-        }, v);
-        await idbPut(db, "animal_vitals_history", vhRec);
-        // Enfileirar sync
-        if(hasStore(db, "sync_queue")){
-          try{
-            const sqId = uuidv4();
-            const sqTx = db.transaction("sync_queue", "readwrite");
-            sqTx.objectStore("sync_queue").add({
-              id: sqId, op_id: sqId,
-              store: "animal_vitals_history", entity: "animal_vitals_history",
-              entity_id: vhRec.id, op: "upsert", action: "upsert",
-              payload: vhRec,
-              created_at: isoNow(), updated_at: isoNow(),
-              status: "PENDING"
-            });
-          }catch(_){}
-        }
-      }
+      await persistVitalsSnapshot(db, aid, ATD.vitals_by_animal[aid], 'apply');
       const hist = await fetchVitalsHistory(db, aid);
       renderVitalsHistoryUI(hist);
       try{ db.close(); }catch(_){}
     }catch(_){ }
-    snack("Sinais vitais aplicados.", "ok");
+    snack('Sinais vitais confirmados para este atendimento.', 'ok');
   }
 
-  function clearVitalsUI() { vitalsWriteToUI(null); $("uiVitalsResumo") && ($("uiVitalsResumo").textContent = "—"); }
+  function clearVitalsUI() {
+    const aid = getActiveAnimalIdForVitals();
+    vitalsWriteToUI(null);
+    if(aid){
+      delete ATD.vitals_by_animal[aid];
+      delete ATD.vitals_prefill_by_animal[aid];
+      delete ATD.vitals_prefill_pending_by_animal[aid];
+      delete ATD.vitals_prefill_dirty_by_animal[aid];
+    }
+    refreshVitalsResumoStatus(aid);
+  }
+
 
   // ─── CATÁLOGO + MODAL ITEM ────────────────────────────────────────────
   const STORE_MAP = {
@@ -3032,21 +3350,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     try{
       const db = await window.VSC_DB.openDB();
       if(hasStore(db, "animal_vaccines")) await idbPut(db, "animal_vaccines", ev);
-      // Enfileirar sync
-      if(hasStore(db, "sync_queue")){
-        try{
-          const sqId = uuidv4();
-          const sqTx = db.transaction("sync_queue", "readwrite");
-          sqTx.objectStore("sync_queue").add({
-            id: sqId, op_id: sqId,
-            store: "animal_vaccines", entity: "animal_vaccines",
-            entity_id: ev.id, op: "upsert", action: "upsert",
-            payload: ev,
-            created_at: isoNow(), updated_at: isoNow(),
-            status: "PENDING"
-          });
-        }catch(_){}
-      }
       try{ db.close(); }catch(_){}
     }catch(_){ }
     closeVaccineModal();
@@ -3364,96 +3667,92 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     if (!produtosItens.length) return { ok: true, movs: 0 };
     if (!hasStore(db, "produtos_master")) return { ok: false, msg: "Store produtos_master não encontrada." };
 
+    // Usa VSC_ESTOQUE (estoque_core.js) quando disponível — garante ledger correto
+    if (window.VSC_ESTOQUE && typeof window.VSC_ESTOQUE.registrarSaida === "function") {
+      let movs = 0;
+      for (const it of produtosItens) {
+        if (!it.catalog_id || Number(it.qtd||0) <= 0) continue;
+        try {
+          const fn = sentido === "baixar" ? window.VSC_ESTOQUE.registrarSaida : window.VSC_ESTOQUE.registrarEntrada;
+          await fn({
+            produto_id: it.catalog_id,
+            produto_nome: it.desc || "",
+            qtd: Number(it.qtd || 0),
+            origem: "ATENDIMENTO",
+            ref_id: ATD.atendimento_id,
+            ref_numero: ATD.numero || "",
+            responsavel_user_id: ATD.responsavel_user_id || null,
+            custo_unit_cents: Number(it.custo_cents || 0)
+          });
+          movs++;
+        } catch(e) { console.warn("[ATD] VSC_ESTOQUE erro:", it.catalog_id, e); }
+      }
+      _catalogCache["PRODUTO"] = null;
+      return { ok: true, movs };
+    }
+
     let movs = 0;
+    const now = isoNow();
+    const tipoMov = sentido === "baixar" ? "SAIDA" : "ENTRADA";
+
     for (const it of produtosItens) {
       try {
         const prod = await idbGet(db, "produtos_master", it.catalog_id);
         if (!prod) continue;
-        const saldoAtual = Number(prod.saldo_estoque || 0);
         const qty = Number(it.qtd || 0);
-        prod.saldo_estoque = sentido === "baixar"
-          ? Math.max(0, saldoAtual - qty)
-          : saldoAtual + qty;
-        prod.updated_at = isoNow();
+        if (qty <= 0) continue;
+
+        // 1. Atualiza saldo_estoque no produto (cache denormalizado)
+        const saldoAtual = Number(prod.saldo_estoque || 0);
+        const novoSaldo = sentido === "baixar" ? Math.max(0, saldoAtual - qty) : saldoAtual + qty;
+        prod.saldo_estoque = novoSaldo;
+        prod.updated_at = now;
         await idbPut(db, "produtos_master", prod);
-        // Enfileirar sync de saldo de estoque (produtos_master)
-        if(hasStore(db, "sync_queue")){
-          try{
-            const sqId = uuidv4();
-            const sqTx = db.transaction("sync_queue", "readwrite");
-            sqTx.objectStore("sync_queue").add({
-              id: sqId, op_id: sqId,
-              store: "produtos_master", entity: "produtos_master",
-              entity_id: String(prod.produto_id || prod.id || it.catalog_id),
-              op: "upsert", action: "upsert",
-              payload: prod,
-              created_at: isoNow(), updated_at: isoNow(),
-              status: "PENDING"
-            });
-          }catch(_){}
-        }
-        // Atualizar estoque_saldos (fonte canônica lida por VSC_ESTOQUE.getStockMap)
-        if(hasStore(db, "estoque_saldos")){
-          try{
-            const pid = String(prod.produto_id || it.catalog_id);
-            const saldoKey = pid + "::sem-lote";
-            const saldoAtual = await idbGet(db, "estoque_saldos", saldoKey);
-            const saldoAnterior = Number((saldoAtual && saldoAtual.saldo) || 0);
-            const delta = sentido === "baixar" ? -Number(it.qtd || 0) : Number(it.qtd || 0);
-            const novoSaldo = Math.max(0, saldoAnterior + delta);
-            const saldoObj = Object.assign({}, saldoAtual || {}, {
+
+        // 2. Atualiza estoque_saldos (fonte canônica, alinhado com importacaoxml)
+        if (hasStore(db, "estoque_saldos")) {
+          try {
+            const saldoKey = String(it.catalog_id) + ":sem-lote";
+            const saldoRec = await idbGet(db, "estoque_saldos", saldoKey);
+            const saldoBase = Number((saldoRec && saldoRec.saldo) || saldoAtual || 0);
+            const novoSaldoRec = sentido === "baixar" ? Math.max(0, saldoBase - qty) : saldoBase + qty;
+            await idbPut(db, "estoque_saldos", Object.assign({}, saldoRec || {}, {
               id: saldoKey,
-              produto_id: pid,
-              produto_lote: null,
-              saldo: novoSaldo,
-              updated_at: isoNow(),
+              produto_id: it.catalog_id,
+              lote_id: null,
+              saldo: novoSaldoRec,
+              updated_at: now,
               _origem: "atendimento"
-            });
-            await idbPut(db, "estoque_saldos", saldoObj);
-            // Sync de estoque_saldos
-            if(hasStore(db, "sync_queue")){
-              try{
-                const sqId2 = uuidv4();
-                const sqTx2 = db.transaction("sync_queue", "readwrite");
-                sqTx2.objectStore("sync_queue").add({
-                  id: sqId2, op_id: sqId2,
-                  store: "estoque_saldos", entity: "estoque_saldos",
-                  entity_id: saldoKey,
-                  op: "upsert", action: "upsert",
-                  payload: saldoObj,
-                  created_at: isoNow(), updated_at: isoNow(),
-                  status: "PENDING"
-                });
-              }catch(_){}
-            }
-          }catch(_){}
+            }));
+          } catch(_) {}
         }
+
+        // 3. Registra movimento individual em estoque_movimentos (store canonico)
+        if (hasStore(db, "estoque_movimentos")) {
+          try {
+            const movItem = {
+              id: uuidv4(),
+              produto_id: it.catalog_id,
+              produto_nome: it.desc || "",
+              tipo: tipoMov,
+              origem: "ATENDIMENTO",
+              ref_id: ATD.atendimento_id,
+              ref_numero: ATD.numero || "",
+              responsavel_user_id: ATD.responsavel_user_id || null,
+              qtd_delta: sentido === "baixar" ? -qty : qty,
+              saldo_delta: novoSaldo - saldoAtual,
+              custo_unit_cents: Number(it.custo_cents || 0),
+              custo_total_cents: Math.round(Number(it.custo_cents || 0) * qty),
+              created_at: now,
+              updated_at: now,
+              _origem: "atendimento"
+            };
+            await idbPut(db, "estoque_movimentos", movItem);
+          } catch(_) {}
+        }
+
         movs++;
       } catch (e) { console.warn("[ATD] estoque mov erro item:", it.catalog_id, e); }
-    }
-
-    // Registrar em estoque_movimentacoes se store existir
-    if (hasStore(db, "estoque_movimentos")) {
-      try {
-        const mov = {
-          id: uuidv4(),
-          // campos canônicos (estoque_core v29)
-          tipo: sentido === "baixar" ? "SAIDA" : "ENTRADA",
-          kind: sentido === "baixar" ? "SAIDA" : "ENTRADA",
-          reason_code: "ATENDIMENTO",
-          source_type: "atendimento",
-          source_id: ATD.atendimento_id,
-          // campos de contexto
-          origem: "atendimento",
-          ref_id: ATD.atendimento_id,
-          ref_numero: ATD.numero,
-          responsavel_user_id: ATD.responsavel_user_id || null,
-          responsavel_snapshot: ATD.responsavel_snapshot || null,
-          itens: produtosItens,
-          created_at: isoNow()
-        };
-        await idbPut(db, "estoque_movimentos", mov);
-      } catch (_) { }
     }
 
     // Limpar cache de catálogo para forçar releitura
@@ -3478,14 +3777,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       id: crId,
       documento: ATD.numero,
       cliente_nome: ATD.cliente_label || ATD._cliente_nome || "—",
-      cliente_doc: (() => {
-        // Busca síncrona no cache LOOKUP_CACHE (já carregado)
-        if (Array.isArray(LOOKUP_CACHE)) {
-          const c = LOOKUP_CACHE.find(x => x.id === ATD.cliente_id);
-          if (c && c.doc) return c.doc;
-        }
-        return "";
-      })(),
+      cliente_doc: "",
       competencia: todayYMD().slice(0, 7),
       vencimento: ATD.financeiro_vencimento || todayYMD(),
       valor_original_centavos: totalCents,
@@ -3496,17 +3788,20 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       billing_cycle: ATD.financeiro_fechamento_modo || "gerar_agora",
       billing_mode: ATD.financeiro_gerado ? "imediato" : "posterior",
       payment_preference: ATD.financeiro_preferencia_pagamento || "definir_depois",
+      payment_terms: ATD.financeiro_condicao_pagamento || "avista",
       settlement_mode: ATD.financeiro_baixa_modo || "manual",
       installments: Math.max(1, Number(ATD.financeiro_parcelas || 1)),
+      installment_interval_days: Math.max(0, Number(ATD.financeiro_intervalo_dias ?? 30)),
+      entry_amount: Number(ATD.financeiro_valor_entrada || 0),
+      charge_type: ATD.financeiro_tipo_cobranca || 'avulsa',
+      allow_partial_payments: (ATD.financeiro_aceita_parcial || 'sim') === 'sim',
+      custom_term_days: Math.max(0, Number(ATD.financeiro_prazo_custom_dias || 0)),
       obs: ((ATD.financeiro_observacao || "") ? ("Gerado automaticamente pelo módulo de atendimentos. " + ATD.financeiro_observacao) : "Gerado automaticamente pelo módulo de atendimentos."),
       cancelado: false,
       recebimentos: [],
       created_at: isoNow(),
       updated_at: isoNow()
     };
-    // Calcular status (igual ao que contasareceber.js faz em normalizeTitulo)
-    // "aberto" se não vencido e sem recebimentos, "vencido" se vcto < hoje
-    titulo.status = (titulo.vencimento && titulo.vencimento < todayYMD()) ? "vencido" : "aberto";
 
     // Tentar via VSC_AR primeiro
     if (window.VSC_AR && typeof window.VSC_AR.upsertTitulo === "function") {
@@ -3521,21 +3816,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     // Fallback: gravar diretamente no store contas_receber
     if (hasStore(db, "contas_receber")) {
       await idbPut(db, "contas_receber", titulo);
-      // Enfileirar sync
-      if(hasStore(db, "sync_queue")){
-        try{
-          const sqId = uuidv4();
-          const sqTx = db.transaction("sync_queue", "readwrite");
-          sqTx.objectStore("sync_queue").add({
-            id: sqId, op_id: sqId,
-            store: "contas_receber", entity: "contas_receber",
-            entity_id: titulo.id, op: "upsert", action: "upsert",
-            payload: titulo,
-            created_at: isoNow(), updated_at: isoNow(),
-            status: "PENDING"
-          });
-        }catch(_){}
-      }
       return { ok: true, via: "IDB_direto" };
     }
 
@@ -3550,7 +3830,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       rec.cancelado = true;
       rec.cancelado_at = isoNow();
       rec.cancelado_motivo = "Atendimento cancelado.";
-      rec.status = "cancelado";
       rec.updated_at = isoNow();
       if (window.VSC_AR && typeof window.VSC_AR.upsertTitulo === "function") {
         await window.VSC_AR.upsertTitulo(rec);
@@ -3563,58 +3842,228 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
   function mapFinanceDecisionLabel(mode){
     switch(String(mode||'')){
-      case 'gerar_agora': return 'Gerado agora';
-      case 'mensal': return 'Aberto para fechamento mensal';
-      case 'bimestral': return 'Aberto para fechamento bimestral';
-      case 'trimestral': return 'Aberto para fechamento trimestral';
-      case 'semestral': return 'Aberto para fechamento semestral';
-      case 'anual': return 'Aberto para fechamento anual';
-      case 'posterior': return 'Aberto para definir depois';
+      case 'gerar_agora': return 'Contas a receber gerado agora';
+      case 'mensal': return 'Fechamento em lote mensal';
+      case 'posterior': return 'Definir depois';
       default: return 'Em aberto';
     }
+  }
+
+  function syncFinanceChoiceVisualState(selectedValue){
+    document.querySelectorAll('.finance-choice').forEach(card => {
+      const input = card.querySelector('input[name="financeDecision"]');
+      const active = !!input && String(input.value) === String(selectedValue || '');
+      card.classList.toggle('is-selected', active);
+    });
+  }
+
+  function syncFinanceTermsUI(){
+    const terms = String($("financeDecisionTerms")?.value || ATD.financeiro_condicao_pagamento || "avista");
+    const inst = $("financeDecisionInstallments");
+    const interval = $("financeDecisionInstallmentInterval");
+    const due = $("financeDecisionDueDate");
+    const customDaysWrap = $("financeDecisionCustomDaysWrap");
+    const customDays = $("financeDecisionCustomDays");
+    const type = String($("financeDecisionChargeType")?.value || ATD.financeiro_tipo_cobranca || 'avulsa');
+    if(customDaysWrap) customDaysWrap.style.display = terms === 'personalizado' ? '' : 'none';
+    if(terms === "avista"){
+      if(inst) inst.value = "1";
+      if(interval) interval.value = "0";
+      if(due) due.value = due.value || ATD.data_atendimento || todayYMD();
+    }else if(terms === "semanal"){
+      if(interval) interval.value = '7';
+      if(due && !due.value) due.value = addDaysYMD(ATD.data_atendimento || todayYMD(), 7);
+    }else if(terms === "quinzenal"){
+      if(interval) interval.value = '15';
+      if(due && !due.value) due.value = addDaysYMD(ATD.data_atendimento || todayYMD(), 15);
+    }else if(terms === "mensal"){
+      if(interval) interval.value = "30";
+      if(due && !due.value) due.value = addDaysYMD(ATD.data_atendimento || todayYMD(), 30);
+    }else if(terms === 'entrada_saldo'){
+      if(inst && Number(inst.value || 1) < 2) inst.value = '2';
+      if(interval && Number(interval.value || 0) === 0) interval.value = '30';
+      if(due && !due.value) due.value = ATD.data_atendimento || todayYMD();
+    }else if(terms === 'personalizado'){
+      const days = Math.max(0, Number(customDays?.value || ATD.financeiro_prazo_custom_dias || 0));
+      if(interval && Number(interval.value || 0) === 0 && Number(inst?.value || 1) > 1) interval.value = String(days || 30);
+      if(due && !due.value) due.value = addDaysYMD(ATD.data_atendimento || todayYMD(), days || 30);
+    }else if(/_dias$/.test(terms)){
+      const days = Number(String(terms).split("_")[0] || 0);
+      if(interval && Number(interval.value || 0) === 0 && Number(inst?.value || 1) > 1) interval.value = String(days || 30);
+      if(due && !due.value) due.value = addDaysYMD(ATD.data_atendimento || todayYMD(), days);
+    }
+    if((type === 'faturamento_mensal' || type === 'recorrente_mensal') && interval && Number(interval.value || 0) < 30) interval.value = '30';
   }
 
   function chooseFinanceDecision(){
     const modal = $('vscFinanceDecisionModal');
     if(!modal) return Promise.resolve('gerar_agora');
+
     const current = String(ATD.financeiro_fechamento_modo || (ATD.financeiro_gerado ? 'gerar_agora' : 'posterior'));
     document.querySelectorAll('input[name="financeDecision"]').forEach(el => {
       el.checked = (el.value === current);
-      const label = el.closest('.finance-choice');
-      if(label) label.classList.toggle('is-selected', el.checked);
     });
+    syncFinanceChoiceVisualState(current);
+
     $('financeDecisionObs') && ($('financeDecisionObs').value = String(ATD.financeiro_observacao || ''));
     $('financeDecisionPaymentMethod') && ($('financeDecisionPaymentMethod').value = String(ATD.financeiro_preferencia_pagamento || 'definir_depois'));
+    $('financeDecisionTerms') && ($('financeDecisionTerms').value = String(ATD.financeiro_condicao_pagamento || 'avista'));
     $('financeDecisionSettlementMode') && ($('financeDecisionSettlementMode').value = String(ATD.financeiro_baixa_modo || 'manual'));
     $('financeDecisionDueDate') && ($('financeDecisionDueDate').value = String(ATD.financeiro_vencimento || ATD.data_atendimento || todayYMD()));
     $('financeDecisionInstallments') && ($('financeDecisionInstallments').value = String(Math.max(1, Number(ATD.financeiro_parcelas || 1))));
+    $('financeDecisionInstallmentInterval') && ($('financeDecisionInstallmentInterval').value = String(Math.max(0, Number(ATD.financeiro_intervalo_dias ?? 30))));
+    $('financeDecisionEntryAmount') && ($('financeDecisionEntryAmount').value = ATD.financeiro_valor_entrada ? formatFixedBR(Number(ATD.financeiro_valor_entrada || 0), 2) : '');
+    $('financeDecisionChargeType') && ($('financeDecisionChargeType').value = String(ATD.financeiro_tipo_cobranca || 'avulsa'));
+    $('financeDecisionAllowPartial') && ($('financeDecisionAllowPartial').value = String(ATD.financeiro_aceita_parcial || 'sim'));
+    $('financeDecisionCustomDays') && ($('financeDecisionCustomDays').value = String(Math.max(0, Number(ATD.financeiro_prazo_custom_dias || 0))));
+
     document.querySelectorAll('.finance-choice').forEach(card => {
       const input = card.querySelector('input[name="financeDecision"]');
       if(!input) return;
-      card.classList.toggle('is-selected', input.checked);
       if(card.__vscFinanceBound) return;
       card.__vscFinanceBound = true;
-      card.addEventListener('click', () => {
-        input.checked = true;
-        document.querySelectorAll('.finance-choice').forEach(x => x.classList.remove('is-selected'));
-        card.classList.add('is-selected');
-      });
+      const activateChoice = () => { input.checked = true; syncFinanceChoiceVisualState(input.value); };
+      card.addEventListener('click', activateChoice);
+      input.addEventListener('change', () => syncFinanceChoiceVisualState(input.value));
+      input.addEventListener('click', (ev) => ev.stopPropagation());
     });
+    $('financeDecisionTerms')?.addEventListener('change', syncFinanceTermsUI);
+    $('financeDecisionChargeType')?.addEventListener('change', syncFinanceTermsUI);
+    $('financeDecisionCustomDays')?.addEventListener('input', syncFinanceTermsUI);
+    syncFinanceTermsUI();
+
     return new Promise(resolve => {
+      const confirmBtn = $('btnFinanceDecisionConfirm');
+      const cancelBtn = $('btnFinanceDecisionCancel');
+      const closeBtn = $('vscFinanceDecisionModalClose');
+      let resolved = false;
+      const cleanup = () => {
+        modal.removeEventListener('click', onBackdropClick);
+        document.removeEventListener('keydown', onKeydown);
+        $('financeDecisionTerms')?.removeEventListener('change', syncFinanceTermsUI);
+        $('financeDecisionChargeType')?.removeEventListener('change', syncFinanceTermsUI);
+        $('financeDecisionCustomDays')?.removeEventListener('input', syncFinanceTermsUI);
+        [confirmBtn, cancelBtn, closeBtn].forEach((btn) => {
+          btn && btn.removeEventListener('click', btn === confirmBtn ? onConfirm : onCancel);
+        });
+      };
       const close = (result) => {
+        if (resolved) return;
+        resolved = true;
+        cleanup();
         modal.classList.add('hidden');
         modal.setAttribute('aria-hidden','true');
         resolve(result || null);
       };
-      const confirmBtn = $('btnFinanceDecisionConfirm');
-      const cancelBtn = $('btnFinanceDecisionCancel');
-      const closeBtn = $('vscFinanceDecisionModalClose');
-      const onConfirm = (ev)=>{ ev?.preventDefault?.(); const sel = document.querySelector('input[name="financeDecision"]:checked'); close(sel ? sel.value : 'gerar_agora'); };
-      const onCancel = (ev)=>{ ev?.preventDefault?.(); close(null); };
-      [confirmBtn,cancelBtn,closeBtn].forEach(btn => btn && btn.addEventListener('click', btn===confirmBtn?onConfirm:onCancel, {once:true}));
+      const onConfirm = (ev) => {
+        ev?.preventDefault?.();
+        const sel = document.querySelector('input[name="financeDecision"]:checked');
+        close(sel ? sel.value : 'gerar_agora');
+      };
+      const onCancel = (ev) => { ev?.preventDefault?.(); close(null); };
+      const onBackdropClick = (ev) => { if (ev.target === modal) close(null); };
+      const onKeydown = (ev) => {
+        if (ev.key === 'Escape') close(null);
+        if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') onConfirm(ev);
+      };
+      [confirmBtn, cancelBtn, closeBtn].forEach((btn) => {
+        btn && btn.addEventListener('click', btn === confirmBtn ? onConfirm : onCancel);
+      });
+      modal.addEventListener('click', onBackdropClick);
+      document.addEventListener('keydown', onKeydown);
       modal.classList.remove('hidden');
       modal.setAttribute('aria-hidden','false');
+      confirmBtn?.focus?.();
     });
+  }
+
+
+  function getCurrentUserRoleFlags(){
+    const u = ATD._currentUser || {};
+    const candidates = [u.role, u.perfil, u.profile, u.user_role, u.userRole, u.tipo, u.type, u.username, u.slug, u.access_level, ...(Array.isArray(u.roles) ? u.roles : []), ...(Array.isArray(u.permissions) ? u.permissions : []), ...(Array.isArray(u.groups) ? u.groups : [])].flat().filter(Boolean).map(norm);
+    const isMaster = candidates.some(v => ['master','empresa_master','superadmin','super_admin','owner','proprietario'].includes(v));
+    const isAdmin = isMaster || candidates.some(v => ['admin','administrador','administrator','gestor'].includes(v));
+    return { isMaster, isAdmin, labels: candidates };
+  }
+
+  function sumMoneyLikeCentavos(row){
+    const candidates = [row?.valor_centavos, row?.valor_cents, row?.amount_centavos, row?.amount_cents, row?.valor_pago_centavos, row?.paid_centavos];
+    for(const v of candidates){ const n = Number(v); if(Number.isFinite(n) && n) return n; }
+    const money = [row?.valor, row?.amount, row?.valor_pago, row?.paid_amount];
+    for(const v of money){ const n = toNumPt(v); if(Number.isFinite(n) && n) return Math.round(n * 100); }
+    return 0;
+  }
+
+  async function getTituloFinanceiro(db){
+    if(!db || !hasStore(db, 'contas_receber')) return null;
+    let titulo = null;
+    if(ATD.cr_id) titulo = await idbGet(db, 'contas_receber', ATD.cr_id);
+    if(titulo) return titulo;
+    const all = await idbGetAll(db, 'contas_receber');
+    return (Array.isArray(all) ? all : []).find(x => String(x?.ref_id || '') === String(ATD.atendimento_id || '')) || null;
+  }
+
+  async function buildPaymentAlertData(db){
+    const titulo = await getTituloFinanceiro(db);
+    if(!titulo) return { titulo:null, hasPayments:false, totalPaidCentavos:0, balanceCentavos:0, originalCentavos:0, entries:[] };
+    const entries = (Array.isArray(titulo.recebimentos) ? titulo.recebimentos : []).map((row, idx) => ({ idx: idx + 1, when: pickFirstNonEmpty(row?.data_recebimento, row?.received_at, row?.date, row?.created_at), method: pickFirstNonEmpty(row?.forma_pagamento, row?.payment_method, row?.metodo, row?.method, 'Não informado'), note: pickFirstNonEmpty(row?.observacao, row?.obs, row?.note), amountCentavos: sumMoneyLikeCentavos(row) }));
+    const totalPaidCentavos = entries.reduce((acc, row) => acc + Math.max(0, Number(row.amountCentavos || 0)), 0);
+    const originalCentavos = Number(titulo.valor_original_centavos || 0);
+    const balanceCentavos = Number(titulo.saldo_centavos ?? Math.max(0, originalCentavos - totalPaidCentavos));
+    return { titulo, hasPayments: totalPaidCentavos > 0, totalPaidCentavos, balanceCentavos, originalCentavos, entries };
+  }
+
+  function formatCentavos(centavos){ return fmtBRL(Number(centavos || 0) / 100); }
+
+  function askPaymentAlterationApproval(data, roleFlags){
+    const modal = $('vscPaymentAlertModal');
+    if(!modal) return Promise.resolve(window.confirm('Há pagamentos vinculados a este atendimento. Deseja continuar a alteração?'));
+    const summary = $('paymentAlertSummary');
+    const details = $('paymentAlertDetails');
+    const intro = $('paymentAlertIntro');
+    const title = data?.titulo || {};
+    const statusTxt = (data?.totalPaidCentavos || 0) >= (data?.originalCentavos || 0) && (data?.originalCentavos || 0) > 0 ? 'Pagamento total já lançado neste título.' : (data?.hasPayments ? 'Pagamento parcial já lançado neste título.' : 'Este atendimento possui título financeiro vinculado, mas ainda sem recebimentos.');
+    intro.textContent = data?.hasPayments ? (statusTxt + ' Revise abaixo antes de reabrir o atendimento para alteração.') : statusTxt;
+    if(summary){ summary.innerHTML = `<div><b>Título:</b> ${esc(title.documento || ATD.numero || '—')}</div><div><b>Valor original:</b> ${esc(formatCentavos(data?.originalCentavos || 0))}</div><div><b>Total recebido:</b> ${esc(formatCentavos(data?.totalPaidCentavos || 0))}</div><div><b>Saldo atual:</b> ${esc(formatCentavos(data?.balanceCentavos || 0))}</div><div><b>Perfil atual:</b> ${roleFlags.isMaster ? 'Master' : roleFlags.isAdmin ? 'Administrador' : 'Usuário padrão'}</div>`; }
+    if(details){ details.innerHTML = (data?.entries || []).length ? data.entries.map(row => `<div style="padding:10px 12px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;"><div style="font-weight:800;">Pagamento ${row.idx} · ${esc(formatCentavos(row.amountCentavos || 0))}</div><div class="hint" style="margin-top:4px;">${esc(fmtDateTime(row.when))} · ${esc(row.method || 'Não informado')}</div>${row.note ? `<div class="hint" style="margin-top:4px;">${esc(row.note)}</div>` : ''}</div>`).join('') : '<div class="hint">Nenhum recebimento registrado neste título.</div>'; }
+    modal.classList.remove('hidden');
+    modal.setAttribute('aria-hidden','false');
+    return new Promise(resolve => {
+      let done = false;
+      const ok = $('btnPaymentAlertConfirm');
+      const cancel = $('btnPaymentAlertCancel');
+      const close = $('vscPaymentAlertClose');
+      const finish = (value) => { if(done) return; done = true; modal.classList.add('hidden'); modal.setAttribute('aria-hidden','true'); ok?.removeEventListener('click', onOk); cancel?.removeEventListener('click', onCancel); close?.removeEventListener('click', onCancel); modal.removeEventListener('click', onBackdrop); document.removeEventListener('keydown', onEsc); resolve(value); };
+      const onOk = () => finish(true);
+      const onCancel = () => finish(false);
+      const onBackdrop = (ev) => { if(ev.target === modal) finish(false); };
+      const onEsc = (ev) => { if(ev.key === 'Escape') finish(false); };
+      ok?.addEventListener('click', onOk); cancel?.addEventListener('click', onCancel); close?.addEventListener('click', onCancel); modal.addEventListener('click', onBackdrop); document.addEventListener('keydown', onEsc);
+    });
+  }
+
+  async function reabrirFinalizadoParaAlteracao(db){
+    const roles = getCurrentUserRoleFlags();
+    const payData = await buildPaymentAlertData(db);
+    if(payData.hasPayments && !roles.isAdmin){
+      await askPaymentAlterationApproval(payData, roles);
+      snack('Este atendimento possui pagamentos vinculados. Somente master e administradores podem alterá-lo.', 'err');
+      return;
+    }
+    if(payData.titulo){
+      const ok = await askPaymentAlterationApproval(payData, roles);
+      if(!ok) return;
+    }else{
+      const ok = await confirm('Reabrir atendimento finalizado', 'O atendimento voltará para Em atendimento para permitir alterações. O vínculo financeiro existente será mantido.');
+      if(!ok) return;
+    }
+    ATD.status = 'em_atendimento';
+    updateStatusBadges('em_atendimento');
+    $('status') && ($('status').value = 'em_atendimento');
+    await salvar(db, false);
+    await recarregarLista(db);
+    renderExecutivePanels(db).catch(()=>{});
+    snack(payData.hasPayments ? 'Atendimento reaberto para alteração com alerta de pagamentos exibido.' : 'Atendimento reaberto para alteração.', 'ok');
   }
 
   // ─── MUDANÇA DE STATUS (LÓGICA CENTRAL) ──────────────────────────────
@@ -3661,9 +4110,15 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       ATD.financeiro_fechamento_label = mapFinanceDecisionLabel(decision);
       ATD.financeiro_observacao = ($('financeDecisionObs')?.value || '').trim();
       ATD.financeiro_preferencia_pagamento = ($('financeDecisionPaymentMethod')?.value || 'definir_depois').trim();
+      ATD.financeiro_condicao_pagamento = ($('financeDecisionTerms')?.value || 'avista').trim();
       ATD.financeiro_baixa_modo = ($('financeDecisionSettlementMode')?.value || 'manual').trim();
       ATD.financeiro_vencimento = ($('financeDecisionDueDate')?.value || ATD.data_atendimento || todayYMD()).trim();
       ATD.financeiro_parcelas = Math.max(1, Math.min(24, Number(($('financeDecisionInstallments')?.value || 1)) || 1));
+      ATD.financeiro_intervalo_dias = Math.max(0, Math.min(365, Number(($('financeDecisionInstallmentInterval')?.value || 30)) || 0));
+      ATD.financeiro_valor_entrada = Math.max(0, toNumPt(($('financeDecisionEntryAmount')?.value || 0)));
+      ATD.financeiro_tipo_cobranca = ($('financeDecisionChargeType')?.value || 'avulsa').trim();
+      ATD.financeiro_aceita_parcial = ($('financeDecisionAllowPartial')?.value || 'sim').trim();
+      ATD.financeiro_prazo_custom_dias = Math.max(0, Number(($('financeDecisionCustomDays')?.value || 0)) || 0);
 
       if (statusAtual === "orcamento" && !ATD.estoque_movimentado) {
         const res = await movimentarEstoque(db, ATD.itens, "baixar");
@@ -3705,6 +4160,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         ATD.financeiro_fechamento_modo = "aberto";
         ATD.financeiro_fechamento_label = "Em aberto";
         ATD.financeiro_preferencia_pagamento = "definir_depois";
+        ATD.financeiro_condicao_pagamento = "avista";
         ATD.financeiro_baixa_modo = "manual";
       }
       showBanner("⛔ Atendimento cancelado — estoque estornado e financeiro cancelado.", "warn");
@@ -3751,10 +4207,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           return a ? String(a.nome || id) : String(id);
         });
       })(),
-      animais_snapshot: (ATD.animal_ids || []).map(id => {
-        const a = MODAL_ALL.find(x => String(x.id) === String(id));
-        return a ? { id: String(a.id), nome: String(a.nome || id), foto_data: String(a.foto_data || '') } : { id: String(id), nome: String(id), foto_data: '' };
-      }),
       vitals_by_animal: ATD.vitals_by_animal || {},
       vitals_active_animal_id: ATD.vitals_active_animal_id || "",
       observacoes: String($("observacoes")?.value || ""),
@@ -3779,9 +4231,15 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       financeiro_fechamento_label: ATD.financeiro_fechamento_label || (ATD.financeiro_gerado ? "Gerado agora" : "Em aberto"),
       financeiro_observacao: ATD.financeiro_observacao || "",
       financeiro_preferencia_pagamento: ATD.financeiro_preferencia_pagamento || "definir_depois",
+      financeiro_condicao_pagamento: ATD.financeiro_condicao_pagamento || "avista",
       financeiro_baixa_modo: ATD.financeiro_baixa_modo || "manual",
       financeiro_vencimento: ATD.financeiro_vencimento || ATD.data_atendimento || todayYMD(),
       financeiro_parcelas: Math.max(1, Number(ATD.financeiro_parcelas || 1)),
+      financeiro_intervalo_dias: Math.max(0, Number(ATD.financeiro_intervalo_dias ?? 30)),
+      financeiro_valor_entrada: Number(ATD.financeiro_valor_entrada || 0),
+      financeiro_tipo_cobranca: ATD.financeiro_tipo_cobranca || "avulsa",
+      financeiro_aceita_parcial: ATD.financeiro_aceita_parcial || "sim",
+      financeiro_prazo_custom_dias: Math.max(0, Number(ATD.financeiro_prazo_custom_dias || 0)),
       cr_id: ATD.cr_id || null,
       created_at: ATD.created_at || isoNow(),
       updated_at: isoNow()
@@ -3791,13 +4249,65 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   async function salvar(db, showMsg) {
     if (!ATD.atendimento_id) { snack("Inicie um novo atendimento primeiro.", "err"); return; }
     if (!hasStore(db, "atendimentos_master")) { snack("Store atendimentos_master não encontrada.", "err"); return; }
-    if (!ATD.cliente_id && showMsg !== false) {
-      snack("⚠️ Salvo sem cliente vinculado. Vincule um cliente antes de finalizar.", "warn");
-    }
 
     try {
+      await captureAllVitalsForSave(db);
       const payload = buildPayload();
       await idbPut(db, "atendimentos_master", payload);
+
+      // ── SYNC: envia metadados ao D1 (sem attachments) e anexos ao R2 ──
+      try {
+        if (window.VSC_DB && typeof window.VSC_DB.upsertWithOutbox === "function") {
+          // Payload para D1: sem dataUrl dos attachments (muito grande)
+          const payloadD1 = Object.assign({}, payload, {
+            attachments: (payload.attachments || []).map(a => ({
+              id: a.id,
+              name: a.name || a.filename || "",
+              mime: a.mime || a.mime_type || "",
+              size: a.size || 0,
+              descricao: a.descricao || "",
+              created_at: a.created_at || "",
+              synced_to_r2: true
+              // dataUrl removido intencionalmente
+            })),
+            __origin: "UI_EDIT"
+          });
+          await window.VSC_DB.upsertWithOutbox(
+            "atendimentos_master",
+            payloadD1,
+            "atendimentos_master",
+            String(payload.id),
+            payloadD1
+          );
+        }
+
+        // Envia attachments com dataUrl diretamente para R2
+        const BASE_R2 = (location.hostname === "127.0.0.1" || location.hostname === "localhost")
+          ? "https://app.vetsystemcontrol.com.br" : "";
+        const tenant = localStorage.getItem("vsc_tenant") || "tenant-default";
+        for (const att of (payload.attachments || [])) {
+          if (!att || !att.id || !att.dataUrl) continue;
+          fetch(`${BASE_R2}/api/attachments?action=upload`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-VSC-Tenant": tenant },
+            body: JSON.stringify({
+              atendimento_id: payload.id,
+              attachment_id: att.id,
+              filename: att.name || att.id,
+              mime_type: att.mime || "application/octet-stream",
+              data_base64: att.dataUrl,
+              descricao: att.descricao || "",
+              created_at: att.created_at || isoNow()
+            })
+          }).then(r => {
+            if (!r.ok) console.warn("[ATD] R2 upload falhou:", att.name, r.status);
+            else console.log("[ATD] R2 upload ok:", att.name);
+          }).catch(e => console.warn("[ATD] R2 upload erro:", att.name, e));
+        }
+      } catch (_syncErr) {
+        // sync nunca bloqueia o save local
+        console.warn("[ATENDIMENTOS] sync error (não crítico):", _syncErr);
+      }
       if(hasStore(db, "animal_vaccines") && Array.isArray(ATD.vaccine_events)){
         for(const ev of ATD.vaccine_events){
           try{ await idbPut(db, "animal_vaccines", ev); }catch(_e){}
@@ -3829,6 +4339,9 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     ATD.animal_ids = [];
     ATD.vitals_by_animal = {};
     ATD.vitals_active_animal_id = "";
+    ATD.vitals_prefill_by_animal = {};
+    ATD.vitals_prefill_pending_by_animal = {};
+    ATD.vitals_prefill_dirty_by_animal = {};
     ATD.itens = [];
     ATD.desconto_tipo = "R$";
     ATD.desconto_valor = 0;
@@ -3839,13 +4352,17 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     ATD.financeiro_fechamento_modo = "aberto";
     ATD.financeiro_fechamento_label = "Em aberto";
     ATD.financeiro_preferencia_pagamento = "definir_depois";
+    ATD.financeiro_condicao_pagamento = "avista";
     ATD.financeiro_baixa_modo = "manual";
     ATD.financeiro_vencimento = ATD.data_atendimento || todayYMD();
     ATD.financeiro_parcelas = 1;
+    ATD.financeiro_intervalo_dias = 30;
+    ATD.financeiro_valor_entrada = 0;
+    ATD.financeiro_tipo_cobranca = "avulsa";
+    ATD.financeiro_aceita_parcial = "sim";
+    ATD.financeiro_prazo_custom_dias = 0;
     ATD.cr_id = null;
-    ATD.attachments = [];
     ATD.vaccine_events = [];
-    _catalogCache = {};  // força releitura de preços ao abrir novo atendimento
 
     // Responsável (default): médico logado
     try{
@@ -3931,7 +4448,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   
   // ─── FLOORPLAN ENTERPRISE: LISTA → DETALHE (como clientes) ───────────────
   function setCmdActionsEnabled(enabled){
-    ["btnSalvarTop","btnAprovarTop","btnFinalizarTop","btnSalvar","btnAprovar","btnFinalizar","btnCancelarAtd","btnAnexosTop","btnImprimirTop","btnAnexos","btnImprimir"].forEach(id=>{
+    ["btnSalvarTop","btnAprovarTop","btnFinalizarTop","btnAlterarFinalizadoTop","btnSalvar","btnAprovar","btnFinalizar","btnAlterarFinalizado","btnCancelarAtd","btnAnexosTop","btnImprimirTop","btnAnexos","btnImprimir"].forEach(id=>{
       const b = $(id);
       if(!b) return;
       b.disabled = !enabled;
@@ -3947,6 +4464,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     if(dv) dv.style.display = "none";
     setCmdActionsVisible(false);
     setCmdActionsEnabled(false);
+    refreshFinalizadoActionButtons();
     // reset meta
     $("uiNumeroSide") && ($("uiNumeroSide").textContent = "—");
     $("uiHeroNumero") && ($("uiHeroNumero").textContent = "—");
@@ -3962,6 +4480,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     if(dv) dv.style.display = "";
     setCmdActionsVisible(true);
     setCmdActionsEnabled(true);
+    refreshFinalizadoActionButtons();
     // mostrar conteúdo do detalhe
     const empty = $("atdDetailEmpty");
     const content = $("atdDetailContent");
@@ -3981,6 +4500,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     if(content) content.style.display = "none";
     setCmdActionsVisible(false);
     setCmdActionsEnabled(false);
+    refreshFinalizadoActionButtons();
   }
 // ─── WIRING DOS BOTÕES DE AÇÃO ────────────────────────────────────────
   function wireAcoes(db) {
@@ -4035,12 +4555,26 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       });
     });
 
-    // Finalizar
-    ["btnFinalizarTop", "btnFinalizar"].forEach(id => {
-      $(id)?.addEventListener("click", async (ev) => {
-        ev.preventDefault();
+    async function handleFinalizeAction(ev){
+      ev?.preventDefault?.();
+      try {
         await salvar(db, false);
         await mudarStatus(db, "finalizado");
+      } catch (e) {
+        console.error("[ATD] Falha ao finalizar atendimento:", e);
+        snack("Falha ao abrir a finalização: " + (e?.message || e || "erro desconhecido"), "err");
+      }
+    }
+
+    // Finalizar
+    ["btnFinalizarTop", "btnFinalizar"].forEach(id => {
+      $(id)?.addEventListener("click", handleFinalizeAction);
+    });
+
+    ["btnAlterarFinalizadoTop", "btnAlterarFinalizado"].forEach(id => {
+      $(id)?.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        await reabrirFinalizadoParaAlteracao(db);
       });
     });
 
@@ -4063,11 +4597,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       await salvar(db, false);
       await mudarStatus(db, "em_atendimento");
     });
-    $("btnSetFinalizado")?.addEventListener("click", async (ev) => {
-      ev.preventDefault();
-      await salvar(db, false);
-      await mudarStatus(db, "finalizado");
-    });
+    $("btnSetFinalizado")?.addEventListener("click", handleFinalizeAction);
 
 
     
@@ -4116,14 +4646,11 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     });
 
 
-    // Status dropdown — redireciona para mudarStatus() para garantir guardrails de estoque/financeiro
-    $("status")?.addEventListener("change", async (ev) => {
-      const novoStatus = String(ev.target.value || "orcamento");
-      if (novoStatus === ATD.status) return;
-      // Reverter visualmente enquanto mudarStatus() decide
-      ev.target.value = ATD.status;
-      await salvar(db, false);
-      await mudarStatus(db, novoStatus);
+    // Status dropdown manual (só informativo — não dispara movimentação automática)
+    $("status")?.addEventListener("change", () => {
+      const v = String($("status")?.value || "orcamento");
+      ATD.status = v;
+      updateStatusBadges(v);
     });
   }
 
@@ -4212,7 +4739,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
 
   function setCmdActionsVisible(visible){
-    ["btnSalvarTop","btnAprovarTop","btnFinalizarTop","btnSalvar","btnAprovar","btnFinalizar","btnCancelarAtd","btnAnexosTop","btnImprimirTop","btnAnexos","btnImprimir"].forEach(id=>{
+    ["btnSalvarTop","btnAprovarTop","btnFinalizarTop","btnAlterarFinalizadoTop","btnSalvar","btnAprovar","btnFinalizar","btnAlterarFinalizado","btnCancelarAtd","btnAnexosTop","btnImprimirTop","btnAnexos","btnImprimir"].forEach(id=>{
       const b = $(id);
       if(!b) return;
       b.style.display = visible ? "" : "none";

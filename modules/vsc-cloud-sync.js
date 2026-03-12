@@ -27,20 +27,10 @@ const VSC_CLOUD_SYNC = (() => {
     };
   }
 
-  function _apiBase() {
-    try {
-      const proto = String(location.protocol || '').toLowerCase();
-      if (proto === 'file:') return 'https://app.vetsystemcontrol.com.br';
-    } catch (_) {}
-    // wrangler pages dev e produção: rotas relativas (proxy via Pages Functions)
-    return '';
-  }
-
   async function fetchSnapshot() {
-    const base = _apiBase();
     const urls = [
-      `${base}/api/sync/pull`,
-      `${base}/api/state?action=pull`
+      'https://app.vetsystemcontrol.com.br/api/sync/pull',
+      'https://app.vetsystemcontrol.com.br/api/state?action=pull'
     ];
 
     let lastErr = null;
@@ -90,7 +80,7 @@ const VSC_CLOUD_SYNC = (() => {
         meta: snapshot.meta || {},
         schema: filteredSchema,
         data: filteredData
-      }, { mode: 'replace_store' });
+      }, { mode: 'merge_newer' });
 
       return { ok: true, importedStores: Object.keys(filteredData) };
     } finally {

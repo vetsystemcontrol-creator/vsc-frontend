@@ -186,5 +186,61 @@
   }
   function renderList(el, items, valueFmt){ if(!el) return; items=Array.isArray(items)?items:[]; if(!items.length){ el.innerHTML='<div class="vsc-fin-empty">Sem dados suficientes.</div>'; return; } el.innerHTML=items.map((it,idx)=>'<div class="vsc-fin-list-item"><span class="vsc-fin-rank">'+(idx+1)+'</span><span class="vsc-fin-label">'+esc(it.label||'—')+'</span><strong class="vsc-fin-value">'+esc(valueFmt?valueFmt(it.value):fmtBRLFromCents(it.value))+'</strong></div>').join(''); }
 
-  window.VSC_FINANCE_ANALYTICS={ fmtBRLFromCents, parseYMD, ymd, normalizeAP, normalizeAR, summarizePortfolio, summarizeExecutive, drawBars, drawLine, drawDonut, renderList };
+  // ============================================================
+  // normalizeTituloUniversal — BUG-5 FIX
+  // Adaptador que aceita qualquer um dos 3 schemas financeiros
+  // do VSC e retorna estrutura canônica unificada com centavos.
+  //
+  // Schemas suportados:
+  //   AP  (contasapagar.js):    valor_centavos + pago_centavos
+  //   AR  (contasareceber.js):  valor_original_centavos + saldo_centavos + recebimentos[]
+  //   CORE (vsc-core.js):       valor_original_cents + valor_pago_cents
+  //
+  // Retorna:
+  //   { id, kind, total_cents, pago_cents, saldo_cents, status, vencimento, raw }
+  // ============================================================
+  function normalizeTituloUniversal(t) {
+    if (!t || typeof t !== 'object') return null;
+
+    // Detectar schema por presença de campos canônicos
+    const isAP   = t.valor_centavos != null || t.pago_centavos != null;
+    const isCore = t.valor_original_cents != null || t.valor_pago_cents != null;
+    // AR é o default quando tem valor_original_centavos ou nenhum dos outros
+
+    let total_cents, pago_cents, saldo_cents;
+
+    if (isCore) {
+      // vsc-core.js: _cents (sem "avos" no sufixo)
+      total_cents = toCents(t.valor_original_cents || 0);
+      pago_cents  = toCents(t.valor_pago_cents || 0);
+      saldo_cents = Math.max(0, total_cents - pago_cents);
+    } else if (isAP) {
+      // contasapagar.js: valor_centavos + pago_centavos
+      total_cents = toCents(t.valor_centavos || 0);
+      pago_cents  = toCents(t.pago_centavos || 0);
+      saldo_cents = Math.max(0, total_cents - pago_cents);
+    } else {
+      // contasareceber.js (default): valor_original_centavos + saldo_centavos
+      total_cents = toCents(t.valor_original_centavos || 0);
+      saldo_cents = toCents(t.saldo_centavos != null ? t.saldo_centavos : total_cents);
+      pago_cents  = Math.max(0, total_cents - saldo_cents);
+    }
+
+    const kind = isAP ? 'ap' : (isCore ? 'core' : 'ar');
+
+    return {
+      id:          t.id || '',
+      kind,
+      total_cents,
+      pago_cents,
+      saldo_cents,
+      status:      String(t.status || (saldo_cents <= 0 ? (kind === 'ap' ? 'pago' : 'recebido') : 'aberto')).toLowerCase(),
+      vencimento:  t.vencimento || null,
+      entity:      t.cliente_nome || t.fornecedor_nome || t.entity || '',
+      origem:      t.origem || t.source || 'manual',
+      raw:         t
+    };
+  }
+
+  window.VSC_FINANCE_ANALYTICS={ fmtBRLFromCents, parseYMD, ymd, normalizeAP, normalizeAR, normalizeTituloUniversal, summarizePortfolio, summarizeExecutive, drawBars, drawLine, drawDonut, renderList };
 })();

@@ -352,7 +352,6 @@
         <button class="btn btn--ghost btn--sm" id="btnImprimirTop" type="button">🖨️ Imprimir</button>
         <button class="btn btn--amber btn--sm" id="btnAprovarTop" type="button">▶ Aprovar</button>
         <button class="btn btn--sm btn--hero-primary" id="btnFinalizarTop" type="button">✓ Finalizar atendimento</button>
-        <button class="btn btn--ghost btn--sm" id="btnAlterarFinalizadoTop" type="button" style="display:none;">✎ Alterar finalizado</button>
       </div>
     </div>
   </div>
@@ -669,7 +668,6 @@
               <button class="btn btn--ghost btn--sm" id="btnImprimir" type="button">🖨️ Imprimir</button>
               <button class="btn btn--amber btn--sm" id="btnAprovar" type="button">▶ Em atendimento</button>
               <button class="btn btn--sm btn--hero-primary" id="btnFinalizar" type="button">✓ Finalizar atendimento</button>
-              <button class="btn btn--ghost btn--sm" id="btnAlterarFinalizado" type="button" style="display:none;">✎ Alterar finalizado</button>
             </div>
             <div class="print-note" style="margin-top:12px;">A impressão clínica, clínica + financeiro, clínica + anexos e o pacote completo continuam disponíveis com paginação premium, ocultando ruído de interface e preservando a hierarquia clínica.</div>
           </div>
@@ -685,46 +683,25 @@
     <div class="modal__card modal__card--finance">
       <div class="modal__head"><div class="modal__title">Finalizar atendimento · decisão financeira</div><button id="vscFinanceDecisionModalClose" class="modal__close" type="button">✕</button></div>
       <div class="modal__body">
-        <div class="hint" style="font-size:13px;line-height:1.55;color:#64748b;">Ao finalizar, escolha agora o destino financeiro deste atendimento: <b>gerar Contas a Receber</b>, <b>enviar para fechamento em lote mensal</b> ou <b>deixar em aberto para definir depois</b>. Também defina as condições de pagamento para o título sair pronto para cobrança.</div>
+        <div class="hint" style="font-size:13px;line-height:1.55;color:#64748b;">Ao finalizar, o sistema <b>não</b> vai gerar financeiro automaticamente sem sua confirmação. Escolha abaixo como esse atendimento deve seguir no faturamento.</div>
         <div class="finance-choice-grid" id="financeChoiceGrid">
-          <label class="finance-choice"><input type="radio" name="financeDecision" value="gerar_agora" checked><strong>Gerar contas a receber agora</strong><span>Cria o título imediatamente no módulo de Contas a Receber ao concluir o atendimento.</span></label>
-          <label class="finance-choice"><input type="radio" name="financeDecision" value="mensal"><strong>Fechamento em lote mensal</strong><span>Finaliza o clínico agora e mantém este atendimento reservado para clientes com faturamento mensal consolidado.</span></label>
-          <label class="finance-choice"><input type="radio" name="financeDecision" value="posterior"><strong>Definir depois</strong><span>Finaliza o atendimento sem gerar o título agora e sem marcar fechamento mensal.</span></label>
+          <label class="finance-choice"><input type="radio" name="financeDecision" value="gerar_agora" checked><strong>Gerar financeiro agora</strong><span>Cria o título em Contas a Receber imediatamente ao finalizar.</span></label>
+          <label class="finance-choice"><input type="radio" name="financeDecision" value="mensal"><strong>Manter em aberto · mensal</strong><span>Concluir clínico agora e deixar o fechamento para a rotina mensal.</span></label>
+          <label class="finance-choice"><input type="radio" name="financeDecision" value="bimestral"><strong>Manter em aberto · bimestral</strong><span>Finaliza o prontuário e preserva para fechamento bimestral.</span></label>
+          <label class="finance-choice"><input type="radio" name="financeDecision" value="trimestral"><strong>Manter em aberto · trimestral</strong><span>Útil para contratos e faturamentos consolidados por período maior.</span></label>
+          <label class="finance-choice"><input type="radio" name="financeDecision" value="posterior"><strong>Definir depois</strong><span>Finaliza o atendimento e mantém o financeiro pendente sem periodicidade fechada.</span></label>
         </div>
         <div class="row mt12 finance-decision-fields">
           <div class="field" style="flex:1;min-width:220px;">
-            <label>Forma preferencial</label>
+            <label>Preferência de pagamento</label>
             <select id="financeDecisionPaymentMethod">
               <option value="definir_depois">Definir depois</option>
-              <option value="pix">PIX</option>
               <option value="dinheiro">Dinheiro</option>
-              <option value="boleto">Boleto bancário</option>
+              <option value="pix">PIX</option>
+              <option value="boleto">Boleto</option>
               <option value="cartao_credito">Cartão de crédito</option>
               <option value="cartao_debito">Cartão de débito</option>
-              <option value="transferencia">Transferência bancária</option>
-              <option value="deposito">Depósito bancário</option>
-              <option value="link_pagamento">Link de pagamento</option>
-              <option value="recorrencia_cartao">Recorrência no cartão</option>
-              <option value="cheque">Cheque</option>
-              <option value="credito_cliente">Crédito em conta cliente</option>
-            </select>
-          </div>
-          <div class="field" style="min-width:220px;">
-            <label>Condição / prazo</label>
-            <select id="financeDecisionTerms">
-              <option value="avista">À vista</option>
-              <option value="entrada_saldo">Entrada + saldo</option>
-              <option value="7_dias">7 dias</option>
-              <option value="14_dias">14 dias</option>
-              <option value="21_dias">21 dias</option>
-              <option value="28_dias">28 dias</option>
-              <option value="30_dias">30 dias</option>
-              <option value="45_dias">45 dias</option>
-              <option value="60_dias">60 dias</option>
-              <option value="semanal">Semanal</option>
-              <option value="quinzenal">Quinzenal</option>
-              <option value="mensal">Mensal</option>
-              <option value="personalizado">Personalizado</option>
+              <option value="transferencia">Transferência</option>
             </select>
           </div>
           <div class="field" style="min-width:210px;">
@@ -735,51 +712,13 @@
               <option value="automatico">Baixa automática</option>
             </select>
           </div>
-        </div>
-        <div class="row mt12 finance-decision-fields">
-          <div class="field" style="min-width:220px;">
-            <label>Tipo de cobrança</label>
-            <select id="financeDecisionChargeType">
-              <option value="avulsa">Cobrança avulsa</option>
-              <option value="procedimento">Procedimento do atendimento</option>
-              <option value="faturamento_mensal">Faturamento mensal do cliente</option>
-              <option value="recorrente_mensal">Recorrência mensal</option>
-            </select>
-          </div>
-          <div class="field" style="min-width:180px;max-width:220px;">
-            <label>Aceita pagamento parcial</label>
-            <select id="financeDecisionAllowPartial">
-              <option value="sim">Sim</option>
-              <option value="nao">Não</option>
-            </select>
-          </div>
-          <div class="field" id="financeDecisionCustomDaysWrap" style="min-width:180px;max-width:220px;display:none;">
-            <label>Prazo personalizado (dias)</label>
-            <input id="financeDecisionCustomDays" type="number" min="0" max="365" step="1" value="0" />
-          </div>
-        </div>
-        <div class="row mt12 finance-decision-fields">
           <div class="field" style="min-width:170px;">
-            <label>1º vencimento</label>
+            <label>Vencimento inicial</label>
             <input id="financeDecisionDueDate" type="date" />
           </div>
-          <div class="field" style="min-width:150px;max-width:180px;">
+          <div class="field" style="min-width:130px;max-width:160px;">
             <label>Parcelas</label>
             <input id="financeDecisionInstallments" type="number" min="1" max="24" step="1" value="1" />
-          </div>
-          <div class="field" style="min-width:170px;max-width:210px;">
-            <label>Intervalo entre parcelas</label>
-            <select id="financeDecisionInstallmentInterval">
-              <option value="30">30 dias</option>
-              <option value="21">21 dias</option>
-              <option value="15">15 dias</option>
-              <option value="7">7 dias</option>
-              <option value="0">Mesmo vencimento</option>
-            </select>
-          </div>
-          <div class="field" style="min-width:170px;max-width:220px;">
-            <label>Entrada (opcional)</label>
-            <input id="financeDecisionEntryAmount" type="text" inputmode="decimal" placeholder="0,00" />
           </div>
         </div>
         <div class="field" style="margin-top:12px;">
@@ -790,21 +729,6 @@
       <div class="modal__foot">
         <button class="btn btn--ghost btn--sm" id="btnFinanceDecisionCancel" type="button">Cancelar</button>
         <button class="btn btn--sm" id="btnFinanceDecisionConfirm" type="button">Confirmar finalização</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="vscPaymentAlertModal" class="modal hidden" aria-hidden="true">
-    <div class="modal__card">
-      <div class="modal__head"><div class="modal__title">Alterar atendimento com pagamentos vinculados</div><button id="vscPaymentAlertClose" class="modal__close" type="button">✕</button></div>
-      <div class="modal__body">
-        <div id="paymentAlertIntro" class="hint" style="font-size:13px;line-height:1.6;color:#64748b;">Este atendimento possui movimentação financeira vinculada.</div>
-        <div id="paymentAlertSummary" style="margin-top:12px;padding:12px 14px;border:1px solid #dbe7e0;border-radius:14px;background:#f8fbf9;font-size:13px;line-height:1.6;"></div>
-        <div id="paymentAlertDetails" style="margin-top:12px;display:flex;flex-direction:column;gap:8px;"></div>
-      </div>
-      <div class="modal__foot">
-        <button class="btn btn--ghost btn--sm" id="btnPaymentAlertCancel" type="button">Cancelar</button>
-        <button class="btn btn--sm" id="btnPaymentAlertConfirm" type="button">Continuar alteração</button>
       </div>
     </div>
   </div>
