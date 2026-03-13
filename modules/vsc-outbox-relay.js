@@ -33,6 +33,9 @@
   const STORE_OUTBOX = 'sync_queue';
   const API_CAPABILITIES_URL = '/api/state?action=capabilities';
   const REMOTE_BASE = 'https://app.vetsystemcontrol.com.br';
+  const SYNC_REMOTE_BASE_KEYS = ['vsc_sync_remote_base', 'vsc_remote_base', 'vsc_api_base'];
+  const SYNC_TOKEN_KEYS = ['vsc_local_token', 'vsc_token', 'VSC_SYNC_TOKEN'];
+  const SYNC_TARGET_MODE_KEY = 'vsc_sync_target_mode';
 
   // Ritmo: rápido com backlog, econômico quando ocioso
   const ACTIVE_TICK_MS = 250;   // quando há pendências
@@ -111,6 +114,36 @@
     }
   }
 
+  function _readStorageValue(keys) {
+    const list = Array.isArray(keys) ? keys : [keys];
+    for (const key of list) {
+      if (!key) continue;
+      try {
+        const value = String(localStorage.getItem(key) || sessionStorage.getItem(key) || '').trim();
+        if (value) return value;
+      } catch (_) {}
+    }
+    return '';
+  }
+
+  function _sanitizeBaseUrl(raw) {
+    const value = String(raw || '').trim();
+    if (!value) return '';
+    return value.replace(/\/+$/, '');
+  }
+
+  function _getConfiguredRemoteBase() {
+    return _sanitizeBaseUrl(_readStorageValue(SYNC_REMOTE_BASE_KEYS) || REMOTE_BASE);
+  }
+
+  function _getSyncToken() {
+    return _readStorageValue(SYNC_TOKEN_KEYS);
+  }
+
+  function _getTargetMode() {
+    return String(_readStorageValue(SYNC_TARGET_MODE_KEY) || 'remote').trim().toLowerCase();
+  }
+
   function _emitProgress(extra = {}) {
     const detail = {
       ok: !_lastError,
@@ -154,11 +187,20 @@
   }
 
   function _apiBase() {
-    // file:// não tem servidor — aponta direto pro remoto
-    if (_isLocalStaticMode()) return REMOTE_BASE;
-    // wrangler pages dev — usa rotas relativas (proxy via Pages Functions)
-    if (_isWranglerDev()) return '';
-    // produção — rotas relativas (mesmo domínio)
+    const remoteBase = _getConfiguredRemoteBase() || REMOTE_BASE;
+    const mode = _getTargetMode();
+
+    // file:// sempre precisa de origem absoluta.
+    if (_isLocalStaticMode()) return remoteBase;
+
+    // Desenvolvimento local: por padrão sincroniza com o servidor remoto canônico.
+    // Use localStorage.vsc_sync_target_mode='local' apenas para testar contra o D1 do Wrangler.
+    if (_isWranglerDev()) {
+      return mode === 'local' ? '' : remoteBase;
+    }
+
+    // Produção usa a mesma origem. Permite forçar remoto absoluto se necessário.
+    if (mode === 'remote') return '';
     return '';
   }
 
@@ -623,6 +665,25 @@
 
   window.VSC_RELAY = VSC_RELAY;
 
-  // Auto-start desabilitado: sincronização somente por clique manual.
+  // Auto-start enterprise: backlog offline deve drenar automaticamente ao voltar a rede.
+  try {
+    if (typeof window.addEventListener === 'function') {
+      window.addEventListener('online', () => {
+        try { VSC_RELAY.start(); } catch (_) {}
+      });
+      window.addEventListener('focus', () => {
+        if (!navigator.onLine) return;
+        try { VSC_RELAY.start(); } catch (_) {}
+      });
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'visible' || !navigator.onLine) return;
+        try { VSC_RELAY.start(); } catch (_) {}
+      });
+    }
+  } catch (_) {}
+
+  if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+    try { VSC_RELAY.start(); } catch (_) {}
+  }
 
 })();
