@@ -48,47 +48,11 @@
       if (proto === 'file:') return absolute;
       const host = String(location.hostname || '').toLowerCase();
       if (proto === 'http:' && (host === '127.0.0.1' || host === 'localhost')) {
-        // Em desenvolvimento local, o Worker/D1 local normalmente é separado da base remota.
-        // Por isso não podemos parar no primeiro 200: precisamos comparar a riqueza do snapshot.
         return [...relative, ...absolute];
       }
     } catch (_) {}
 
     return relative;
-  }
-
-  function readSyncToken() {
-    try {
-      return String(
-        localStorage.getItem('vsc_local_token') ||
-        localStorage.getItem('vsc_token') ||
-        sessionStorage.getItem('vsc_local_token') ||
-        sessionStorage.getItem('vsc_token') ||
-        ''
-      ).trim();
-    } catch (_) {
-      return '';
-    }
-  }
-
-  function snapshotShapeScore(body) {
-    const revision = Number(body && body.revision || body && body.meta && body.meta.state_revision || 0) || 0;
-    const data = body && body.snapshot && body.snapshot.data && typeof body.snapshot.data === 'object'
-      ? body.snapshot.data
-      : {};
-    const stores = Object.keys(data);
-    let rows = 0;
-    for (const store of stores) {
-      const list = Array.isArray(data[store]) ? data[store] : [];
-      rows += list.length;
-    }
-    return {
-      revision,
-      stores: stores.length,
-      rows,
-      empty: rows === 0,
-      score: (rows * 1000) + (revision * 10) + stores,
-    };
   }
 
   function makeTimeoutController(timeoutMs) {
@@ -124,23 +88,18 @@
 
   async function fetchSnapshot() {
     const urls = apiCandidates();
-    const token = readSyncToken();
     let lastErr = null;
-    let best = null;
 
     for (const url of urls) {
       try {
-        const headers = {
-          'Accept': 'application/json',
-          'X-VSC-Tenant': TENANT,
-        };
-        if (token) headers['X-VSC-Token'] = token;
-
         const response = await fetchWithTimeout(
           url,
           {
             method: 'GET',
-            headers,
+            headers: {
+              'Accept': 'application/json',
+              'X-VSC-Tenant': TENANT,
+            },
             cache: 'no-store',
           },
           SNAPSHOT_TIMEOUT_MS,
@@ -152,38 +111,14 @@
         }
 
         const body = await response.json();
-        if (!(body && body.ok && body.snapshot && body.snapshot.data)) {
-          throw new Error('pull_invalid_payload');
-        }
-
-        const shape = snapshotShapeScore(body);
-        const candidate = { url, body, shape };
-
-        if (!best || shape.score > best.shape.score) {
-          best = candidate;
-        }
-
-        // Fora do localhost, manter fast-path tradicional.
-        const host = String(location.hostname || '').toLowerCase();
-        const isLocalDev = host === '127.0.0.1' || host === 'localhost';
-        if (!isLocalDev) {
+        if (body && body.ok && body.snapshot && body.snapshot.data) {
           return body;
         }
+
+        throw new Error('pull_invalid_payload');
       } catch (err) {
         lastErr = err;
       }
-    }
-
-    if (best) {
-      try {
-        console.info('[VSC_SYNC] snapshot escolhido', {
-          url: best.url,
-          revision: best.shape.revision,
-          stores: best.shape.stores,
-          rows: best.shape.rows,
-        });
-      } catch (_) {}
-      return best.body;
     }
 
     throw lastErr || new Error('pull_failed');
