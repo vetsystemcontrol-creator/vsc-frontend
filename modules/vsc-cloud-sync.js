@@ -1,4 +1,4 @@
-// vsc-cloud-sync.js — correção anti-travamento do fluxo manual de sincronização
+// vsc-cloud-sync.js — refatoração do fluxo manual de sincronização
 (() => {
   'use strict';
 
@@ -36,6 +36,43 @@
     };
   }
 
+  function getHost() {
+    try {
+      return String(location.hostname || '').toLowerCase();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function isLocalDev() {
+    const host = getHost();
+    return host === '127.0.0.1' || host === 'localhost';
+  }
+
+  function getSyncToken() {
+    try {
+      return String(
+        localStorage.getItem('vsc_local_token') ||
+        sessionStorage.getItem('vsc_local_token') ||
+        localStorage.getItem('vsc_token') ||
+        sessionStorage.getItem('vsc_token') ||
+        ''
+      ).trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function buildCommonHeaders() {
+    const headers = {
+      'Accept': 'application/json',
+      'X-VSC-Tenant': TENANT,
+    };
+    const token = getSyncToken();
+    if (token) headers['X-VSC-Token'] = token;
+    return headers;
+  }
+
   function apiCandidates() {
     const relative = ['/api/sync/pull', '/api/state?action=pull'];
     const absolute = [
@@ -46,8 +83,9 @@
     try {
       const proto = String(location.protocol || '').toLowerCase();
       if (proto === 'file:') return absolute;
-      const host = String(location.hostname || '').toLowerCase();
-      if (proto === 'http:' && (host === '127.0.0.1' || host === 'localhost')) {
+      if (proto === 'http:' && isLocalDev()) {
+        // Em desenvolvimento local precisamos comparar local x remoto,
+        // porque o D1 do Wrangler pode estar vazio enquanto a produção está populada.
         return [...relative, ...absolute];
       }
     } catch (_) {}
@@ -86,39 +124,97 @@
     }
   }
 
+  function snapshotMetrics(body) {
+    const data = body && body.snapshot && body.snapshot.data && typeof body.snapshot.data === 'object'
+      ? body.snapshot.data
+      : {};
+    const stores = Object.keys(data);
+    let rows = 0;
+    for (const storeName of stores) {
+      const list = data[storeName];
+      if (Array.isArray(list)) rows += list.length;
+    }
+    const revision = Number(body && body.revision || body && body.meta && body.meta.state_revision || 0) || 0;
+    return {
+      rows,
+      stores: stores.length,
+      revision,
+      score: (rows * 1000000) + (revision * 1000) + stores,
+    };
+  }
+
+  async function fetchCandidate(url) {
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method: 'GET',
+        headers: buildCommonHeaders(),
+        cache: 'no-store',
+      },
+      SNAPSHOT_TIMEOUT_MS,
+      `snapshot_timeout_${SNAPSHOT_TIMEOUT_MS}ms`
+    );
+
+    if (!response.ok) {
+      throw new Error(`pull_http_${response.status}`);
+    }
+
+    const body = await response.json();
+    if (!(body && body.ok && body.snapshot && body.snapshot.data)) {
+      throw new Error('pull_invalid_payload');
+    }
+
+    return {
+      url,
+      body,
+      metrics: snapshotMetrics(body),
+    };
+  }
+
   async function fetchSnapshot() {
     const urls = apiCandidates();
     let lastErr = null;
+    let best = null;
 
     for (const url of urls) {
       try {
-        const response = await fetchWithTimeout(
-          url,
-          {
-            method: 'GET',
-            headers: {
-              'Accept': 'application/json',
-              'X-VSC-Tenant': TENANT,
-            },
-            cache: 'no-store',
-          },
-          SNAPSHOT_TIMEOUT_MS,
-          `snapshot_timeout_${SNAPSHOT_TIMEOUT_MS}ms`
-        );
+        const candidate = await fetchCandidate(url);
 
-        if (!response.ok) {
-          throw new Error(`pull_http_${response.status}`);
+        try {
+          console.info('[VSC_SYNC] snapshot candidato', {
+            url: candidate.url,
+            rows: candidate.metrics.rows,
+            stores: candidate.metrics.stores,
+            revision: candidate.metrics.revision,
+          });
+        } catch (_) {}
+
+        if (!best || candidate.metrics.score > best.metrics.score) {
+          best = candidate;
         }
 
-        const body = await response.json();
-        if (body && body.ok && body.snapshot && body.snapshot.data) {
-          return body;
+        // Fora do DEV local, não precisamos comparar todas as origens.
+        if (!isLocalDev()) {
+          return candidate.body;
         }
-
-        throw new Error('pull_invalid_payload');
       } catch (err) {
         lastErr = err;
+        try {
+          console.warn('[VSC_SYNC] snapshot falhou', { url, error: String(err && (err.message || err) || err) });
+        } catch (_) {}
       }
+    }
+
+    if (best) {
+      try {
+        console.info('[VSC_SYNC] snapshot escolhido', {
+          url: best.url,
+          rows: best.metrics.rows,
+          stores: best.metrics.stores,
+          revision: best.metrics.revision,
+        });
+      } catch (_) {}
+      return best.body;
     }
 
     throw lastErr || new Error('pull_failed');
