@@ -33,6 +33,8 @@
   const STORE_OUTBOX = 'sync_queue';
   const API_CAPABILITIES_URL = '/api/state?action=capabilities';
   const REMOTE_BASE = 'https://app.vetsystemcontrol.com.br';
+  const SYNC_TARGET_MODE_KEY = 'vsc_sync_target_mode';
+  const NETWORK_TIMEOUT_MS = 20_000;
 
   // Ritmo: rápido com backlog, econômico quando ocioso
   const ACTIVE_TICK_MS = 250;   // quando há pendências
@@ -133,18 +135,17 @@
     }
   }
 
-  function _isPendingStatus(status) {
-    const normalized = String(status || '').trim().toUpperCase();
-    return normalized === '' || normalized === 'PENDING' || normalized === 'PENDENTE' || normalized === 'SENDING' || normalized === 'RETRY';
-  }
-
-  async function _fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
+  async function _fetchWithTimeout(url, options = {}, timeoutMs = NETWORK_TIMEOUT_MS) {
     const controller = new AbortController();
-    const timer = setTimeout(() => { try { controller.abort(); } catch (_) {} }, Math.max(1, Number(timeoutMs) || 1));
+    const timer = setTimeout(() => {
+      try { controller.abort(); } catch (_) {}
+    }, Math.max(1, Number(timeoutMs) || 1));
     try {
       return await fetch(url, { ...options, signal: controller.signal });
     } catch (err) {
-      if (err && err.name === 'AbortError') throw new Error(`network_timeout_${timeoutMs}ms`);
+      if (String(err && err.name || '') === 'AbortError') {
+        throw new Error(`network_timeout_${timeoutMs}ms`);
+      }
       throw err;
     } finally {
       clearTimeout(timer);
@@ -194,10 +195,11 @@
   }
 
   function _apiBase() {
+    const mode = _getSyncTargetMode();
     if (_isLocalStaticMode()) return REMOTE_BASE;
     if (_isWranglerDev()) {
-      const mode = _getSyncTargetMode();
-      return mode === 'local' ? '' : REMOTE_BASE;
+      if (mode === 'local') return '';
+      return REMOTE_BASE;
     }
     return '';
   }
@@ -215,7 +217,7 @@
         method: 'GET',
         headers: { 'Accept': 'application/json' },
         cache: 'no-store',
-      }, 12000);
+      }, NETWORK_TIMEOUT_MS);
       if (!res.ok) {
         _capabilities = {
           ok: false,
@@ -278,8 +280,15 @@
 
   async function _countPending(db) {
     const store = _tx(db, 'readonly');
+    // Prefer index if exists
+    if (store.indexNames && store.indexNames.contains('status')) {
+      const idx = store.index('status');
+      const countReq = idx.count('PENDING');
+      return await _reqToPromise(countReq);
+    }
+    // Fallback: scan (slower but safe)
     const all = await _reqToPromise(store.getAll());
-    return (all || []).filter((event) => event && _isPendingStatus(event.status)).length;
+    return (all || []).filter(e => e && e.status === 'PENDING').length;
   }
 
   async function _readPendingBatch(db, limit) {
@@ -411,7 +420,7 @@
       method: 'POST',
       headers,
       body: JSON.stringify({ operations: batch }),
-    }, 30000);
+    }, NETWORK_TIMEOUT_MS);
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
@@ -445,7 +454,7 @@
           'X-VSC-Client-Session': clientSession,
         }; if (syncToken) h['X-VSC-Token'] = syncToken; return h; })(),
         body: JSON.stringify(body),
-      }, 30000);
+      }, NETWORK_TIMEOUT_MS);
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         throw new Error(`outbox failed ${res.status} ${text}`);
@@ -642,6 +651,7 @@
         last_sent: Number(_stats.acked || _stats.sent || 0) || 0,
         pending: Number(_stats.pending || 0) || 0,
         total_open: Number(_stats.pending || 0) || 0,
+        api_base: _apiBase(),
         sent: Number(_stats.sent || 0) || 0,
         acked: Number(_stats.acked || 0) || 0,
         last_batch: Number(_stats.lastBatchSize || 0) || 0,
@@ -649,7 +659,6 @@
         last_duration_ms: Number(_stats.lastDurationMs || 0) || 0,
         local_static_mode: !!(_capabilities && _capabilities.local_static_mode),
         remote_sync_allowed: !!(_capabilities && _capabilities.remote_sync_allowed),
-        api_base: _apiBase(),
         capabilities: _capabilities ? { ..._capabilities } : null,
         stats: { ..._stats },
       };

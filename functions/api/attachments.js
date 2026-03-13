@@ -41,44 +41,15 @@ function getBucket(env) {
 }
 
 function getTenant(request) {
-  const raw = (
+  return (
     request.headers.get('X-VSC-Tenant') ||
     new URL(request.url).searchParams.get('tenant') ||
-    ''
-  ).trim();
-  return raw ? raw.slice(0, 64) : null;
+    'tenant-default'
+  ).slice(0, 64);
 }
 
 function r2Key(tenant, atendimento_id, attachment_id) {
   return `attachments/${tenant}/${atendimento_id}/${attachment_id}`;
-}
-
-async function findAttachmentObject(bucket, tenant, atendimento_id, attachment_id) {
-  if (tenant) {
-    const directKey = r2Key(tenant, atendimento_id, attachment_id);
-    const direct = await bucket.get(directKey);
-    if (direct) return { obj: direct, key: directKey, tenant };
-  }
-
-  // Fallback server-side resolution: do not depend solely on tenant from the browser.
-  const suffix = `/${atendimento_id}/${attachment_id}`;
-  let cursor = undefined;
-  for (let pass = 0; pass < 20; pass++) {
-    const listed = await bucket.list({ prefix: 'attachments/', limit: 1000, cursor });
-    for (const item of (listed.objects || [])) {
-      const key = String(item.key || '');
-      if (!key.endsWith(suffix)) continue;
-      const obj = await bucket.get(key);
-      if (!obj) continue;
-      const parts = key.split('/');
-      const resolvedTenant = parts.length >= 4 ? parts[1] : null;
-      return { obj, key, tenant: resolvedTenant };
-    }
-    if (!listed.truncated || !listed.cursor) break;
-    cursor = listed.cursor;
-  }
-
-  return { obj: null, key: null, tenant: tenant || null };
 }
 
 async function handleUpload(request, env) {
@@ -135,19 +106,16 @@ async function handleDownload(request, env, url) {
     return json({ ok: false, error: 'atendimento_id e attachment_id obrigatórios' }, 400, request);
   }
 
-  const resolved = await findAttachmentObject(bucket, tenant, atendimento_id, attachment_id);
-  const obj = resolved.obj;
-  if (!obj) return json({ ok: false, error: 'not_found', atendimento_id, attachment_id, tenant: tenant || null }, 404, request);
+  const key = r2Key(tenant, atendimento_id, attachment_id);
+  const obj = await bucket.get(key);
+  if (!obj) return json({ ok: false, error: 'not_found' }, 404, request);
 
   const meta = obj.customMetadata || {};
-  const disposition = String(url.searchParams.get('disposition') || 'attachment').toLowerCase() === 'inline' ? 'inline' : 'attachment';
-  const safeFilename = String(meta.filename || attachment_id || 'arquivo').replace(/[\r\n"]/g, '_');
   const headers = new Headers({
     ...corsHeaders(request),
     'content-type': meta.mime_type || 'application/octet-stream',
-    'content-disposition': `${disposition}; filename="${safeFilename}"`,
-    'cache-control': disposition === 'inline' ? 'private, no-store' : 'private, max-age=3600',
-    'x-content-type-options': 'nosniff',
+    'content-disposition': `attachment; filename="${meta.filename || attachment_id}"`,
+    'cache-control': 'private, max-age=3600',
   });
 
   return new Response(obj.body, { status: 200, headers });

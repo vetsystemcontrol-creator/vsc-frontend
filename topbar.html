@@ -110,7 +110,7 @@
       async function handleLogout(){ var btn=document.getElementById('vscLogoutBtn'); if(!btn||btn.disabled) return; var auth=getAuthApi(); var prev=btn.textContent; btn.disabled=true; btn.textContent='Saindo...'; setLogoutInProgress(); try{ if(auth&&typeof auth.logout==='function'){ await auth.logout(); } else { try{ (getTopLocalStorage()||localStorage).removeItem('vsc_session_id'); }catch(_){ } try{ (getTopLocalStorage()||localStorage).removeItem('vsc_user'); }catch(_){ } } }catch(e){ console.error('[VSC_TOPBAR] falha no logout',e); } clearLogoutInProgress(); safeTopReplace(LOGIN_TARGET); btn.textContent=prev; btn.disabled=false; }
       function bindLogout(id){ var el=document.getElementById(id); if(el) el.addEventListener('click', function(ev){ ev.preventDefault(); handleLogout(); }); }
       function updatePending(n){ ['vscSyncPending','vscMobilePending'].forEach(function(id){ var el=document.getElementById(id); if(el) el.textContent=String(Number(n||0)); }); }
-      function bindSync(id){ var el=document.getElementById(id); if(!el || el.__vscSyncPanelBound) return; el.__vscSyncPanelBound=true; el.addEventListener('click', async function(ev){ try{
+      function bindSync(id){ var el=document.getElementById(id); if(!el||el.__vscSyncBound) return; el.__vscSyncBound=true; el.addEventListener('click', async function(ev){ try{
         if(ev){ ev.preventDefault(); ev.stopPropagation(); }
         var p=getTopWindow();
         if(p&&p!==window){
@@ -120,12 +120,12 @@
             s.src='/modules/vsc-sync-panel.js';
             await new Promise(function(resolve,reject){ s.onload=resolve; s.onerror=reject; p.document.head.appendChild(s); });
             if(p.VSC_SYNC_PANEL&&typeof p.VSC_SYNC_PANEL.open==='function'){ p.VSC_SYNC_PANEL.open(); return; }
-          }catch(err){ console.warn('[VSC_TOPBAR] falha ao carregar painel de sync', err); }
-          try{ p.postMessage({ type:'VSC_SYNC_PANEL_OPEN' }, '*'); }catch(_){ }
+          }catch(_){}
+          try{ p.postMessage({ type:'VSC_SYNC_PANEL_OPEN' }, '*'); }catch(_){}
           return;
         }
         if(window.VSC_SYNC_PANEL&&typeof window.VSC_SYNC_PANEL.open==='function'){ window.VSC_SYNC_PANEL.open(); return; }
-      }catch(err){ console.error('[VSC_TOPBAR] falha ao abrir painel de sync', err); } }); }
+      }catch(_){ } }); }
       function postHeight(h){ try{ window.parent && window.parent.postMessage({ type:'VSC_TOPBAR_HEIGHT', height:h }, '*'); }catch(_){ } }
       function closeMenu(){ document.body.classList.remove('mobile-open'); postHeight(window.innerWidth<=900?MOBILE_H:DESKTOP_H); }
       function toggleMenu(){ var open=!document.body.classList.contains('mobile-open'); document.body.classList.toggle('mobile-open', open); postHeight(open ? Math.min(360, document.documentElement.scrollHeight) : (window.innerWidth<=900?MOBILE_H:DESKTOP_H)); }

@@ -551,7 +551,6 @@ async function importCanonicalSnapshot(db, tenant, snapshot, options = {}) {
   };
 }
 
-
 function getSyncSecret(env) {
   return normStr(env?.VSC_SYNC_SECRET || env?.SYNC_SECRET || '', 512);
 }
@@ -565,33 +564,43 @@ function getRequestToken(request) {
 
 function getClientSessionId(request) {
   return normStr(
-    request?.headers?.get('X-VSC-Client-Session') || request?.headers?.get('x-vsc-client-session') || '',
-    180
+    request?.headers?.get('X-VSC-Client-Session') ||
+    request?.headers?.get('x-vsc-client-session') ||
+    '',
+    160
   );
 }
 
 async function findActiveSessionAuth(db, sessionId) {
-  if (!sessionId) return null;
+  if (!isD1Like(db) || !sessionId) return null;
   try {
     const row = await db.prepare(`
-      SELECT s.id, s.user_id, s.status, s.expires_at, u.status AS user_status
+      SELECT
+        s.id,
+        s.user_id,
+        s.status AS session_status,
+        s.expires_at,
+        u.status AS user_status
       FROM auth_sessions s
       LEFT JOIN auth_users u ON u.id = s.user_id
       WHERE s.id = ?1
       LIMIT 1
     `).bind(sessionId).first();
+
     if (!row) return null;
-    if (String(row.status || '').toUpperCase() !== 'ACTIVE') return null;
-    const expMs = Date.parse(String(row.expires_at || ''));
-    if (Number.isFinite(expMs) && Date.now() > expMs) return null;
-    if (row.user_status && String(row.user_status || '').toUpperCase() !== 'ACTIVE') return null;
-    return {
-      ok: true,
-      enforced: true,
-      mode: 'session',
-      session_id: String(row.id),
-      user_id: row.user_id ? String(row.user_id) : null,
-    };
+    const sessionStatus = normStr(row.session_status || row.status || 'INACTIVE', 40).toUpperCase();
+    if (sessionStatus !== 'ACTIVE') return null;
+
+    const userStatus = normStr(row.user_status || 'ACTIVE', 40).toUpperCase();
+    if (row.user_id && userStatus !== 'ACTIVE') return null;
+
+    const expiresAt = normStr(row.expires_at || '', 64);
+    if (expiresAt) {
+      const expiresMs = Date.parse(expiresAt);
+      if (Number.isFinite(expiresMs) && Date.now() > expiresMs) return null;
+    }
+
+    return row;
   } catch (_) {
     return null;
   }
@@ -600,19 +609,25 @@ async function findActiveSessionAuth(db, sessionId) {
 async function isSyncAuthorized(request, env) {
   const secret = getSyncSecret(env);
   const token = getRequestToken(request);
-  if (secret) {
-    if (token && token === secret) {
-      return { ok: true, enforced: true, mode: 'token' };
-    }
-    const db = getDB(env);
-    if (db) {
-      const sessionId = getClientSessionId(request);
-      const sessionAuth = await findActiveSessionAuth(db, sessionId);
-      if (sessionAuth) return sessionAuth;
-    }
-    return { ok: false, enforced: true, error: 'unauthorized' };
+  if (secret && token && token === secret) {
+    return { ok: true, enforced: true, mode: 'token' };
   }
-  return { ok: true, enforced: false, mode: 'open' };
+
+  const db = getDB(env);
+  const clientSessionId = getClientSessionId(request);
+  if (clientSessionId && db) {
+    const session = await findActiveSessionAuth(db, clientSessionId);
+    if (session) {
+      return { ok: true, enforced: true, mode: 'session', session_id: clientSessionId, user_id: session.user_id || null };
+    }
+  }
+
+  if (!secret) {
+    // Dev/local fallback when no secret is configured in the environment.
+    return { ok: true, enforced: false, mode: 'open' };
+  }
+
+  return { ok: false, enforced: true, error: 'unauthorized' };
 }
 
 function buildUnauthorizedResponse(request) {
@@ -633,6 +648,8 @@ export {
   importCanonicalSnapshot,
   getSyncSecret,
   getRequestToken,
+  getClientSessionId,
+  findActiveSessionAuth,
   isSyncAuthorized,
   buildUnauthorizedResponse,
 };

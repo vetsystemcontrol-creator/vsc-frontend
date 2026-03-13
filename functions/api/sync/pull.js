@@ -4,6 +4,8 @@ import {
   getTenant,
   ensureSchema,
   loadCanonicalSnapshot,
+  isSyncAuthorized,
+  buildUnauthorizedResponse,
 } from '../_lib/sync-store.js';
 
 function jsonResponse(body, status = 200, request = null, extraHeaders = {}) {
