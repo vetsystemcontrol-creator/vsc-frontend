@@ -180,15 +180,9 @@
           if (!db.objectStoreNames.contains('sync_queue')) { cb(0); return; }
           const tx = db.transaction('sync_queue', 'readonly');
           const store = tx.objectStore('sync_queue');
-          if (store.indexNames && store.indexNames.contains('status')) {
-            const countReq = store.index('status').count('PENDING');
-            countReq.onsuccess = () => cb(Number(countReq.result || 0) || 0);
-            countReq.onerror = () => cb(0);
-            return;
-          }
           const all = store.getAll();
           all.onsuccess = e => {
-            const pending = (e.target.result || []).filter(r => r && r.status === 'PENDING').length;
+            const pending = (e.target.result || []).filter(r => { const st = String((r && r.status) || '').trim().toUpperCase(); return st === 'PENDING' || st === 'PENDENTE' || st === 'SENDING'; }).length;
             cb(pending);
           };
           all.onerror = () => cb(0);
@@ -228,7 +222,7 @@
               <span style="font-size:20px">⟳</span>
               Sincronização
             </div>
-            <button type="button" class="sp-close" id="vscSyncPanelClose">✕</button>
+            <button class="sp-close" id="vscSyncPanelClose">✕</button>
           </div>
           <div class="sp-body">
             <div class="sp-cards" id="vscSyncCards">
@@ -254,7 +248,7 @@
 
             <div class="sp-error-box" id="spErrorBox"></div>
 
-            <button type="button" class="sp-sync-btn" id="spSyncBtn">
+            <button class="sp-sync-btn" id="spSyncBtn">
               <span id="spSyncBtnIcon">⟳</span>
               <span id="spSyncBtnText">Sincronizar Agora</span>
             </button>
@@ -331,9 +325,6 @@
     const btn = document.getElementById('spSyncBtn');
     const btnIcon = document.getElementById('spSyncBtnIcon');
     const btnText = document.getElementById('spSyncBtnText');
-    const closeBtn = document.getElementById('vscSyncPanelClose');
-    if (closeBtn) closeBtn.disabled = !!state.syncing;
-
     if (btn) {
       btn.disabled = state.syncing;
       btn.className = 'sp-sync-btn' + (state.syncing ? ' syncing' : (state.error ? ' error' : ''));
@@ -373,18 +364,12 @@
       const sync = _getVSC_CLOUD_SYNC();
       if (!sync) throw new Error('VSC_CLOUD_SYNC não disponível');
       const result = await sync.manualSync();
-      const pushed = !!(result && result.pushed);
-      const partial = !!(result && result.partial);
-      const bootstrapped = !!(result && result.bootstrapped);
+      const pushed = result && result.pushed;
       const stores = result && result.applied && result.applied.importedStores;
-      const msg = (partial
-        ? 'Push parcial em segundo plano'
-        : ('Push: ' + (pushed ? 'enviado' : 'sem pendências'))) +
-        (bootstrapped ? ' · Bootstrap do servidor concluído' : '') +
-        (stores ? ' · Pull: ' + stores.length + ' stores' : '');
+      const msg = 'Push: ' + (pushed ? 'enviado' : 'sem pendências') +
+                  (stores ? ' · Pull: ' + stores.length + ' stores' : '');
       _addHistory({ ok: true, msg });
       _render({ syncing: false, error: null });
-      setTimeout(() => _render({ syncing: false, error: null }), 150);
     } catch(e) {
       const err = String(e && (e.message || e));
       _addHistory({ ok: false, error: err });
@@ -400,15 +385,11 @@
     _injectCSS();
     document.body.insertAdjacentHTML('beforeend', _buildHTML());
 
-    document.getElementById('vscSyncPanelClose').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (!_syncing) close(); });
+    document.getElementById('vscSyncPanelClose').addEventListener('click', close);
     document.getElementById('vscSyncPanelOverlay').addEventListener('click', e => {
-      if (e.target.id === 'vscSyncPanelOverlay' && !_syncing) close();
+      if (e.target.id === 'vscSyncPanelOverlay') close();
     });
-    document.getElementById('spSyncBtn').addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      _doSync();
-    });
+    document.getElementById('spSyncBtn').addEventListener('click', _doSync);
 
     _render({ syncing: false, error: null });
 

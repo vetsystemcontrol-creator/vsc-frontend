@@ -919,7 +919,7 @@ req.onupgradeneeded = (e) => {
             try{
               const result = req.result;
               if (typeof result === "number") resolve(result || 0);
-              else resolve((Array.isArray(result) ? result : []).filter(x => x && x.status === "PENDING").length);
+              else resolve((Array.isArray(result) ? result : []).filter(x => { const st = String((x && x.status) || '').trim().toUpperCase(); return st === 'PENDING' || st === 'PENDENTE' || st === 'SENDING'; }).length);
             }catch(_){ resolve(0); }
           };
           req.onerror = () => resolve(0);

@@ -99,29 +99,6 @@
     }
   }
 
-  function _getSyncToken() {
-    try {
-      const candidates = [
-        localStorage.getItem('vsc_local_token'),
-        sessionStorage.getItem('vsc_local_token'),
-        localStorage.getItem('vsc_token'),
-        sessionStorage.getItem('vsc_token'),
-        localStorage.getItem('auth_token'),
-        sessionStorage.getItem('auth_token'),
-      ];
-      for (const value of candidates) {
-        const token = String(value || '').trim();
-        if (token) return token;
-      }
-    } catch (_) {}
-    return '';
-  }
-
-  function _withSyncHeaders(headers = {}) {
-    const token = _getSyncToken();
-    return token ? { ...headers, 'X-VSC-Token': token } : { ...headers };
-  }
-
   function _getClientSession() {
     try {
       return String(
@@ -293,7 +270,7 @@
 
     // Fallback: getAll + filter
     const all = await _reqToPromise(store.getAll());
-    const pending = (all || []).filter(e => e && e.status === 'PENDING');
+    const pending = (all || []).filter(e => e && _isPendingStatus(e.status));
     // Sort stable by created_at/id to keep deterministic drain
     pending.sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
     return pending.slice(0, limit);
@@ -386,16 +363,20 @@
     const tenant = _getTenant();
     const userLabel = _getUserLabel();
     const clientSession = _getClientSession();
+    const syncToken = _getSyncToken();
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'X-VSC-Tenant': tenant,
+      'X-VSC-User': userLabel,
+      'X-VSC-Client-Session': clientSession,
+    };
+    if (syncToken) headers['X-VSC-Token'] = syncToken;
 
     const res = await fetch(_apiUrl('/api/sync/push'), {
       method: 'POST',
-      headers: _withSyncHeaders({
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'X-VSC-Tenant': tenant,
-        'X-VSC-User': userLabel,
-        'X-VSC-Client-Session': clientSession,
-      }),
+      headers,
       body: JSON.stringify({ operations: batch }),
     });
 
@@ -411,6 +392,7 @@
     const tenant = _getTenant();
     const userLabel = _getUserLabel();
     const clientSession = _getClientSession();
+    const syncToken = _getSyncToken();
 
     for (const ev of batch) {
       const body = {
@@ -422,13 +404,13 @@
       };
       const res = await fetch(_apiUrl('/api/outbox'), {
         method: 'POST',
-        headers: _withSyncHeaders({
+        headers: (() => { const h = {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
           'X-VSC-Tenant': tenant,
           'X-VSC-User': userLabel,
           'X-VSC-Client-Session': clientSession,
-        }),
+        }; if (syncToken) h['X-VSC-Token'] = syncToken; return h; })(),
         body: JSON.stringify(body),
       });
       if (!res.ok) {
@@ -553,7 +535,7 @@
             const all = await _reqToPromise(store.getAll());
             for (const rec of (all || [])) {
               if (!rec) continue;
-              if (rec.status !== 'SENDING') continue;
+              if (String(rec.status || '').trim().toUpperCase() !== 'SENDING') continue;
               rec.retry_count = (rec.retry_count || 0) + 1;
               rec.last_error = String(err || '');
               if (rec.retry_count >= MAX_RETRIES) {

@@ -210,7 +210,7 @@
         tipo: tmpl.tipo,
         descricao: tmpl.desc || "",
         prioridade: "normal",
-        status: "pendente",
+        status: "PENDING",
         gerado_automatico: true,
         created_at: now(), updated_at: now()
       };

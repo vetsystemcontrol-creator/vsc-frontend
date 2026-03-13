@@ -237,7 +237,7 @@
       entity_id: String(entity_id),
       payload_json: JSON.stringify(payload),
       attempts: 0,
-      status: "pendente",
+      status: "PENDING",
       last_error: null,
       created_at: now,
       updated_at: now,
