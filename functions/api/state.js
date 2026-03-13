@@ -295,7 +295,7 @@ export async function onRequestGet(context) {
 
     if (action === 'capabilities') return buildCapabilities(request, env);
     if (action === 'pull') {
-      const auth = isSyncAuthorized(request, env);
+      const auth = await isSyncAuthorized(request, env);
       if (!auth.ok) return buildUnauthorizedResponse(request);
       return handlePull(request, env, tenant);
     }
@@ -323,7 +323,7 @@ export async function onRequestPost(context) {
     const tenant = readTenant(request, url);
 
     if (action === 'push') {
-      const auth = isSyncAuthorized(request, env);
+      const auth = await isSyncAuthorized(request, env);
       if (!auth.ok) return buildUnauthorizedResponse(request);
       return handlePush(request, env, tenant);
     }

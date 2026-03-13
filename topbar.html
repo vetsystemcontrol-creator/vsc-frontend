@@ -125,12 +125,6 @@
           return;
         }
         if(window.VSC_SYNC_PANEL&&typeof window.VSC_SYNC_PANEL.open==='function'){ window.VSC_SYNC_PANEL.open(); return; }
-        try{
-          var s2=document.createElement('script');
-          s2.src='/modules/vsc-sync-panel.js';
-          await new Promise(function(resolve,reject){ s2.onload=resolve; s2.onerror=reject; document.head.appendChild(s2); });
-          if(window.VSC_SYNC_PANEL&&typeof window.VSC_SYNC_PANEL.open==='function'){ window.VSC_SYNC_PANEL.open(); return; }
-        }catch(err2){ console.warn('[VSC_TOPBAR] falha ao carregar painel local de sync', err2); }
       }catch(err){ console.error('[VSC_TOPBAR] falha ao abrir painel de sync', err); } }); }
       function postHeight(h){ try{ window.parent && window.parent.postMessage({ type:'VSC_TOPBAR_HEIGHT', height:h }, '*'); }catch(_){ } }
       function closeMenu(){ document.body.classList.remove('mobile-open'); postHeight(window.innerWidth<=900?MOBILE_H:DESKTOP_H); }
