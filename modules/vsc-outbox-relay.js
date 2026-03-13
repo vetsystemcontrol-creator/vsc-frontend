@@ -33,8 +33,6 @@
   const STORE_OUTBOX = 'sync_queue';
   const API_CAPABILITIES_URL = '/api/state?action=capabilities';
   const REMOTE_BASE = 'https://app.vetsystemcontrol.com.br';
-  const SYNC_TARGET_MODE_KEY = 'vsc_sync_target_mode';
-  const NETWORK_TIMEOUT_MS = 20_000;
 
   // Ritmo: rápido com backlog, econômico quando ocioso
   const ACTIVE_TICK_MS = 250;   // quando há pendências
@@ -113,6 +111,7 @@
     }
   }
 
+
 function _getSyncToken() {
   try {
     return String(
@@ -138,39 +137,6 @@ function _getSyncTargetMode() {
 function _isPendingStatus(status) {
   const normalized = String(status || '').trim().toUpperCase();
   return normalized === '' || normalized === 'PENDING' || normalized === 'PENDENTE' || normalized === 'SENDING' || normalized === 'RETRY';
-}
-
-function _isTerminalStatus(status) {
-  const normalized = String(status || '').trim().toUpperCase();
-  return normalized === 'DONE' || normalized === 'DEAD' || normalized === 'ACKED' || normalized === 'SENT';
-}
-
-function _buildAbortController(timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => {
-    try { controller.abort(new Error(`timeout_${timeoutMs}ms`)); } catch (_) {
-      try { controller.abort(); } catch (__){}
-    }
-  }, Math.max(1, Number(timeoutMs) || 1));
-  return {
-    signal: controller.signal,
-    clear() { clearTimeout(timer); },
-  };
-}
-
-async function _fetchWithTimeout(url, options = {}, timeoutMs = NETWORK_TIMEOUT_MS) {
-  const wrapped = _buildAbortController(timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: wrapped.signal });
-  } catch (err) {
-    const name = err && err.name ? String(err.name) : '';
-    if (name === 'AbortError' || String(err || '').includes('timeout_')) {
-      throw new Error(`network_timeout_${timeoutMs}ms`);
-    }
-    throw err;
-  } finally {
-    wrapped.clear();
-  }
 }
 
   function _emitProgress(extra = {}) {
@@ -215,18 +181,31 @@ async function _fetchWithTimeout(url, options = {}, timeoutMs = NETWORK_TIMEOUT_
     return false;
   }
 
-function _apiBase() {
-  const mode = _getSyncTargetMode();
-  if (_isLocalStaticMode()) return REMOTE_BASE;
-  if (_isWranglerDev()) {
-    if (mode === 'local') return '';
-    return REMOTE_BASE;
+  function _apiBase() {
+    if (_isLocalStaticMode()) return REMOTE_BASE;
+    if (_isWranglerDev()) {
+      return _getSyncTargetMode() === 'local' ? '' : REMOTE_BASE;
+    }
+    return '';
   }
-  return '';
-}
 
-function _apiUrl(path) {
+  function _apiUrl(path) {
     return `${_apiBase()}${path}`;
+  }
+
+  async function _fetchWithTimeout(url, options = {}, timeoutMs = NETWORK_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      try { controller.abort(); } catch (_) {}
+    }, Math.max(1, Number(timeoutMs) || 1));
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } catch (err) {
+      if (err && err.name === 'AbortError') throw new Error(`network_timeout_${timeoutMs}ms`);
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async function _readCapabilities() {
@@ -299,13 +278,13 @@ function _apiUrl(path) {
     });
   }
 
-async function _countPending(db) {
-  const store = _tx(db, 'readonly');
-  const all = await _reqToPromise(store.getAll());
-  return (all || []).filter((event) => event && _isPendingStatus(event.status)).length;
-}
+  async function _countPending(db) {
+    const store = _tx(db, 'readonly');
+    const all = await _reqToPromise(store.getAll());
+    return (all || []).filter((event) => event && _isPendingStatus(event.status)).length;
+  }
 
-async function _readPendingBatch(db, limit) {
+  async function _readPendingBatch(db, limit) {
     const store = _tx(db, 'readonly');
 
     // Ideal: status index + cursor
@@ -509,9 +488,6 @@ async function _readPendingBatch(db, limit) {
       _emitProgress();
 
       let backoffMs = 0;
-      const startSent = Number(_stats.sent || 0) || 0;
-      const startAcked = Number(_stats.acked || 0) || 0;
-      let processedAny = false;
 
       try {
         while (_enabled && !_stopRequested) {
@@ -563,7 +539,6 @@ async function _readPendingBatch(db, limit) {
 
             const resp = await _pushBatch(batch);
             const applyResult = await _applyPushResult(db, batch, resp);
-            processedAny = processedAny || batch.length > 0;
 
             _stats.sent += batch.length;
             _stats.acked += Number(applyResult.acked || 0);
@@ -618,15 +593,6 @@ async function _readPendingBatch(db, limit) {
         _emitProgress({ error: String(err || ''), backoffMs, capabilities: _capabilities || null, local_static_mode: !!(_capabilities && _capabilities.local_static_mode), remote_sync_allowed: !!(_capabilities && _capabilities.remote_sync_allowed) });
         await _sleep(backoffMs);
 
-        return {
-          ok: !_lastError,
-          processedAny,
-          sentDelta: (Number(_stats.sent || 0) || 0) - startSent,
-          ackedDelta: (Number(_stats.acked || 0) || 0) - startAcked,
-          pending: Number(_stats.pending || 0) || 0,
-        total_open: Number(_stats.pending || 0) || 0,
-          lastError: _lastError ? String(_lastError) : null,
-        };
       } finally {
         _running = false;
         _stopRequested = false;

@@ -1,9 +1,8 @@
-// vsc-cloud-sync.js — sincronização manual e pull robusto
+// vsc-cloud-sync.js — refatoração do fluxo manual de sincronização
 (() => {
   'use strict';
 
   const SYNC_KEY = 'vsc_last_sync';
-  const SNAPSHOT_CACHE_KEY = 'vsc_last_snapshot_meta';
   const TENANT = 'tenant-default';
   const REMOTE_BASE = 'https://app.vetsystemcontrol.com.br';
   const SYNC_TARGET_MODE_KEY = 'vsc_sync_target_mode';
@@ -30,6 +29,15 @@
     } catch (_) {}
   }
 
+  function status() {
+    return {
+      tenant: TENANT,
+      syncing: !!isSyncing,
+      last_sync: localStorage.getItem(SYNC_KEY) || null,
+      api_base: resolveRemoteBase(),
+    };
+  }
+
   function getHost() {
     try {
       return String(location.hostname || '').toLowerCase();
@@ -43,33 +51,25 @@
     return host === '127.0.0.1' || host === 'localhost';
   }
 
-  function getSyncTargetMode() {
-    try {
-      return String(localStorage.getItem(SYNC_TARGET_MODE_KEY) || '').trim().toLowerCase();
-    } catch (_) {
-      return '';
+
+function getSyncTargetMode() {
+  try {
+    return String(localStorage.getItem(SYNC_TARGET_MODE_KEY) || '').trim().toLowerCase();
+  } catch (_) {
+    return '';
+  }
+}
+
+function resolveRemoteBase() {
+  try {
+    const proto = String(location.protocol || '').toLowerCase();
+    if (proto === 'file:') return REMOTE_BASE;
+    if (proto === 'http:' && isLocalDev()) {
+      return getSyncTargetMode() === 'local' ? location.origin : REMOTE_BASE;
     }
-  }
-
-  function resolveRemoteBase() {
-    try {
-      const proto = String(location.protocol || '').toLowerCase();
-      if (proto === 'file:') return REMOTE_BASE;
-      if (proto === 'http:' && isLocalDev()) {
-        return getSyncTargetMode() === 'local' ? location.origin : REMOTE_BASE;
-      }
-    } catch (_) {}
-    return location.origin;
-  }
-
-  function status() {
-    return {
-      tenant: TENANT,
-      syncing: !!isSyncing,
-      last_sync: localStorage.getItem(SYNC_KEY) || null,
-      api_base: resolveRemoteBase(),
-    };
-  }
+  } catch (_) {}
+  return location.origin;
+}
 
   function getSyncToken() {
     try {
@@ -87,7 +87,7 @@
 
   function buildCommonHeaders() {
     const headers = {
-      Accept: 'application/json',
+      'Accept': 'application/json',
       'X-VSC-Tenant': TENANT,
     };
     const token = getSyncToken();
@@ -97,16 +97,14 @@
 
   function apiCandidates() {
     const remoteBase = resolveRemoteBase();
-    const urls = [
+    const absolute = [
       `${remoteBase}/api/sync/pull`,
       `${remoteBase}/api/state?action=pull`,
     ];
-
     if (remoteBase !== location.origin) {
-      urls.push('/api/sync/pull', '/api/state?action=pull');
+      return [...absolute, '/api/sync/pull', '/api/state?action=pull'];
     }
-
-    return Array.from(new Set(urls));
+    return absolute;
   }
 
   function makeTimeoutController(timeoutMs) {
@@ -116,7 +114,7 @@
       try {
         controller.abort(new Error(`timeout_${safeTimeout}ms`));
       } catch (_) {
-        try { controller.abort(); } catch (__){}
+        try { controller.abort(); } catch (_) {}
       }
     }, safeTimeout);
     return {
@@ -150,64 +148,26 @@
       const list = data[storeName];
       if (Array.isArray(list)) rows += list.length;
     }
-    const revision = Number(
-      body && body.revision ||
-      body && body.meta && body.meta.state_revision ||
-      0
-    ) || 0;
-
+    const revision = Number(body && body.revision || body && body.meta && body.meta.state_revision || 0) || 0;
     return {
       rows,
       stores: stores.length,
       revision,
-      score: (rows * 1_000_000) + (revision * 1_000) + stores.length,
+      score: (rows * 1000000) + (revision * 1000) + stores,
     };
   }
 
-  function readSnapshotCacheMeta() {
-    try {
-      return JSON.parse(localStorage.getItem(SNAPSHOT_CACHE_KEY) || '{}') || {};
-    } catch (_) {
-      return {};
-    }
-  }
-
-  function writeSnapshotCacheMeta(meta) {
-    try {
-      localStorage.setItem(SNAPSHOT_CACHE_KEY, JSON.stringify(meta || {}));
-    } catch (_) {}
-  }
-
   async function fetchCandidate(url) {
-    const headers = buildCommonHeaders();
-    const cacheMeta = readSnapshotCacheMeta();
-    const knownEtag = cacheMeta[url] && cacheMeta[url].etag ? String(cacheMeta[url].etag) : '';
-    if (knownEtag) headers['If-None-Match'] = knownEtag;
-
     const response = await fetchWithTimeout(
       url,
       {
         method: 'GET',
-        headers,
+        headers: buildCommonHeaders(),
         cache: 'no-store',
       },
       SNAPSHOT_TIMEOUT_MS,
       `snapshot_timeout_${SNAPSHOT_TIMEOUT_MS}ms`
     );
-
-    if (response.status === 304) {
-      return {
-        url,
-        body: null,
-        not_modified: true,
-        metrics: {
-          rows: Number(cacheMeta[url] && cacheMeta[url].rows || 0) || 0,
-          stores: Number(cacheMeta[url] && cacheMeta[url].stores || 0) || 0,
-          revision: Number(cacheMeta[url] && cacheMeta[url].revision || 0) || 0,
-          score: Number(cacheMeta[url] && cacheMeta[url].score || 0) || 0,
-        },
-      };
-    }
 
     if (!response.ok) {
       throw new Error(`pull_http_${response.status}`);
@@ -218,23 +178,10 @@
       throw new Error('pull_invalid_payload');
     }
 
-    const metrics = snapshotMetrics(body);
-    writeSnapshotCacheMeta({
-      ...cacheMeta,
-      [url]: {
-        etag: response.headers.get('ETag') || null,
-        rows: metrics.rows,
-        stores: metrics.stores,
-        revision: metrics.revision,
-        score: metrics.score,
-      },
-    });
-
     return {
       url,
       body,
-      not_modified: false,
-      metrics,
+      metrics: snapshotMetrics(body),
     };
   }
 
@@ -242,22 +189,10 @@
     const urls = apiCandidates();
     let lastErr = null;
     let best = null;
-    let saw304 = false;
 
     for (const url of urls) {
       try {
         const candidate = await fetchCandidate(url);
-        if (candidate.not_modified) {
-          saw304 = true;
-          try {
-            console.info('[VSC_SYNC] snapshot não modificado', {
-              url: candidate.url,
-              revision: candidate.metrics.revision,
-            });
-          } catch (_) {}
-          if (!best || candidate.metrics.score > best.metrics.score) best = candidate;
-          continue;
-        }
 
         try {
           console.info('[VSC_SYNC] snapshot candidato', {
@@ -268,22 +203,23 @@
           });
         } catch (_) {}
 
-        if (!best || candidate.metrics.score > best.metrics.score) best = candidate;
+        if (!best || candidate.metrics.score > best.metrics.score) {
+          best = candidate;
+        }
+
+        // Fora do DEV local, não precisamos comparar todas as origens.
         if (!isLocalDev()) {
-          return { ok: true, payload: candidate.body, source: candidate.url, not_modified: false };
+          return candidate.body;
         }
       } catch (err) {
         lastErr = err;
         try {
-          console.warn('[VSC_SYNC] snapshot falhou', {
-            url,
-            error: String(err && (err.message || err) || err),
-          });
+          console.warn('[VSC_SYNC] snapshot falhou', { url, error: String(err && (err.message || err) || err) });
         } catch (_) {}
       }
     }
 
-    if (best && best.body) {
+    if (best) {
       try {
         console.info('[VSC_SYNC] snapshot escolhido', {
           url: best.url,
@@ -292,15 +228,7 @@
           revision: best.metrics.revision,
         });
       } catch (_) {}
-      return { ok: true, payload: best.body, source: best.url, not_modified: false };
-    }
-
-    if (best && best.not_modified) {
-      return { ok: true, payload: null, source: best.url, not_modified: true };
-    }
-
-    if (saw304) {
-      return { ok: true, payload: null, source: null, not_modified: true };
+      return best.body;
     }
 
     throw lastErr || new Error('pull_failed');
@@ -347,13 +275,6 @@
         { mode: 'merge_newer' }
       );
 
-      try {
-        const empresaRows = filteredData.empresa;
-        if (Array.isArray(empresaRows) && empresaRows.length) {
-          localStorage.setItem('vsc_empresa_v1', JSON.stringify(empresaRows[0]));
-        }
-      } catch (_) {}
-
       return { ok: true, importedStores: Object.keys(filteredData) };
     } finally {
       try { db.close(); } catch (_) {}
@@ -371,17 +292,11 @@
     notifyUI('syncing');
 
     try {
-      const result = await fetchSnapshot();
-      if (result.not_modified) {
-        localStorage.setItem(SYNC_KEY, nowIso());
-        notifyUI('success', '', { phase: 'pull', not_modified: true });
-        return { ok: true, pulled: false, not_modified: true };
-      }
-
-      const applied = await applySnapshot(result.payload.snapshot);
+      const payload = await fetchSnapshot();
+      const applied = await applySnapshot(payload.snapshot);
       localStorage.setItem(SYNC_KEY, nowIso());
-      notifyUI('success', '', { phase: 'pull', applied, source: result.source });
-      return { ok: true, pulled: true, applied, source: result.source };
+      notifyUI('success', '', { phase: 'pull', applied });
+      return { ok: true, pulled: true, applied };
     } catch (err) {
       notifyUI('error', String(err && (err.message || err) || 'pull_failed'));
       throw err;
@@ -424,13 +339,7 @@
       }
 
       const relayStatus = relay && typeof relay.status === 'function' ? relay.status() : null;
-      const openItems = Number(
-        relayStatus && (
-          relayStatus.total_open ??
-          relayStatus.pending ??
-          (relayStatus.stats && relayStatus.stats.pending)
-        ) || 0
-      ) || 0;
+      const openItems = Number(relayStatus && relayStatus.total_open || relayStatus && relayStatus.pending || 0) || 0;
 
       if (openItems > 0) {
         localStorage.setItem(SYNC_KEY, nowIso());
@@ -442,34 +351,17 @@
         return {
           ok: true,
           partial: true,
-          pushed: !!(pushResult && pushResult.processedAny),
+          pushed: !!pushResult,
           pushResult,
           pending: openItems,
         };
       }
 
-      const result = await fetchSnapshot();
-      if (result.not_modified) {
-        localStorage.setItem(SYNC_KEY, nowIso());
-        notifyUI('success', '', { phase: 'push+pull', pushResult, not_modified: true });
-        return {
-          ok: true,
-          pushed: !!(pushResult && pushResult.processedAny),
-          pushResult,
-          not_modified: true,
-        };
-      }
-
-      const applied = await applySnapshot(result.payload.snapshot);
+      const payload = await fetchSnapshot();
+      const applied = await applySnapshot(payload.snapshot);
       localStorage.setItem(SYNC_KEY, nowIso());
-      notifyUI('success', '', { phase: 'push+pull', pushResult, applied, source: result.source });
-      return {
-        ok: true,
-        pushed: !!(pushResult && pushResult.processedAny),
-        pushResult,
-        applied,
-        source: result.source,
-      };
+      notifyUI('success', '', { phase: 'push+pull', pushResult, applied });
+      return { ok: true, pushed: !!pushResult, pushResult, applied };
     } catch (err) {
       notifyUI('error', String(err && (err.message || err) || 'manual_sync_failed'));
       throw err;
