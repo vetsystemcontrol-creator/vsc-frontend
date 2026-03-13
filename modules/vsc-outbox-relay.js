@@ -628,10 +628,11 @@
       return true;
     },
 
-    syncNow() {
+    async syncNow() {
       // Forced drain until idle once (useful for manual button)
       _enabled = true;
-      return _drainLoop({ force: true });
+      await _drainLoop({ force: true });
+      return this.status();
     },
 
     // Compatibilidade retroativa: módulos legados ainda chamam relay.kick()

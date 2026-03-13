@@ -606,6 +606,52 @@ async function findActiveSessionAuth(db, sessionId) {
   }
 }
 
+
+async function detectSyncAuthSupport(db) {
+  if (!isD1Like(db)) return { auth_tables_available: false, auth_tables_checked: false };
+  try {
+    const result = await db.prepare(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table'
+        AND name IN ('auth_sessions', 'auth_users')
+    `).all();
+    const rows = Array.isArray(result?.results) ? result.results : [];
+    const found = new Set(rows.map((row) => normStr(row?.name || '', 80)));
+    return {
+      auth_tables_available: found.has('auth_sessions') && found.has('auth_users'),
+      auth_tables_checked: true,
+    };
+  } catch (_) {
+    return { auth_tables_available: false, auth_tables_checked: true };
+  }
+}
+
+function isTrustedSyncOriginValue(value) {
+  const safe = normStr(value || '', 255);
+  if (!safe) return false;
+  if (/^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(safe)) return true;
+  if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(safe)) return true;
+  return false;
+}
+
+function isTrustedSyncRequest(request) {
+  const origin = normStr(request?.headers?.get('Origin') || '', 255);
+  if (origin) return isTrustedSyncOriginValue(origin);
+
+  const referer = normStr(request?.headers?.get('Referer') || request?.headers?.get('Referrer') || '', 1024);
+  if (referer) {
+    try {
+      const url = new URL(referer);
+      return isTrustedSyncOriginValue(`${url.protocol}//${url.host}`);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  return false;
+}
+
 async function isSyncAuthorized(request, env) {
   const secret = getSyncSecret(env);
   const token = getRequestToken(request);
@@ -622,12 +668,31 @@ async function isSyncAuthorized(request, env) {
     }
   }
 
-  if (!secret) {
-    // Dev/local fallback when no secret is configured in the environment.
-    return { ok: true, enforced: false, mode: 'open' };
+  const authSupport = await detectSyncAuthSupport(db);
+  const trustedRequest = isTrustedSyncRequest(request);
+  const userLabel = getUserLabel(request);
+
+  if (trustedRequest && clientSessionId && userLabel && (!secret || !authSupport.auth_tables_available)) {
+    return {
+      ok: true,
+      enforced: !!secret,
+      mode: secret ? 'origin-session-fallback' : 'origin-session',
+      degraded: !!secret,
+      auth_tables_available: !!authSupport.auth_tables_available,
+      session_id: clientSessionId,
+    };
   }
 
-  return { ok: false, enforced: true, error: 'unauthorized' };
+  if (!secret && trustedRequest) {
+    return { ok: true, enforced: false, mode: 'origin-open' };
+  }
+
+  return {
+    ok: false,
+    enforced: !!secret,
+    error: 'unauthorized',
+    auth_tables_available: !!authSupport.auth_tables_available,
+  };
 }
 
 function buildUnauthorizedResponse(request) {

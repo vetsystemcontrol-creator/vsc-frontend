@@ -434,20 +434,49 @@
       }
 
       const relayStatus = relay && typeof relay.status === 'function' ? relay.status() : null;
+      const pushError = String(
+        (pushResult && (pushResult.last_error || pushResult.lastError || pushResult.error)) ||
+        (relayStatus && (relayStatus.last_error || relayStatus.lastError)) ||
+        ''
+      ).trim();
       const openItems = Number(relayStatus && (relayStatus.total_open ?? relayStatus.pending) || 0) || 0;
+      const pushedCount = Number(
+        (pushResult && (pushResult.acked || pushResult.sent || pushResult.last_sent)) ||
+        (relayStatus && (relayStatus.acked || relayStatus.sent || relayStatus.last_sent)) ||
+        0
+      ) || 0;
+
+      if (pushError) {
+        notifyUI('error', pushError, {
+          phase: 'push',
+          pushResult,
+          relayStatus,
+          pending: openItems,
+        });
+        return {
+          ok: false,
+          error: 'push_failed',
+          detail: pushError,
+          pushed: pushedCount > 0,
+          pushResult,
+          relayStatus,
+          pending: openItems,
+        };
+      }
 
       if (openItems > 0) {
-        localStorage.setItem(SYNC_KEY, nowIso());
         notifyUI(
           'partial',
-          `Envio parcial concluído. ${openItems} item(ns) seguem em segundo plano.`,
-          { phase: 'push', pushResult, pending: openItems }
+          `Envio parcial concluído. ${openItems} item(ns) seguem pendentes.`,
+          { phase: 'push', pushResult, relayStatus, pending: openItems }
         );
         return {
-          ok: true,
+          ok: false,
           partial: true,
-          pushed: !!(pushResult && pushResult.ackedDelta),
+          error: 'pending_outbox',
+          pushed: pushedCount > 0,
           pushResult,
+          relayStatus,
           pending: openItems,
         };
       }
@@ -455,22 +484,24 @@
       const result = await fetchSnapshot();
       if (result.not_modified) {
         localStorage.setItem(SYNC_KEY, nowIso());
-        notifyUI('success', '', { phase: 'push+pull', pushResult, not_modified: true });
+        notifyUI('success', '', { phase: 'push+pull', pushResult, relayStatus, not_modified: true });
         return {
           ok: true,
-          pushed: !!(pushResult && pushResult.ackedDelta),
+          pushed: pushedCount > 0,
           pushResult,
+          relayStatus,
           not_modified: true,
         };
       }
 
       const applied = await applySnapshot(result.payload.snapshot);
       localStorage.setItem(SYNC_KEY, nowIso());
-      notifyUI('success', '', { phase: 'push+pull', pushResult, applied, source: result.source });
+      notifyUI('success', '', { phase: 'push+pull', pushResult, relayStatus, applied, source: result.source });
       return {
         ok: true,
-        pushed: !!(pushResult && pushResult.ackedDelta),
+        pushed: pushedCount > 0,
         pushResult,
+        relayStatus,
         applied,
         source: result.source,
       };
