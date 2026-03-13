@@ -1,11 +1,11 @@
-const ALLOWED_METHODS = 'GET, POST, OPTIONS';
+const ALLOWED_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
 const ALLOWED_HEADERS = [
   'Content-Type',
   'Accept',
   'Authorization',
-  'Origin',
   'If-None-Match',
   'If-Match',
+  'Origin',
   'X-Requested-With',
   'X-VSC-Tenant',
   'X-VSC-User',

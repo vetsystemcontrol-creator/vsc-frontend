@@ -48,65 +48,30 @@ function getTenant(request) {
   ).slice(0, 64);
 }
 
-function r2Key(tenant, atendimento_id, attachment_id) {
-  return `attachments/${tenant}/${atendimento_id}/${attachment_id}`;
-}
+async function findObjectByAttachmentId(bucket, attachment_id, preferredTenant = '', preferredAtendimentoId = '') {
+  const candidates = [];
+  if (preferredTenant && preferredAtendimentoId) candidates.push(`attachments/${preferredTenant}/${preferredAtendimentoId}/${attachment_id}`);
+  if (preferredTenant) candidates.push(`attachments/${preferredTenant}/`);
+  candidates.push('attachments/');
 
-function normalizeTenant(value) {
-  return String(value || '').trim().slice(0, 64);
-}
-
-async function findKeyByAttachmentId(bucket, { tenant = '', atendimento_id = '', attachment_id = '' } = {}) {
-  const safeAttachmentId = String(attachment_id || '').trim();
-  if (!safeAttachmentId) return null;
-
-  const tenantPrefix = normalizeTenant(tenant);
-  const atendimentoPrefix = String(atendimento_id || '').trim();
-  const prefixes = [];
-
-  if (tenantPrefix && atendimentoPrefix) prefixes.push(`attachments/${tenantPrefix}/${atendimentoPrefix}/`);
-  if (tenantPrefix) prefixes.push(`attachments/${tenantPrefix}/`);
-  prefixes.push('attachments/');
-
-  for (const prefix of prefixes) {
+  for (const prefix of candidates) {
     let cursor = undefined;
-    for (let safety = 0; safety < 50; safety += 1) {
-      const listed = await bucket.list({ prefix, limit: 1000, cursor });
-      const objects = Array.isArray(listed?.objects) ? listed.objects : [];
-      const hit = objects.find(obj => String(obj?.key || '').endsWith(`/${safeAttachmentId}`));
-      if (hit?.key) return hit.key;
-      if (!listed?.truncated || !listed?.cursor) break;
+    for (let guard = 0; guard < 20; guard++) {
+      const listed = await bucket.list({ prefix, cursor, limit: 1000 });
+      const found = (listed.objects || []).find(obj => String(obj.key || '').endsWith(`/${attachment_id}`));
+      if (found) {
+        const obj = await bucket.get(found.key);
+        return { key: found.key, obj };
+      }
+      if (!listed.truncated || !listed.cursor) break;
       cursor = listed.cursor;
     }
   }
   return null;
 }
 
-async function resolveDownloadObject(bucket, request, url) {
-  const requestedTenant = normalizeTenant(request.headers.get('X-VSC-Tenant') || url.searchParams.get('tenant') || '');
-  const atendimento_id = url.searchParams.get('atendimento_id') || '';
-  const attachment_id = url.searchParams.get('attachment_id') || '';
-  if (!attachment_id) return { error: 'attachment_id obrigatório', status: 400 };
-
-  const exactAttempts = [];
-  if (requestedTenant && atendimento_id) exactAttempts.push(r2Key(requestedTenant, atendimento_id, attachment_id));
-  if (!requestedTenant && atendimento_id) exactAttempts.push(r2Key('tenant-default', atendimento_id, attachment_id));
-
-  for (const key of exactAttempts) {
-    const obj = await bucket.get(key);
-    if (obj) return { key, obj };
-  }
-
-  const discoveredKey = await findKeyByAttachmentId(bucket, {
-    tenant: requestedTenant,
-    atendimento_id,
-    attachment_id,
-  });
-  if (!discoveredKey) return { error: 'not_found', status: 404 };
-
-  const obj = await bucket.get(discoveredKey);
-  if (!obj) return { error: 'not_found', status: 404 };
-  return { key: discoveredKey, obj };
+function r2Key(tenant, atendimento_id, attachment_id) {
+  return `attachments/${tenant}/${atendimento_id}/${attachment_id}`;
 }
 
 async function handleUpload(request, env) {
@@ -155,21 +120,37 @@ async function handleDownload(request, env, url) {
   const bucket = getBucket(env);
   if (!bucket) return json({ ok: false, error: 'r2_not_configured' }, 501, request);
 
-  const resolved = await resolveDownloadObject(bucket, request, url);
-  if (resolved?.error) return json({ ok: false, error: resolved.error }, resolved.status || 404, request);
+  const tenant = getTenant(request);
+  const atendimento_id = url.searchParams.get('atendimento_id') || '';
+  const attachment_id = url.searchParams.get('attachment_id') || '';
+  const disposition = String(url.searchParams.get('disposition') || 'attachment').toLowerCase() === 'inline' ? 'inline' : 'attachment';
 
-  const { key, obj } = resolved;
+  if (!attachment_id) {
+    return json({ ok: false, error: 'attachment_id obrigatório' }, 400, request);
+  }
+
+  let key = '';
+  let obj = null;
+  if (atendimento_id) {
+    key = r2Key(tenant, atendimento_id, attachment_id);
+    obj = await bucket.get(key);
+  }
+  if (!obj) {
+    const found = await findObjectByAttachmentId(bucket, attachment_id, tenant, atendimento_id);
+    if (found) {
+      key = found.key;
+      obj = found.obj;
+    }
+  }
+  if (!obj) return json({ ok: false, error: 'not_found' }, 404, request);
+
   const meta = obj.customMetadata || {};
-  const disposition = String(url.searchParams.get('disposition') || 'attachment').toLowerCase() === 'inline'
-    ? 'inline'
-    : 'attachment';
-  const safeFilename = String(meta.filename || key.split('/').pop() || 'arquivo').replace(/[\r\n"]/g, '_');
+  const safeName = String(meta.filename || attachment_id).replace(/[\r\n"]/g, '_');
   const headers = new Headers({
     ...corsHeaders(request),
     'content-type': meta.mime_type || 'application/octet-stream',
-    'content-disposition': `${disposition}; filename="${safeFilename}"`,
+    'content-disposition': `${disposition}; filename="${safeName}"`,
     'cache-control': disposition === 'inline' ? 'private, no-store' : 'private, max-age=3600',
-    'x-content-type-options': 'nosniff',
   });
 
   return new Response(obj.body, { status: 200, headers });

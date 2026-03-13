@@ -17,7 +17,6 @@ function optionsHeaders(request) {
     'Access-Control-Allow-Headers':
       'Content-Type, Accept, Authorization, If-None-Match, If-Match, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token, X-VSC-Client-Session',
     'Access-Control-Expose-Headers': 'Content-Type, Content-Length, ETag, X-VSC-State-Revision',
-    'Access-Control-Allow-Credentials': 'true',
     'Access-Control-Max-Age': '86400',
     'cache-control': 'no-store',
     Vary: 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',

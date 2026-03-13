@@ -3,23 +3,6 @@ const JSON_HEADERS = {
   'cache-control': 'no-store',
 };
 
-const ACCESS_CONTROL_ALLOW_HEADERS = [
-  'Content-Type',
-  'Accept',
-  'Authorization',
-  'If-None-Match',
-  'If-Match',
-  'X-Requested-With',
-  'X-VSC-Tenant',
-  'X-VSC-User',
-  'X-VSC-Token',
-  'X-VSC-Client-Session',
-].join(', ');
-
-const ACCESS_CONTROL_EXPOSE_HEADERS = 'Content-Type, Content-Length, ETag, X-VSC-State-Revision';
-const ACCESS_CONTROL_ALLOW_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
-const ACCESS_CONTROL_VARY = 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers';
-
 const STORE_NAME_MAP = Object.freeze({
   produtos: 'produtos_master',
   produtos_master: 'produtos_master',
@@ -86,20 +69,23 @@ const SNAPSHOT_IMPORT_ALLOWED_STORES = Array.from(new Set(Object.values(STORE_NA
   .filter((store) => !SNAPSHOT_IMPORT_EXCLUDED_STORES.has(store));
 
 
-function corsHeaders(request, methods = ACCESS_CONTROL_ALLOW_METHODS) {
-  const origin = request?.headers?.get('Origin') || '';
-  let allowOrigin = '*';
-  if (origin && /^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin)) allowOrigin = origin;
-  else if (origin && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) allowOrigin = origin;
+function corsHeaders(request) {
+  const origin = String(request?.headers?.get('Origin') || '').trim();
+  const explicitOrigin = (
+    /^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin) ||
+    /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)
+  ) ? origin : '';
+  const allowOrigin = explicitOrigin || '*';
   const headers = {
     'Access-Control-Allow-Origin': allowOrigin,
-    'Access-Control-Allow-Methods': methods,
-    'Access-Control-Allow-Headers': ACCESS_CONTROL_ALLOW_HEADERS,
-    'Access-Control-Expose-Headers': ACCESS_CONTROL_EXPOSE_HEADERS,
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization, If-None-Match, If-Match, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token, X-VSC-Client-Session',
+    'Access-Control-Expose-Headers': 'Content-Type, Content-Length, ETag, X-VSC-State-Revision',
     'Access-Control-Max-Age': '86400',
-    'Vary': ACCESS_CONTROL_VARY,
+    'Cache-Control': 'no-store',
+    'Vary': 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',
   };
-  if (allowOrigin !== '*') headers['Access-Control-Allow-Credentials'] = 'true';
+  if (explicitOrigin) headers['Access-Control-Allow-Credentials'] = 'true';
   return headers;
 }
 

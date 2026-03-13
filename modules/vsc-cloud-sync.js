@@ -124,27 +124,6 @@
     return Array.from(new Set(urls));
   }
 
-  function isRemoteSnapshotUrl(url) {
-    try {
-      const remoteBase = String(resolveRemoteBase() || '').replace(/\/+$/, '');
-      const currentOrigin = String(location.origin || '').replace(/\/+$/, '');
-      const candidate = String(url || '');
-      return !!remoteBase && remoteBase !== currentOrigin && candidate.startsWith(`${remoteBase}/`);
-    } catch (_) {
-      return false;
-    }
-  }
-
-  function isLocalFallbackSnapshotUrl(url) {
-    try {
-      const currentOrigin = String(location.origin || '').replace(/\/+$/, '');
-      const candidate = String(url || '');
-      return candidate.startsWith('/api/') || candidate.startsWith(`${currentOrigin}/api/`);
-    } catch (_) {
-      return false;
-    }
-  }
-
   function makeTimeoutController(timeoutMs) {
     const controller = new AbortController();
     const safeTimeout = Math.max(1, Number(timeoutMs) || 1);
@@ -164,7 +143,7 @@
   async function fetchWithTimeout(url, options, timeoutMs, label) {
     const wrapped = makeTimeoutController(timeoutMs);
     try {
-      return await fetch(url, { ...options, signal: wrapped.controller.signal });
+      return await fetch(url, { credentials: 'include', ...options, signal: wrapped.controller.signal });
     } catch (err) {
       const name = err && err.name ? String(err.name) : '';
       if (name === 'AbortError' || String(err || '').includes('timeout_')) {
@@ -279,7 +258,6 @@
     let lastErr = null;
     let best = null;
     let saw304 = false;
-    let remoteFailure = null;
 
     for (const url of urls) {
       try {
@@ -313,15 +291,10 @@
         }
       } catch (err) {
         lastErr = err;
-        if (!remoteFailure && isRemoteSnapshotUrl(url)) remoteFailure = err;
         try {
           console.warn('[VSC_SYNC] snapshot falhou', { url, error: String(err && (err.message || err) || err) });
         } catch (_) {}
       }
-    }
-
-    if (remoteFailure && best && isLocalFallbackSnapshotUrl(best.url)) {
-      throw remoteFailure;
     }
 
     if (best && best.body) {
@@ -337,9 +310,6 @@
     }
 
     if ((best && best.not_modified) || saw304) {
-      if (remoteFailure && best && isLocalFallbackSnapshotUrl(best.url)) {
-        throw remoteFailure;
-      }
       return { ok: true, payload: null, source: best && best.url || null, not_modified: true };
     }
 
@@ -442,16 +412,6 @@
     return relay;
   }
 
-  function buildPushFailure(pushResult, relayStatus) {
-    const relayError = relayStatus && (relayStatus.lastError || relayStatus.last_error);
-    const resultError = pushResult && (pushResult.error || pushResult.lastError || pushResult.last_error);
-    const pending = Number(relayStatus && (relayStatus.total_open ?? relayStatus.pending) || 0) || 0;
-    if (relayError) return String(relayError);
-    if (resultError) return String(resultError);
-    if (pending > 0) return `pending_${pending}`;
-    return '';
-  }
-
   async function manualSync() {
     if (isSyncing) return { ok: false, error: 'sync_in_progress' };
     if (!navigator.onLine) {
@@ -475,18 +435,32 @@
 
       const relayStatus = relay && typeof relay.status === 'function' ? relay.status() : null;
       const openItems = Number(relayStatus && (relayStatus.total_open ?? relayStatus.pending) || 0) || 0;
-      const pushFailure = buildPushFailure(pushResult, relayStatus);
+      const relayLastError = relayStatus && (relayStatus.lastError || relayStatus.last_error)
+        ? String(relayStatus.lastError || relayStatus.last_error)
+        : '';
+      const pushedAny = !!(
+        (pushResult && pushResult.result && pushResult.result.ackedDelta) ||
+        (pushResult && pushResult.ackedDelta) ||
+        (relayStatus && relayStatus.acked > 0)
+      );
 
-      if (pushFailure) {
-        const message = openItems > 0
-          ? `Falha ou envio parcial no push. ${openItems} item(ns) continuam pendentes.`
-          : 'Falha no push antes do pull.';
-        notifyUI('error', message, { phase: 'push', pushResult, relayStatus, pending: openItems, error: pushFailure });
+      if (relayLastError) {
+        throw new Error(`push_failed:${relayLastError}`);
+      }
+
+      if (openItems > 0) {
+        const error = `push_failed_pending_${openItems}`;
+        notifyUI('error', `Sincronização incompleta. ${openItems} item(ns) permaneceram pendentes.`, {
+          phase: 'push',
+          pushResult,
+          relayStatus,
+          pending: openItems,
+          error,
+        });
         return {
           ok: false,
           error: 'push_failed',
-          detail: pushFailure,
-          pushed: false,
+          pushed: pushedAny,
           pushResult,
           relayStatus,
           pending: openItems,
@@ -496,10 +470,10 @@
       const result = await fetchSnapshot();
       if (result.not_modified) {
         localStorage.setItem(SYNC_KEY, nowIso());
-        notifyUI('success', '', { phase: 'push+pull', pushResult, relayStatus, not_modified: true });
+        notifyUI('success', '', { phase: 'push+pull', pushResult, not_modified: true });
         return {
           ok: true,
-          pushed: true,
+          pushed: pushedAny,
           pushResult,
           relayStatus,
           not_modified: true,
@@ -508,10 +482,10 @@
 
       const applied = await applySnapshot(result.payload.snapshot);
       localStorage.setItem(SYNC_KEY, nowIso());
-      notifyUI('success', '', { phase: 'push+pull', pushResult, relayStatus, applied, source: result.source });
+      notifyUI('success', '', { phase: 'push+pull', pushResult, applied, source: result.source });
       return {
         ok: true,
-        pushed: true,
+        pushed: pushedAny,
         pushResult,
         relayStatus,
         applied,

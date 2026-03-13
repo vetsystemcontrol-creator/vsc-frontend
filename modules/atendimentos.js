@@ -376,17 +376,15 @@
 
     // Sem dataUrl — busca do R2
     if(!att.synced_to_r2){ snack("Anexo sem dados locais e não sincronizado com o servidor.", "err"); return; }
-    const recordId = ATD.atendimento_id || ATD.id;
-    if(!recordId){ snack("ID do atendimento não encontrado.", "err"); return; }
+    if(!ATD.atendimento_id){ snack("ID do atendimento não encontrado.", "err"); return; }
 
     snack("Baixando anexo do servidor...", "ok");
     try {
       const base = (location.hostname==='127.0.0.1'||location.hostname==='localhost')
         ? 'https://app.vetsystemcontrol.com.br' : '';
-      const tenant = localStorage.getItem('vsc_tenant') || localStorage.getItem('VSC_TENANT') || '';
-      const url = `${base}/api/attachments?action=download&disposition=inline&atendimento_id=${encodeURIComponent(recordId)}&attachment_id=${encodeURIComponent(att.id)}${tenant ? `&tenant=${encodeURIComponent(tenant)}` : ''}`;
-      const headers = tenant ? { 'X-VSC-Tenant': tenant } : {};
-      const res = await fetch(url, { headers, credentials: 'include' });
+      const tenant = localStorage.getItem('vsc_tenant') || 'tenant-default';
+      const url = `${base}/api/attachments?action=download&atendimento_id=${encodeURIComponent(ATD.atendimento_id)}&attachment_id=${encodeURIComponent(att.id)}`;
+      const res = await fetch(url, { headers: { 'X-VSC-Tenant': tenant } });
       if(!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const dataUrl = await new Promise((resolve, reject) => {
@@ -600,101 +598,41 @@ async function loadEmpresaSnapshot(db){
     return Array.from(new Set(bases));
   }
 
-
-  async function openPrintDB(){
-    return await new Promise((resolve, reject) => {
-      const req = indexedDB.open(window.VSC_DB_NAME || 'vsc_db');
-      req.onerror = () => reject(req.error);
-      req.onsuccess = () => resolve(req.result);
-    });
-  }
-
-  async function tryGetAttachmentFromQueue(atendimentoId, attachmentId){
-    if(!attachmentId) return "";
-    let db;
+  function getKnownPrintTenants(){
+    const out = [];
     try{
-      db = await openPrintDB();
-      if(!db.objectStoreNames.contains('attachments_queue')) return "";
-      const tx = db.transaction('attachments_queue', 'readonly');
-      const st = tx.objectStore('attachments_queue');
-      if(atendimentoId){
-        const exact = await new Promise((resolve) => {
-          const r = st.get(`att_${String(atendimentoId)}_${String(attachmentId)}`);
-          r.onsuccess = () => resolve(r.result || null);
-          r.onerror = () => resolve(null);
-        });
-        const data = String(exact?.data_base64 || exact?.dataUrl || '');
-        if(data) return data;
+      const raw = [
+        localStorage.getItem("vsc_tenant"),
+        localStorage.getItem("VSC_TENANT"),
+        sessionStorage.getItem("vsc_tenant"),
+        sessionStorage.getItem("VSC_TENANT")
+      ].filter(Boolean);
+      raw.forEach(v => out.push(String(v).trim()));
+      const ej = localStorage.getItem("vsc_empresa_v1") || localStorage.getItem("VSC_EMPRESA_V1") || "";
+      if(ej){
+        const e = JSON.parse(ej);
+        [e.tenant, e.tenant_id, e.slug].filter(Boolean).forEach(v => out.push(String(v).trim()));
       }
-      const all = await new Promise((resolve) => {
-        const r = st.getAll();
-        r.onsuccess = () => resolve(r.result || []);
-        r.onerror = () => resolve([]);
-      });
-      const hit = (all || []).find(item => String(item?.attachment_id || '') === String(attachmentId));
-      return String(hit?.data_base64 || hit?.dataUrl || '');
-    }catch(_){
-      return "";
-    }finally{
-      try{ if(db) db.close(); }catch(_){ }
-    }
+    }catch(_){ }
+    out.push("tenant-default");
+    return Array.from(new Set(out.filter(Boolean)));
   }
 
-  async function tryGetAttachmentFromLocalRecords(attachmentId){
-    if(!attachmentId) return "";
-    let db;
-    try{
-      db = await openPrintDB();
-      if(!db.objectStoreNames.contains('atendimentos_master')) return "";
-      const tx = db.transaction('atendimentos_master', 'readonly');
-      const st = tx.objectStore('atendimentos_master');
-      const all = await new Promise((resolve) => {
-        const r = st.getAll();
-        r.onsuccess = () => resolve(r.result || []);
-        r.onerror = () => resolve([]);
-      });
-      for(const rec of (all || [])){
-        const hit = (Array.isArray(rec?.attachments) ? rec.attachments : []).find(a => String(a?.id || '') === String(attachmentId) && a?.dataUrl);
-        if(hit?.dataUrl) return String(hit.dataUrl);
-      }
-      return "";
-    }catch(_){
-      return "";
-    }finally{
-      try{ if(db) db.close(); }catch(_){ }
-    }
-  }
-
-  function getCandidateTenants(){
-    const out = new Set();
-    try{
-      const vals = [
-        localStorage.getItem('vsc_tenant'),
-        localStorage.getItem('VSC_TENANT'),
-        window.VSC_CLOUD_SYNC?.status?.()?.tenant,
-        'tenant-default'
-      ];
-      vals.forEach(v => { const s = String(v || '').trim(); if(s) out.add(s); });
-    }catch(_){ out.add('tenant-default'); }
-    return Array.from(out);
-  }
-
-  function buildAttachmentFetchUrls(att, atendimentoId){
-    const attId = att?.id || att?.attachment_id || att?.uuid || att?.key || "";
+  function buildAttachmentRequestCandidates(att, atendimentoId){
+    const attId = att && (att.id || att.attachment_id || att.uuid || att.key || att.file_id);
+    const ownerId = atendimentoId || att?.atendimento_id || att?.owner_id || "";
     if(!attId) return [];
-    const ids = Array.from(new Set([atendimentoId, att?.atendimento_id, att?.record_id].filter(Boolean).map(String)));
+    const paramsList = [];
+    if(ownerId) paramsList.push(`atendimento_id=${encodeURIComponent(String(ownerId))}&attachment_id=${encodeURIComponent(String(attId))}`);
+    paramsList.push(`attachment_id=${encodeURIComponent(String(attId))}`);
     const urls = [];
     for(const base of getAttachmentPrintBaseUrls()){
-      for(const tenant of getCandidateTenants()){
-        for(const aid of ids){
-          urls.push(`${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&atendimento_id=${encodeURIComponent(aid)}&attachment_id=${encodeURIComponent(String(attId))}`);
+      for(const qs of paramsList){
+        urls.push(`${base}/api/attachments?action=download&disposition=inline&${qs}`);
+        for(const tenant of getKnownPrintTenants()){
+          urls.push(`${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&${qs}`);
         }
-        urls.push(`${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&attachment_id=${encodeURIComponent(String(attId))}`);
       }
-      for(const aid of ids){
-        urls.push(`${base}/api/attachments?action=download&disposition=inline&atendimento_id=${encodeURIComponent(aid)}&attachment_id=${encodeURIComponent(String(attId))}`);
-      }
-      urls.push(`${base}/api/attachments?action=download&disposition=inline&attachment_id=${encodeURIComponent(String(attId))}`);
     }
     return Array.from(new Set(urls));
   }
@@ -710,52 +648,71 @@ async function loadEmpresaSnapshot(db){
 
   async function hydrateAttachmentsForPrint(atendimento){
     if(!atendimento || !Array.isArray(atendimento.attachments) || !atendimento.attachments.length) return atendimento;
+
     const atendimentoId = atendimento.atendimento_id || atendimento.id || "";
-    const hydrated = [];
+    const bases = getAttachmentPrintBaseUrls();
+    const normalized = [];
+
+    async function tryReadLocalAttachment(att){
+      if(att.dataUrl) return att.dataUrl;
+      try{
+        const db = await openDb();
+        const stores = [];
+        if(db.objectStoreNames.contains("attachments_queue")) stores.push("attachments_queue");
+        if(db.objectStoreNames.contains("atendimentos_master")) stores.push("atendimentos_master");
+        for(const st of stores){
+          try{
+            if(st === "attachments_queue"){
+              const rows = await idbGetAll(db, st).catch(()=>[]);
+              const hit = (rows || []).find(r => String(r.attachment_id || r.id || "") === String(att.id || att.attachment_id || ""));
+              const raw = hit && (hit.data_base64 || hit.dataUrl || hit.blob_data_url || hit.file_data_url || "");
+              if(raw) return String(raw);
+            }
+            if(st === "atendimentos_master"){
+              const rows = await idbGetAll(db, st).catch(()=>[]);
+              const owner = (rows || []).find(r => String(r.id||r.atendimento_id||"") === String(atendimentoId||""));
+              const embedded = owner && Array.isArray(owner.attachments) ? owner.attachments.find(a => String(a.id||a.attachment_id||"") === String(att.id||att.attachment_id||"")) : null;
+              const raw = embedded && (embedded.dataUrl || embedded.data_base64 || "");
+              if(raw) return String(raw);
+            }
+          }catch(_){ }
+        }
+      }catch(_){ }
+      return "";
+    }
 
     for(const src of atendimento.attachments){
       const att = src ? Object.assign({}, src) : src;
-      if(!att){ hydrated.push(att); continue; }
-      if(att.dataUrl){ hydrated.push(att); continue; }
+      if(!att){ normalized.push(att); continue; }
+      if(att.dataUrl){ normalized.push(att); continue; }
 
-      const localData = await tryGetAttachmentFromQueue(atendimentoId, att.id)
-        || await tryGetAttachmentFromLocalRecords(att.id);
-      if(localData){
-        att.dataUrl = String(localData);
-        hydrated.push(att);
+      const localUrl = await tryReadLocalAttachment(att);
+      if(localUrl){
+        att.dataUrl = localUrl;
+        normalized.push(att);
         continue;
       }
 
-      const possibleUrls = [
-        att.url,
-        att.download_url,
-        att.downloadUrl,
-        att.r2_url,
-        att.file_url,
-        att.src,
-        ...buildAttachmentFetchUrls(att, atendimentoId)
-      ].filter(Boolean);
-
       let done = false;
-      for(const rawUrl of possibleUrls){
+      for(const rawUrl of buildAttachmentRequestCandidates(att, atendimentoId)){
         try{
-          const res = await fetch(String(rawUrl), { credentials:'include' });
+          const res = await fetch(rawUrl, { credentials:"include", headers:getPrintAuthHeaders() });
           if(!res.ok) throw new Error(`HTTP ${res.status}`);
           const blob = await res.blob();
           att.dataUrl = await blobToDataUrl(blob);
-          att.mime = att.mime || blob.type || '';
+          att.mime = att.mime || att.mime_type || blob.type || "";
           done = true;
           break;
-        }catch(_err){}
+        }catch(_err){ }
       }
 
       if(!done){
-        console.warn('[PRINT][ATTACH] anexo não hidratado para impressão:', att.name || att.id || att);
+        console.warn("[PRINT][ATTACH] anexo não hidratado para impressão", att.name || att.id || att);
       }
-      hydrated.push(att);
+      normalized.push(att);
     }
 
-    atendimento.attachments = hydrated;
+    atendimento.attachments = normalized;
     return atendimento;
   }
 
@@ -877,8 +834,9 @@ function ensurePrintPreviewModal(){
   let currentName = "print-pack.pdf";
   let currentMode = "pdf";
 
-  function open(){ m.style.display = "flex"; }
+  function open(){ try{ m.inert = false; }catch(_){ } m.style.display = "flex"; }
   function close(){
+    try{ m.inert = true; }catch(_){ }
     m.style.display = "none";
     // revoga URL anterior para não vazar memória
     try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
@@ -895,11 +853,11 @@ function ensurePrintPreviewModal(){
   btnDl.addEventListener("click", async (e)=>{
     e.preventDefault();
     if(!currentUrl){
-      snack(currentMode === 'html' ? "Pré-visualização ainda não está pronta." : "PDF ainda não está pronto.", "warn");
+      snack(currentMode === "html" ? "Pré-visualização ainda não está pronta." : "PDF ainda não está pronto.", "warn");
       return;
     }
-    if(currentMode === 'html'){
-      snack("Use Imprimir e escolha 'Salvar como PDF' no navegador.", "warn");
+    if(currentMode === "html"){
+      snack("Use Imprimir e escolha 'Salvar como PDF'.", "warn");
       return;
     }
     const a = document.createElement("a");
@@ -912,21 +870,24 @@ function ensurePrintPreviewModal(){
 
   btnPrint.addEventListener("click", async (e)=>{
     e.preventDefault();
+    if(!frame || !frame.contentWindow){
+      snack("Pré-visualização ainda não está pronta.", "warn");
+      return;
+    }
     try{
-      const w = frame && frame.contentWindow;
-      if(!w) throw new Error('preview_not_ready');
-      if(w.__VSC_PRINT_READY__ && typeof w.__VSC_PRINT_READY__.then === 'function'){
+      const w = frame.contentWindow;
+      if(w.__VSC_PRINT_READY__ && typeof w.__VSC_PRINT_READY__.then === "function"){
         await w.__VSC_PRINT_READY__;
       }
-      if(typeof w.__VSC_DO_PRINT__ === 'function'){
+      if(typeof w.__VSC_DO_PRINT__ === "function"){
         await w.__VSC_DO_PRINT__();
       }else{
         w.focus();
         w.print();
       }
     }catch(err){
-      console.error('[PRINT][MODAL] falha ao imprimir preview:', err);
-      snack('Falha ao abrir o diálogo de impressão.', 'err');
+      console.error("[PRINT][BTN]", err);
+      snack("Falha ao abrir o diálogo de impressão.", "err");
     }
   });
 
@@ -952,9 +913,9 @@ function ensurePrintPreviewModal(){
       try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
       currentUrl = url;
       currentName = filename || "print-pack.pdf";
-      currentMode = 'pdf';
-      btnDl.textContent = 'Baixar PDF';
+      currentMode = "pdf";
       btnDl.disabled = false;
+      btnDl.style.opacity = "1";
       frame.src = url;
       frame.style.display = "block";
       loaderEl.style.display = "none";
@@ -962,15 +923,15 @@ function ensurePrintPreviewModal(){
     },
     setHtml(html, filename){
       try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
-      currentUrl = URL.createObjectURL(new Blob([String(html || '')], { type: 'text/html;charset=utf-8' }));
-      currentName = filename || 'relatorio-impressao.html';
-      currentMode = 'html';
-      btnDl.textContent = 'Baixar';
+      currentMode = "html";
+      currentName = filename || "relatorio-impressao.html";
       btnDl.disabled = true;
+      btnDl.style.opacity = ".55";
+      currentUrl = URL.createObjectURL(new Blob([String(html||"")], { type:"text/html;charset=utf-8" }));
       frame.src = currentUrl;
-      frame.style.display = 'block';
-      loaderEl.style.display = 'none';
-      errEl.style.display = 'none';
+      frame.style.display = "block";
+      loaderEl.style.display = "none";
+      errEl.style.display = "none";
     }
   };
 
@@ -981,21 +942,10 @@ function ensurePrintPreviewModal(){
 
 async function openPrintWindow(payload, docType){
   const doc = payload || {};
-  let html = openPrintWindowClient(payload, docType, { returnHtml: true });
-  try{
-    if(html && typeof html.then === 'function') html = await html;
-  }catch(e){
-    console.error('[PRINT][HTML] falha ao resolver html Promise:', e);
-  }
-  if(typeof html !== 'string') html = (html == null ? '' : String(html));
-  if(!html.trim()) throw new Error('PRINT_HTML_EMPTY');
-
   const ui = ensurePrintPreviewModal();
-  ui.setState('loading', 'Gerando pré-visualização local...');
-  ui.setHtml(html, `relatorio-${String((doc.atendimento && (doc.atendimento.numero || doc.atendimento.id || doc.atendimento.atendimento_id)) || 'atendimento')}.html`);
-  ui.setState('ready', 'Pré-visualização local pronta.');
+  ui.setState("loading", "Gerando pré-visualização local...");
+  return openPrintWindowClient(doc, docType, { openPreview:true });
 }
-
 
 // Fallback (modo offline / compatibilidade legada): impressão client-side (PDF.js + window.print())
 function openPrintWindowClient(payload, docType, opts){
@@ -1062,9 +1012,10 @@ function openPrintWindowClient(payload, docType, opts){
 ${institutionalCss}
 :root{--text:#0f172a;--muted:#64748b;--bd:#d8e1ec;--soft:#f8fbfd;--brand:#0f766e;--brand2:#0ea5e9;}
 body{font-family:'DM Sans',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--text);margin:0;background:#fff;}
-.page{width:min(190mm,920px);max-width:190mm;margin:0 auto;padding:16px 12px 30px;box-sizing:border-box;}
+.page{width:190mm;max-width:190mm;box-sizing:border-box;margin:0 auto;padding:8mm 6mm 12mm;}
+.sheet{width:100%;box-sizing:border-box;}
 .sheet{position:relative;}
-.sheet + .sheet{margin-top:14px;}
+.sheet + .sheet{margin-top:10px;}
 .sheet--attachments{padding-top:4px;}
 .small{font-size:11px;color:var(--muted);line-height:1.45;}
 .box{border:1px solid var(--bd);border-radius:14px;padding:12px 14px;margin:10px 0;background:#fff;}
@@ -1084,6 +1035,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 .pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
 .muted{color:var(--muted);}
 .att{margin:12px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:12px;break-inside:avoid;page-break-inside:avoid;}
+.attachments:empty{display:none;}
 .att-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:8px;}
 .att-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:#334155;}
 .att-kind{font-size:11px;color:var(--muted);font-weight:800;white-space:nowrap;}
@@ -1101,10 +1053,11 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   body{margin:0;}
   .page{max-width:none;padding:0;}
   .box,.att,.pdf-block,.att-media,tr,img,canvas{break-inside:avoid;page-break-inside:avoid;}
-  .pdf-pages img{break-inside:avoid;page-break-inside:avoid;break-after:page;page-break-after:always;}
-  .pdf-pages img:last-child{break-after:auto;page-break-after:auto;}
+  .pdf-pages img{break-inside:avoid;page-break-inside:avoid;display:block;width:100%;height:auto;margin:0 auto 10px;}
+  .pdf-pages img:last-child{margin-bottom:0;}
   .sheet{padding:0;}
   .sheet + .sheet{break-before:page;page-break-before:always;margin-top:0;}
+  .page{width:190mm;max-width:190mm;padding:0;}
   .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.5mm 10mm;font-size:9px;color:var(--muted);background:#fff;}
   .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:center;}
 }
@@ -1212,7 +1165,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
   const headerHtml = (window.VSCPrintTemplate && typeof window.VSCPrintTemplate.renderInstitutionalHeader === "function")
     ? window.VSCPrintTemplate.renderInstitutionalHeader({
-        systemLogoSrc: (location.origin + '/assets/brand/vsc-logo-horizontal.png'),
+        systemLogoSrc: location.origin + '/assets/brand/vsc-logo-horizontal.png',
         systemLogoFallback: '<div class="kado-fallback-system">Vet System Control</div>',
         companyLogoHtml: logoA
           ? `<img class="kado-company-logo" src="${logoA}" alt="Logo da empresa"/>`
@@ -1531,8 +1484,13 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         }
 
         async function preparePrintDocument(){
+          // 0) Renderizar imagens via canvas (redimensiona grandes)
           try{ await renderCanvasImages(); } catch(e){}
+
+          // 1) Renderizar PDFs (se houver) e inserir como imagens (efeito "escaneado")
           try{ await renderAllPdfs(); } catch(e){}
+
+          // 1b) Renderizar QR PIX (se houver)
           try{ renderPixQr(); } catch(e){}
 
           async function waitForImages(timeoutMs){
@@ -1548,10 +1506,11 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
                 function bad(){ if(done) return; done=true; clearTimeout(to); resolve(false); }
                 img.addEventListener('load', ok, { once:true });
                 img.addEventListener('error', bad, { once:true });
-                try{ if(typeof img.decode === 'function'){ img.decode().then(ok).catch(function(){}); } }catch(_){}
+                try{ if(typeof img.decode === 'function'){ img.decode().then(ok).catch(function(){}); } }catch(_){ }
               });
             }
-            try{ await Promise.all(imgs.map(one)); return true; }catch(_e){ return false; }
+            try{ await Promise.all(imgs.map(one)); }catch(_){ }
+            return true;
           }
 
           try{
@@ -1581,18 +1540,26 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           await window.__VSC_PRINT_READY__;
           window.focus();
           window.print();
-        };
-      })();
+        };      })();
     </script>
   </body></html>`;
 
   if(opts.returnHtml) return html;
 
-  const ui = ensurePrintPreviewModal();
-  ui.setState('loading', 'Gerando pré-visualização local...');
-  ui.setHtml(html, `relatorio-${String(atd.numero || atd.atendimento_id || 'atendimento')}.html`);
-  ui.setState('ready', 'Pré-visualização local pronta.');
-  return;
+  if(opts.openPreview){
+    const ui = ensurePrintPreviewModal();
+    ui.setState("loading", "Gerando pré-visualização local...");
+    ui.setHtml(html, `relatorio-${String(atd.numero || atd.atendimento_id || "atendimento")}.html`);
+    ui.setState("ready", "Pré-visualização local pronta.");
+    return;
+  }
+
+  const w = window.open("", "_blank");
+  if(!w){ snack("Pop-up bloqueado. Libere pop-ups para imprimir.", "warn"); return; }
+
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
 }
 
   async function imprimirAtendimento(db, docType){
@@ -1616,19 +1583,13 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       return;
     }
     m.classList.remove("hidden");
-    m.removeAttribute('inert');
     m.setAttribute("aria-hidden","false");
   }
 
   function closePrintModal(){
     const m = $("vscPrintModal");
     if(!m) return;
-    try{
-      const ae = document.activeElement;
-      if(ae && m.contains(ae) && typeof ae.blur === 'function') ae.blur();
-    }catch(_){ }
     m.classList.add("hidden");
-    m.setAttribute('inert','');
     m.setAttribute("aria-hidden","true");
   }
 

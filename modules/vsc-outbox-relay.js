@@ -141,7 +141,7 @@
       try { controller.abort(); } catch (_) {}
     }, Math.max(1, Number(timeoutMs) || 1));
     try {
-      return await fetch(url, { ...options, signal: controller.signal });
+      return await fetch(url, { credentials: 'include', ...options, signal: controller.signal });
     } catch (err) {
       if (String(err && err.name || '') === 'AbortError') {
         throw new Error(`network_timeout_${timeoutMs}ms`);
@@ -289,6 +289,25 @@
     // Fallback: scan (slower but safe)
     const all = await _reqToPromise(store.getAll());
     return (all || []).filter(e => e && e.status === 'PENDING').length;
+  }
+
+
+  async function _refreshPendingStats(db = null) {
+    let localDb = db;
+    let openedHere = false;
+    try {
+      if (!localDb) {
+        localDb = await _openDB();
+        openedHere = true;
+      }
+      const pending = await _countPending(localDb);
+      _stats.pending = Number(pending || 0) || 0;
+      return _stats.pending;
+    } finally {
+      if (openedHere && localDb) {
+        try { localDb.close(); } catch (_) {}
+      }
+    }
   }
 
   async function _readPendingBatch(db, limit) {
@@ -631,9 +650,9 @@
     async syncNow() {
       // Forced drain until idle once (useful for manual button)
       _enabled = true;
-      await _drainLoop({ force: true });
-      await _refreshPendingStats();
-      return this.status();
+      const result = await _drainLoop({ force: true });
+      try { await _refreshPendingStats(); } catch (_) {}
+      return { ...this.status(), result };
     },
 
     // Compatibilidade retroativa: módulos legados ainda chamam relay.kick()
