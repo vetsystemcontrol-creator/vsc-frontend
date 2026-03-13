@@ -52,6 +52,63 @@ function r2Key(tenant, atendimento_id, attachment_id) {
   return `attachments/${tenant}/${atendimento_id}/${attachment_id}`;
 }
 
+function normalizeTenant(value) {
+  return String(value || '').trim().slice(0, 64);
+}
+
+async function findKeyByAttachmentId(bucket, { tenant = '', atendimento_id = '', attachment_id = '' } = {}) {
+  const safeAttachmentId = String(attachment_id || '').trim();
+  if (!safeAttachmentId) return null;
+
+  const tenantPrefix = normalizeTenant(tenant);
+  const atendimentoPrefix = String(atendimento_id || '').trim();
+  const prefixes = [];
+
+  if (tenantPrefix && atendimentoPrefix) prefixes.push(`attachments/${tenantPrefix}/${atendimentoPrefix}/`);
+  if (tenantPrefix) prefixes.push(`attachments/${tenantPrefix}/`);
+  prefixes.push('attachments/');
+
+  for (const prefix of prefixes) {
+    let cursor = undefined;
+    for (let safety = 0; safety < 50; safety += 1) {
+      const listed = await bucket.list({ prefix, limit: 1000, cursor });
+      const objects = Array.isArray(listed?.objects) ? listed.objects : [];
+      const hit = objects.find(obj => String(obj?.key || '').endsWith(`/${safeAttachmentId}`));
+      if (hit?.key) return hit.key;
+      if (!listed?.truncated || !listed?.cursor) break;
+      cursor = listed.cursor;
+    }
+  }
+  return null;
+}
+
+async function resolveDownloadObject(bucket, request, url) {
+  const requestedTenant = normalizeTenant(request.headers.get('X-VSC-Tenant') || url.searchParams.get('tenant') || '');
+  const atendimento_id = url.searchParams.get('atendimento_id') || '';
+  const attachment_id = url.searchParams.get('attachment_id') || '';
+  if (!attachment_id) return { error: 'attachment_id obrigatório', status: 400 };
+
+  const exactAttempts = [];
+  if (requestedTenant && atendimento_id) exactAttempts.push(r2Key(requestedTenant, atendimento_id, attachment_id));
+  if (!requestedTenant && atendimento_id) exactAttempts.push(r2Key('tenant-default', atendimento_id, attachment_id));
+
+  for (const key of exactAttempts) {
+    const obj = await bucket.get(key);
+    if (obj) return { key, obj };
+  }
+
+  const discoveredKey = await findKeyByAttachmentId(bucket, {
+    tenant: requestedTenant,
+    atendimento_id,
+    attachment_id,
+  });
+  if (!discoveredKey) return { error: 'not_found', status: 404 };
+
+  const obj = await bucket.get(discoveredKey);
+  if (!obj) return { error: 'not_found', status: 404 };
+  return { key: discoveredKey, obj };
+}
+
 async function handleUpload(request, env) {
   const bucket = getBucket(env);
   if (!bucket) return json({ ok: false, error: 'r2_not_configured' }, 501, request);
@@ -98,24 +155,21 @@ async function handleDownload(request, env, url) {
   const bucket = getBucket(env);
   if (!bucket) return json({ ok: false, error: 'r2_not_configured' }, 501, request);
 
-  const tenant = getTenant(request);
-  const atendimento_id = url.searchParams.get('atendimento_id');
-  const attachment_id = url.searchParams.get('attachment_id');
+  const resolved = await resolveDownloadObject(bucket, request, url);
+  if (resolved?.error) return json({ ok: false, error: resolved.error }, resolved.status || 404, request);
 
-  if (!atendimento_id || !attachment_id) {
-    return json({ ok: false, error: 'atendimento_id e attachment_id obrigatórios' }, 400, request);
-  }
-
-  const key = r2Key(tenant, atendimento_id, attachment_id);
-  const obj = await bucket.get(key);
-  if (!obj) return json({ ok: false, error: 'not_found' }, 404, request);
-
+  const { key, obj } = resolved;
   const meta = obj.customMetadata || {};
+  const disposition = String(url.searchParams.get('disposition') || 'attachment').toLowerCase() === 'inline'
+    ? 'inline'
+    : 'attachment';
+  const safeFilename = String(meta.filename || key.split('/').pop() || 'arquivo').replace(/[\r\n"]/g, '_');
   const headers = new Headers({
     ...corsHeaders(request),
     'content-type': meta.mime_type || 'application/octet-stream',
-    'content-disposition': `attachment; filename="${meta.filename || attachment_id}"`,
-    'cache-control': 'private, max-age=3600',
+    'content-disposition': `${disposition}; filename="${safeFilename}"`,
+    'cache-control': disposition === 'inline' ? 'private, no-store' : 'private, max-age=3600',
+    'x-content-type-options': 'nosniff',
   });
 
   return new Response(obj.body, { status: 200, headers });
