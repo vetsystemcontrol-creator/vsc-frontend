@@ -1064,7 +1064,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 .sheetContent{position:relative; z-index:1;}
 .footer{display:none;}
 @media print{
-  @page{ size:A4; margin:10mm 10mm 22mm 10mm; }
+  @page{ size:A4; margin:10mm 10mm 18mm 10mm; }
   .no-print{display:none !important;}
   body{margin:0;}
   .page{max-width:none;padding:0;}
@@ -1073,8 +1073,8 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   .pdf-pages img:last-child{break-after:auto;page-break-after:auto;}
   .sheet{padding:0;}
   .sheet + .sheet{break-before:page;page-break-before:always;margin-top:0;}
-  .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.5mm 10mm;font-size:9px;color:var(--muted);background:#fff;}
-  .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:center;}
+  .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.4mm 10mm 1.8mm;font-size:9px;color:var(--muted);background:#fff;}
+  .footer .row{display:flex;justify-content:flex-end;gap:10px;align-items:center;min-height:10px;}
 }
   `;
 
@@ -1358,12 +1358,8 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       ` : ``}
     </div>
 
-    <div class="footer">
+    <div class="footer" aria-hidden="true">
       <div class="row">
-        <div>
-          <div><b>${esc(DOC_SPEC)}</b> • ${esc(DOC_LABEL)} • Emitido em ${esc(new Date(R.gerado_em||Date.now()).toLocaleString("pt-BR"))}</div>
-          <div>Hash: <span id="docHash">calculando…</span></div>
-        </div>
         <div class="pnum"></div>
       </div>
     </div>
@@ -1553,9 +1549,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
               gerado_em: R.gerado_em || "",
               atendimento_id: atd.id || atd.atendimento_id || ""
             })};
-            var h = await sha256Hex(JSON.stringify(audit));
-            var el = document.getElementById('docHash');
-            if(el) el.textContent = h ? h : '(indisponível neste navegador)';
+            await sha256Hex(JSON.stringify(audit));
           }catch(_e){}
 
           // 4) Esperar fontes (evita glitches de render) e dar 2 frames para layout estabilizar
