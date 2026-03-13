@@ -4,6 +4,8 @@ const ALLOWED_HEADERS = [
   'Accept',
   'Authorization',
   'Origin',
+  'If-None-Match',
+  'If-Match',
   'X-Requested-With',
   'X-VSC-Tenant',
   'X-VSC-User',
@@ -22,7 +24,7 @@ function resolveCorsOrigin(request) {
 
 function buildCorsHeaders(request) {
   const allowOrigin = resolveCorsOrigin(request);
-  return {
+  const headers = {
     'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Methods': ALLOWED_METHODS,
     'Access-Control-Allow-Headers': ALLOWED_HEADERS,
@@ -30,6 +32,8 @@ function buildCorsHeaders(request) {
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',
   };
+  if (allowOrigin !== '*') headers['Access-Control-Allow-Credentials'] = 'true';
+  return headers;
 }
 
 function mergeHeaders(target, source) {

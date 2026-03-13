@@ -124,6 +124,27 @@
     return Array.from(new Set(urls));
   }
 
+  function isRemoteSnapshotUrl(url) {
+    try {
+      const remoteBase = String(resolveRemoteBase() || '').replace(/\/+$/, '');
+      const currentOrigin = String(location.origin || '').replace(/\/+$/, '');
+      const candidate = String(url || '');
+      return !!remoteBase && remoteBase !== currentOrigin && candidate.startsWith(`${remoteBase}/`);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isLocalFallbackSnapshotUrl(url) {
+    try {
+      const currentOrigin = String(location.origin || '').replace(/\/+$/, '');
+      const candidate = String(url || '');
+      return candidate.startsWith('/api/') || candidate.startsWith(`${currentOrigin}/api/`);
+    } catch (_) {
+      return false;
+    }
+  }
+
   function makeTimeoutController(timeoutMs) {
     const controller = new AbortController();
     const safeTimeout = Math.max(1, Number(timeoutMs) || 1);
@@ -258,6 +279,7 @@
     let lastErr = null;
     let best = null;
     let saw304 = false;
+    let remoteFailure = null;
 
     for (const url of urls) {
       try {
@@ -291,10 +313,15 @@
         }
       } catch (err) {
         lastErr = err;
+        if (!remoteFailure && isRemoteSnapshotUrl(url)) remoteFailure = err;
         try {
           console.warn('[VSC_SYNC] snapshot falhou', { url, error: String(err && (err.message || err) || err) });
         } catch (_) {}
       }
+    }
+
+    if (remoteFailure && best && isLocalFallbackSnapshotUrl(best.url)) {
+      throw remoteFailure;
     }
 
     if (best && best.body) {
@@ -310,6 +337,9 @@
     }
 
     if ((best && best.not_modified) || saw304) {
+      if (remoteFailure && best && isLocalFallbackSnapshotUrl(best.url)) {
+        throw remoteFailure;
+      }
       return { ok: true, payload: null, source: best && best.url || null, not_modified: true };
     }
 
@@ -412,6 +442,16 @@
     return relay;
   }
 
+  function buildPushFailure(pushResult, relayStatus) {
+    const relayError = relayStatus && (relayStatus.lastError || relayStatus.last_error);
+    const resultError = pushResult && (pushResult.error || pushResult.lastError || pushResult.last_error);
+    const pending = Number(relayStatus && (relayStatus.total_open ?? relayStatus.pending) || 0) || 0;
+    if (relayError) return String(relayError);
+    if (resultError) return String(resultError);
+    if (pending > 0) return `pending_${pending}`;
+    return '';
+  }
+
   async function manualSync() {
     if (isSyncing) return { ok: false, error: 'sync_in_progress' };
     if (!navigator.onLine) {
@@ -434,47 +474,19 @@
       }
 
       const relayStatus = relay && typeof relay.status === 'function' ? relay.status() : null;
-      const pushError = String(
-        (pushResult && (pushResult.last_error || pushResult.lastError || pushResult.error)) ||
-        (relayStatus && (relayStatus.last_error || relayStatus.lastError)) ||
-        ''
-      ).trim();
       const openItems = Number(relayStatus && (relayStatus.total_open ?? relayStatus.pending) || 0) || 0;
-      const pushedCount = Number(
-        (pushResult && (pushResult.acked || pushResult.sent || pushResult.last_sent)) ||
-        (relayStatus && (relayStatus.acked || relayStatus.sent || relayStatus.last_sent)) ||
-        0
-      ) || 0;
+      const pushFailure = buildPushFailure(pushResult, relayStatus);
 
-      if (pushError) {
-        notifyUI('error', pushError, {
-          phase: 'push',
-          pushResult,
-          relayStatus,
-          pending: openItems,
-        });
+      if (pushFailure) {
+        const message = openItems > 0
+          ? `Falha ou envio parcial no push. ${openItems} item(ns) continuam pendentes.`
+          : 'Falha no push antes do pull.';
+        notifyUI('error', message, { phase: 'push', pushResult, relayStatus, pending: openItems, error: pushFailure });
         return {
           ok: false,
           error: 'push_failed',
-          detail: pushError,
-          pushed: pushedCount > 0,
-          pushResult,
-          relayStatus,
-          pending: openItems,
-        };
-      }
-
-      if (openItems > 0) {
-        notifyUI(
-          'partial',
-          `Envio parcial concluído. ${openItems} item(ns) seguem pendentes.`,
-          { phase: 'push', pushResult, relayStatus, pending: openItems }
-        );
-        return {
-          ok: false,
-          partial: true,
-          error: 'pending_outbox',
-          pushed: pushedCount > 0,
+          detail: pushFailure,
+          pushed: false,
           pushResult,
           relayStatus,
           pending: openItems,
@@ -487,7 +499,7 @@
         notifyUI('success', '', { phase: 'push+pull', pushResult, relayStatus, not_modified: true });
         return {
           ok: true,
-          pushed: pushedCount > 0,
+          pushed: true,
           pushResult,
           relayStatus,
           not_modified: true,
@@ -499,7 +511,7 @@
       notifyUI('success', '', { phase: 'push+pull', pushResult, relayStatus, applied, source: result.source });
       return {
         ok: true,
-        pushed: pushedCount > 0,
+        pushed: true,
         pushResult,
         relayStatus,
         applied,

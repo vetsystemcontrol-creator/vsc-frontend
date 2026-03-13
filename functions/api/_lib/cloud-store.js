@@ -16,7 +16,10 @@ const ALLOWED_ORIGIN_PATTERNS = [
 
 const ACCESS_CONTROL_ALLOW_HEADERS = [
   'Content-Type',
+  'Accept',
   'Authorization',
+  'If-None-Match',
+  'If-Match',
   'X-Requested-With',
   'X-VSC-Tenant',
   'X-VSC-User',
@@ -37,8 +40,9 @@ function resolveOrigin(request) {
 }
 
 export function corsHeaders(request, methods = ACCESS_CONTROL_ALLOW_METHODS) {
-  return {
-    'Access-Control-Allow-Origin': resolveOrigin(request),
+  const allowOrigin = resolveOrigin(request);
+  const headers = {
+    'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Methods': methods,
     'Access-Control-Allow-Headers': ACCESS_CONTROL_ALLOW_HEADERS,
     'Access-Control-Expose-Headers': ACCESS_CONTROL_EXPOSE_HEADERS,
@@ -46,6 +50,8 @@ export function corsHeaders(request, methods = ACCESS_CONTROL_ALLOW_METHODS) {
     'Cache-Control': 'no-store',
     Vary: DEFAULT_VARY,
   };
+  if (allowOrigin !== '*') headers['Access-Control-Allow-Credentials'] = 'true';
+  return headers;
 }
 
 async function sha256HexFromString(str) {

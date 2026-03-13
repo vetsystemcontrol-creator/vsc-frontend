@@ -7,13 +7,15 @@ function resolveOrigin(request) {
 }
 
 function applyCors(request, headers, methods = 'GET, POST, PUT, PATCH, DELETE, OPTIONS') {
-  headers.set('Access-Control-Allow-Origin', resolveOrigin(request));
+  const allowOrigin = resolveOrigin(request);
+  headers.set('Access-Control-Allow-Origin', allowOrigin);
   headers.set('Access-Control-Allow-Methods', methods);
   headers.set(
     'Access-Control-Allow-Headers',
-    'Content-Type, Authorization, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token, X-VSC-Client-Session'
+    'Content-Type, Accept, Authorization, If-None-Match, If-Match, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token, X-VSC-Client-Session'
   );
   headers.set('Access-Control-Expose-Headers', 'Content-Type, Content-Length, ETag, X-VSC-State-Revision');
+  if (allowOrigin !== '*') headers.set('Access-Control-Allow-Credentials', 'true');
   headers.set('Access-Control-Max-Age', '86400');
   headers.set('Cache-Control', 'no-store');
   headers.set('Vary', 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers');

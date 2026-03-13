@@ -632,6 +632,7 @@
       // Forced drain until idle once (useful for manual button)
       _enabled = true;
       await _drainLoop({ force: true });
+      await _refreshPendingStats();
       return this.status();
     },
 

@@ -3,6 +3,23 @@ const JSON_HEADERS = {
   'cache-control': 'no-store',
 };
 
+const ACCESS_CONTROL_ALLOW_HEADERS = [
+  'Content-Type',
+  'Accept',
+  'Authorization',
+  'If-None-Match',
+  'If-Match',
+  'X-Requested-With',
+  'X-VSC-Tenant',
+  'X-VSC-User',
+  'X-VSC-Token',
+  'X-VSC-Client-Session',
+].join(', ');
+
+const ACCESS_CONTROL_EXPOSE_HEADERS = 'Content-Type, Content-Length, ETag, X-VSC-State-Revision';
+const ACCESS_CONTROL_ALLOW_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
+const ACCESS_CONTROL_VARY = 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers';
+
 const STORE_NAME_MAP = Object.freeze({
   produtos: 'produtos_master',
   produtos_master: 'produtos_master',
@@ -69,12 +86,21 @@ const SNAPSHOT_IMPORT_ALLOWED_STORES = Array.from(new Set(Object.values(STORE_NA
   .filter((store) => !SNAPSHOT_IMPORT_EXCLUDED_STORES.has(store));
 
 
-function corsHeaders(request) {
+function corsHeaders(request, methods = ACCESS_CONTROL_ALLOW_METHODS) {
   const origin = request?.headers?.get('Origin') || '';
-  if (!origin) return { 'Access-Control-Allow-Origin': '*' };
-  if (/^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin)) return { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin' };
-  if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) return { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin' };
-  return { 'Access-Control-Allow-Origin': '*' };
+  let allowOrigin = '*';
+  if (origin && /^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin)) allowOrigin = origin;
+  else if (origin && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) allowOrigin = origin;
+  const headers = {
+    'Access-Control-Allow-Origin': allowOrigin,
+    'Access-Control-Allow-Methods': methods,
+    'Access-Control-Allow-Headers': ACCESS_CONTROL_ALLOW_HEADERS,
+    'Access-Control-Expose-Headers': ACCESS_CONTROL_EXPOSE_HEADERS,
+    'Access-Control-Max-Age': '86400',
+    'Vary': ACCESS_CONTROL_VARY,
+  };
+  if (allowOrigin !== '*') headers['Access-Control-Allow-Credentials'] = 'true';
+  return headers;
 }
 
 function json(data, status = 200, request = null) {
@@ -606,52 +632,6 @@ async function findActiveSessionAuth(db, sessionId) {
   }
 }
 
-
-async function detectSyncAuthSupport(db) {
-  if (!isD1Like(db)) return { auth_tables_available: false, auth_tables_checked: false };
-  try {
-    const result = await db.prepare(`
-      SELECT name
-      FROM sqlite_master
-      WHERE type = 'table'
-        AND name IN ('auth_sessions', 'auth_users')
-    `).all();
-    const rows = Array.isArray(result?.results) ? result.results : [];
-    const found = new Set(rows.map((row) => normStr(row?.name || '', 80)));
-    return {
-      auth_tables_available: found.has('auth_sessions') && found.has('auth_users'),
-      auth_tables_checked: true,
-    };
-  } catch (_) {
-    return { auth_tables_available: false, auth_tables_checked: true };
-  }
-}
-
-function isTrustedSyncOriginValue(value) {
-  const safe = normStr(value || '', 255);
-  if (!safe) return false;
-  if (/^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(safe)) return true;
-  if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(safe)) return true;
-  return false;
-}
-
-function isTrustedSyncRequest(request) {
-  const origin = normStr(request?.headers?.get('Origin') || '', 255);
-  if (origin) return isTrustedSyncOriginValue(origin);
-
-  const referer = normStr(request?.headers?.get('Referer') || request?.headers?.get('Referrer') || '', 1024);
-  if (referer) {
-    try {
-      const url = new URL(referer);
-      return isTrustedSyncOriginValue(`${url.protocol}//${url.host}`);
-    } catch (_) {
-      return false;
-    }
-  }
-
-  return false;
-}
-
 async function isSyncAuthorized(request, env) {
   const secret = getSyncSecret(env);
   const token = getRequestToken(request);
@@ -668,31 +648,12 @@ async function isSyncAuthorized(request, env) {
     }
   }
 
-  const authSupport = await detectSyncAuthSupport(db);
-  const trustedRequest = isTrustedSyncRequest(request);
-  const userLabel = getUserLabel(request);
-
-  if (trustedRequest && clientSessionId && userLabel && (!secret || !authSupport.auth_tables_available)) {
-    return {
-      ok: true,
-      enforced: !!secret,
-      mode: secret ? 'origin-session-fallback' : 'origin-session',
-      degraded: !!secret,
-      auth_tables_available: !!authSupport.auth_tables_available,
-      session_id: clientSessionId,
-    };
+  if (!secret) {
+    // Dev/local fallback when no secret is configured in the environment.
+    return { ok: true, enforced: false, mode: 'open' };
   }
 
-  if (!secret && trustedRequest) {
-    return { ok: true, enforced: false, mode: 'origin-open' };
-  }
-
-  return {
-    ok: false,
-    enforced: !!secret,
-    error: 'unauthorized',
-    auth_tables_available: !!authSupport.auth_tables_available,
-  };
+  return { ok: false, enforced: true, error: 'unauthorized' };
 }
 
 function buildUnauthorizedResponse(request) {
