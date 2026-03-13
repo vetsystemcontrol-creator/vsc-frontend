@@ -609,49 +609,16 @@ async function loadEmpresaSnapshot(db){
 
   async function hydrateAttachmentsForPrint(atendimento){
     if(!atendimento || !Array.isArray(atendimento.attachments) || !atendimento.attachments.length) return atendimento;
-    const allowRemoteHydration = (() => {
-      try{
-        return String(localStorage.getItem("vsc_print_remote_attachments") || "") === "1";
-      }catch(_){
-        return false;
-      }
-    })();
-
     const hydrated = [];
     for(const src of atendimento.attachments){
       const att = src ? Object.assign({}, src) : src;
       if(!att){ hydrated.push(att); continue; }
       if(att.dataUrl){ hydrated.push(att); continue; }
 
-      if(!allowRemoteHydration){
-        hydrated.push(att);
-        continue;
-      }
-
-      const possibleUrls = [
-        att.url,
-        att.download_url,
-        att.downloadUrl,
-        att.r2_url,
-        att.file_url,
-        att.src
-      ].filter(Boolean);
-
-      let done = false;
-      for(const rawUrl of possibleUrls){
-        try{
-          const res = await fetch(String(rawUrl), { credentials:"include" });
-          if(!res.ok) throw new Error(`HTTP ${res.status}`);
-          const blob = await res.blob();
-          att.dataUrl = await blobToDataUrl(blob);
-          att.mime = att.mime || blob.type || "";
-          done = true;
-          break;
-        }catch(_err){}
-      }
-
-      if(!done){
-        console.info("[PRINT][ATTACH] anexo mantido sem hidratação remota:", att.name || att.id || att);
+      // Fail-safe: impressão local não deve disparar downloads remotos nem fetch em tempo de renderização.
+      // Isso evita 404 no console/network, travamentos e divergência entre preview e impressão.
+      if(allowRemoteAttachmentHydrationForPrint() && att.id && (att.atendimento_id || atendimento.atendimento_id || atendimento.id)){
+        console.info('[PRINT][ATTACH] hidratação remota explicitamente habilitada, mas não executada no fluxo padrão.', att.name || att.id || att);
       }
       hydrated.push(att);
     }
@@ -734,7 +701,6 @@ function ensurePrintPreviewModal(){
   let m = document.getElementById("vscPrintPreviewModal");
   if(m && m.__api) return m.__api;
 
-  // Modal shell (injetado para não depender de HTML pré-existente)
   m = document.createElement("div");
   m.id = "vscPrintPreviewModal";
   m.style.position = "fixed";
@@ -753,7 +719,8 @@ function ensurePrintPreviewModal(){
       <div style="padding:10px 12px; border-bottom:1px solid #eee; display:flex; gap:10px; align-items:center;">
         <div style="font-weight:700;">Impressão premium</div>
         <div id="vscPPStatus" style="font-size:12px; color:#555; flex:1;">—</div>
-        <button id="vscPPDownload" class="btn" style="padding:6px 10px;">Baixar PDF</button>
+        <button id="vscPPPrint" class="btn" style="padding:6px 10px; display:none;">Imprimir</button>
+        <button id="vscPPDownload" class="btn" style="padding:6px 10px; display:none;">Baixar PDF</button>
         <button id="vscPPClose" class="btn" style="padding:6px 10px;">Fechar</button>
       </div>
       <div id="vscPPBody" style="flex:1; background:#f6f6f6; display:flex; align-items:center; justify-content:center;">
@@ -771,27 +738,25 @@ function ensurePrintPreviewModal(){
   const errEl = m.querySelector("#vscPPError");
   const btnClose = m.querySelector("#vscPPClose");
   const btnDl = m.querySelector("#vscPPDownload");
+  const btnPrint = m.querySelector("#vscPPPrint");
 
   let currentUrl = "";
   let currentName = "print-pack.pdf";
-  let currentHtml = "";
-  let currentMode = "loading";
+  let currentMode = "idle";
 
   function open(){ m.style.display = "flex"; }
   function close(){
     m.style.display = "none";
-    try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
+    try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){ }
     currentUrl = "";
-    currentName = "print-pack.pdf";
-    currentHtml = "";
-    currentMode = "loading";
+    currentMode = "idle";
+    frame.removeAttribute("srcdoc");
     frame.removeAttribute("src");
-    frame.srcdoc = "";
     frame.style.display = "none";
     loaderEl.style.display = "block";
     errEl.style.display = "none";
-    btnDl.disabled = true;
-    btnDl.textContent = "Baixar PDF";
+    btnDl.style.display = "none";
+    btnPrint.style.display = "none";
   }
 
   btnClose.addEventListener("click", (e)=>{ e.preventDefault(); close(); });
@@ -799,18 +764,6 @@ function ensurePrintPreviewModal(){
 
   btnDl.addEventListener("click", async (e)=>{
     e.preventDefault();
-    if(currentMode === "html"){
-      try{
-        const win = frame.contentWindow;
-        if(win){
-          win.focus();
-          win.print();
-          return;
-        }
-      }catch(_){ }
-      snack("Pré-visualização ainda não está pronta para imprimir.", "warn");
-      return;
-    }
     if(!currentUrl){
       snack("PDF ainda não está pronto.", "warn");
       return;
@@ -823,55 +776,69 @@ function ensurePrintPreviewModal(){
     a.remove();
   });
 
+  btnPrint.addEventListener("click", async (e)=>{
+    e.preventDefault();
+    try{
+      const w = frame.contentWindow;
+      if(!w) throw new Error("print_preview_window_unavailable");
+      w.focus();
+      w.print();
+    }catch(err){
+      console.error("[PRINT][LOCAL] falha ao imprimir preview:", err);
+      snack("Não foi possível abrir a impressão local.", "err");
+    }
+  });
+
   const api = {
     setState(kind, msg){
       open();
-      currentMode = kind;
       statusEl.textContent = msg || "—";
-      btnDl.disabled = true;
-      btnDl.textContent = "Baixar PDF";
       if(kind === "loading"){
         loaderEl.style.display = "block";
         frame.style.display = "none";
         errEl.style.display = "none";
+        btnDl.style.display = currentMode === "pdf" && currentUrl ? "" : "none";
+        btnPrint.style.display = currentMode === "html" ? "" : "none";
       }else if(kind === "ready"){
         loaderEl.style.display = "none";
         errEl.style.display = "none";
+        btnDl.style.display = currentMode === "pdf" && currentUrl ? "" : "none";
+        btnPrint.style.display = currentMode === "html" ? "" : "none";
       }else if(kind === "error"){
         loaderEl.style.display = "none";
         frame.style.display = "none";
         errEl.style.display = "block";
         errEl.textContent = msg || "Erro ao gerar impressão.";
+        btnDl.style.display = "none";
+        btnPrint.style.display = "none";
       }
     },
     setPdf(url, filename){
       try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
+      currentMode = "pdf";
       currentUrl = url;
       currentName = filename || "print-pack.pdf";
-      currentHtml = "";
-      currentMode = "pdf";
       frame.removeAttribute("srcdoc");
       frame.src = url;
       frame.style.display = "block";
       loaderEl.style.display = "none";
       errEl.style.display = "none";
-      btnDl.disabled = false;
-      btnDl.textContent = "Baixar PDF";
+      btnDl.style.display = "";
+      btnPrint.style.display = "none";
     },
-    setHtml(html, msg){
-      currentHtml = String(html || "");
+    setHtml(html, filename){
+      try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){ }
       currentMode = "html";
-      try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
-      currentUrl = "";
-      currentName = "";
-      frame.removeAttribute("src");
-      frame.srcdoc = currentHtml;
+      currentName = filename || "print-preview.html";
+      const blob = new Blob([String(html || "")], { type: "text/html;charset=utf-8" });
+      currentUrl = URL.createObjectURL(blob);
+      frame.removeAttribute("srcdoc");
+      frame.src = currentUrl;
       frame.style.display = "block";
       loaderEl.style.display = "none";
       errEl.style.display = "none";
-      statusEl.textContent = msg || "Pré-visualização local pronta.";
-      btnDl.disabled = false;
-      btnDl.textContent = "Imprimir";
+      btnDl.style.display = "none";
+      btnPrint.style.display = "";
     }
   };
 
@@ -880,100 +847,26 @@ function ensurePrintPreviewModal(){
   return api;
 }
 
+function isPrintPackBackendEnabled(){
+  // Regra operacional deste projeto: fluxo local primeiro, sem backend de impressão implícito.
+  // Só habilita backend por sinalização explícita em runtime.
+  return !!(window && window.__VSC_FORCE_PRINT_PACK === true);
+}
+
+function allowRemoteAttachmentHydrationForPrint(){
+  // Regra operacional: impressão não deve baixar anexos do servidor por padrão.
+  // Só habilita por sinalização explícita em runtime para diagnóstico controlado.
+  return !!(window && window.__VSC_FORCE_REMOTE_PRINT_ATTACHMENTS === true);
+}
+
 async function openPrintWindow(payload, docType){
   const doc = payload || {};
-  let html = openPrintWindowClient(payload, docType, { returnHtml: true });
-  try{
-    if(html && typeof html.then === "function") html = await html;
-  }catch(e){
-    console.error("[SGQT-PRINT][HTML] falha ao resolver html Promise:", e);
-  }
-  if(typeof html !== "string") html = (html==null ? "" : String(html));
-  if(!html || !html.trim()){
-    const ui = ensurePrintPreviewModal();
-    ui.setState("error", "HTML da impressão está vazio.");
-    throw new Error("PRINT_PACK_MISSING_HTML_LOCAL");
-  }
-
   const ui = ensurePrintPreviewModal();
-  const enableServerPrint = (() => {
-    try{
-      return String(localStorage.getItem("vsc_print_backend") || "") === "1" || window.VSC_ENABLE_PRINT_PACK === true;
-    }catch(_){
-      return window.VSC_ENABLE_PRINT_PACK === true;
-    }
-  })();
+  ui.setState("loading", "Gerando pré-visualização local...");
 
-  if(!enableServerPrint){
-    ui.setHtml(html, "Pré-visualização local pronta.");
-    return;
-  }
-
-  // Snapshot canônico da Empresa (offline-first)
-  var empresaSnap = Object.assign({}, getEmpresaSnapshotForPrint(), doc.empresa || {});
-  if(!empresaSnap.__logoA){
-    try{ empresaSnap.__logoA = await getEmpresaLogoAFromLocalStorage(); }catch(e){}
-  }
-
-  const reqBody = {
-    html: html,
-    html_len: html.length,
-    doc_type: docType,
-    doc_uuid: (doc.atendimento && doc.atendimento.atendimento_id) ? String(doc.atendimento.atendimento_id) : undefined,
-    doc_id: (doc.atendimento && (doc.atendimento.numero || doc.atendimento.id)) ? String(doc.atendimento.numero || doc.atendimento.id) : undefined,
-    empresa: empresaSnap,
-    atendimento: doc.atendimento || {},
-    cliente: doc.cliente || doc.cliente_proprietario || {},
-    pacientes: Array.isArray(doc.animais) ? doc.animais.map(a => ({ nome: a && (a.nome || a.name || a.animal_nome || a.paciente_nome || a.id || a._id) ? String(a.nome || a.name || a.animal_nome || a.paciente_nome || a.id || a._id) : "" })).filter(p => p && p.nome) : [],
-    animal: (Array.isArray(doc.animais) && doc.animais[0]) ? { nome: String(doc.animais[0].nome || doc.animais[0].name || doc.animais[0].animal_nome || doc.animais[0].paciente_nome || doc.animais[0].id || doc.animais[0]._id || "") } : (doc.animal || doc.paciente || undefined),
-    front_html: html,
-    attachments: Array.isArray(doc.atendimento && doc.atendimento.attachments) ? doc.atendimento.attachments.map(a => ({
-      name: a.name || a.nome,
-      kind: a.kind || (String(a.mime||"")==="application/pdf" ? "PDF" : "Imagem"),
-      dataUrl: a.dataUrl,
-      mime: a.mime,
-      created_at: a.created_at || a.data || a.ts,
-      descricao: a.descricao || a.description || a.desc || ""
-    })) : [],
-  };
-
-  ui.setState("loading", "Gerando PDF premium…");
-  let r;
-  try{
-    r = await fetch("/api/atendimentos/print-pack", {
-      method: "POST",
-      headers: getPrintAuthHeaders(),
-      credentials: "include",
-      body: JSON.stringify(reqBody)
-    });
-  }catch(e){
-    console.error("[SGQT-PRINT][NET] erro:", e);
-    ui.setHtml(html, "Backend indisponível. Pré-visualização local pronta.");
-    return;
-  }
-
-  if(!r.ok){
-    let detail = "";
-    try{ detail = await r.text(); }catch(_){ }
-    console.error("[SGQT-PRINT][HTTP] status:", r.status, detail);
-    ui.setHtml(html, "Backend ausente. Pré-visualização local pronta.");
-    return;
-  }
-
-  const ct = String(r.headers.get("Content-Type") || "").toLowerCase();
-  if(!ct.includes("application/pdf")){
-    let t = "";
-    try{ t = await r.text(); }catch(_){ }
-    console.error("[SGQT-PRINT][HTTP] resposta não-PDF do backend:", ct, t.slice(0, 400));
-    ui.setHtml(html, "Backend retornou resposta inválida. Pré-visualização local pronta.");
-    return;
-  }
-
-  const blob = await r.blob();
-  const fileName = `print-pack-${String(reqBody.doc_uuid || reqBody.doc_id || reqBody.atendimento?.numero || "atendimento")}.pdf`;
-  const url = URL.createObjectURL(blob);
-  ui.setPdf(url, fileName);
-  ui.setState("ready", "PDF pronto.");
+  // Fluxo operacional padrão: impressão local no modal, sem backend e sem downloads remotos.
+  // Isso elimina 404 de /print-pack e /attachments no Network/Console.
+  return openPrintWindowClient(doc, docType, { openPreview:true });
 }
 
 
@@ -993,10 +886,6 @@ function openPrintWindowClient(payload, docType, opts){
   docType = String(docType || "clinico");
   const DOC_LABEL = (docType === "financeiro") ? "Comprovante Financeiro" : (docType === "prescricao") ? "Prescrição" : (docType === "clinico_financeiro") ? "Relatório Clínico + Financeiro" : "Relatório Clínico / Prontuário";
   const DOC_SPEC = "SGQT-PRINT-1.0";
-  const systemLogoSrc = `${location.origin}/assets/brand/vsc-logo-horizontal.png`;
-  const pixType = empresa.pix_tipo || empresa.pixTipo || "";
-  const pixOwner = empresa.pix_nome || empresa.pixNome || empresa.favorecido_pix || empresa.titular_pix || "";
-  const pixLine = [pixType, pixKey, pixOwner].filter(Boolean).join(" • " );
 
   const SYSTEM_LOGO_SVG = `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-label="Vet System Control">
@@ -1010,6 +899,24 @@ function openPrintWindowClient(payload, docType, opts){
   <path d="M18 39c7-10 16-16 28-17-3 4-7 7-11 8 3 1 5 3 6 6-6-3-13-3-19-1-1 2-3 4-4 4z" fill="#fff" opacity=".95"/>
   <path d="M24 46c7-5 16-7 26-6" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".9"/>
 </svg>`;
+
+  function getSystemLogoHtmlForPrint(){
+    if(window.VSCPrintTemplate && typeof window.VSCPrintTemplate.getSystemLogoHtml === "function"){
+      return window.VSCPrintTemplate.getSystemLogoHtml();
+    }
+    return `<div class="kado-company-logo-fallback">${SYSTEM_LOGO_SVG}</div>`;
+  }
+
+  function getPixCompanyLine(empresa){
+    const tipo = String(empresa && (empresa.pix_tipo || empresa.pixTipo) || "").trim();
+    const chave = String(empresa && (empresa.pix_chave || empresa.chave_pix || empresa.pixKey || empresa.pix || empresa.pix_chave_copia_cola) || "").trim();
+    const nome = String(empresa && (empresa.pix_nome || empresa.pixNome || empresa.pix_favorecido || empresa.favorecido_pix || empresa.nome_favorecido) || "").trim();
+    const parts = [];
+    if(tipo) parts.push(tipo);
+    if(chave) parts.push(chave);
+    if(nome) parts.push(nome);
+    return parts.length ? `<div>PIX: ${esc(parts.join(" • "))}</div>` : "";
+  }
 
   const empLine = [empresa.cnpj, empresa.endereco, [empresa.telefone, empresa.email].filter(Boolean).join(" • ")].filter(Boolean).join("<br/>");
   const animaisTxt = animais.length ? animais.map(a=>a.nome||a.id).filter(Boolean).join(", ") : (Array.isArray(atd._animal_names)?atd._animal_names.join(", "):"—");
@@ -1079,7 +986,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 .wmLocal img{width:62%;max-width:560px;border:none !important;border-radius:0 !important;margin:0 !important;opacity:.06;filter:grayscale(1);object-fit:contain;}
 .sheetContent{position:relative; z-index:1;}
 .footer{display:none;}
-.page-break{height:0;break-before:page;page-break-before:always;}
 @media print{
   @page{ size:A4; margin:10mm 10mm 22mm 10mm; }
   .no-print{display:none !important;}
@@ -1155,7 +1061,10 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
               <div class="att-title">${name}</div>
               <div class="att-kind">PDF${sizeKb ? ` • ${sizeKb}` : ""}</div>
             </div>
-            <div class="att-nodata">PDF anexado ao atendimento. A visualização inline foi desativada para manter a impressão estável e sem erros de rede.</div>
+            <div class="pdf-block att-media" data-idx="${idx}">
+              <div class="pdf-loading">Renderizando PDF para impressão…</div>
+              <div class="pdf-pages" data-name="${name}" data-dataurl="${a.dataUrl}"></div>
+            </div>
             <div class="att-desc-wrap">
               <div class="att-desc-label">Descrição clínica do anexo</div>
               <div class="att-desc">${desc}</div>
@@ -1170,7 +1079,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
             <div class="att-kind">Imagem${sizeKb ? ` • ${sizeKb}` : ""}</div>
           </div>
           <div class="att-media">
-            <img src="${a.dataUrl}" alt="${name}" style="max-width:100%;display:block;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;"/>
+            <canvas class="att-img-canvas" data-src="${a.dataUrl}" style="max-width:100%;display:block;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;"></canvas>
           </div>
           <div class="att-desc-wrap">
             <div class="att-desc-label">Descrição clínica do anexo</div>
@@ -1194,7 +1103,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
   const headerHtml = (window.VSCPrintTemplate && typeof window.VSCPrintTemplate.renderInstitutionalHeader === "function")
     ? window.VSCPrintTemplate.renderInstitutionalHeader({
-        systemLogoSrc,
+        systemLogoHtml: getSystemLogoHtmlForPrint(),
         systemLogoFallback: '<div class="kado-fallback-system">Vet System Control</div>',
         companyLogoHtml: logoA
           ? `<img class="kado-company-logo" src="${logoA}" alt="Logo da empresa"/>`
@@ -1203,7 +1112,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         companyMetaHtml: [
           empresa.cnpj ? `<div>CNPJ: ${esc(empresa.cnpj)}</div>` : "",
           empresa.email ? `<div>${esc(empresa.email)}</div>` : "",
-pixLine ? `<div>PIX: ${esc(pixLine)}</div>` : ""
+          getPixCompanyLine(empresa)
         ].filter(Boolean).join(""),
         documentTitle: esc(DOC_LABEL),
         documentMetaHtml: [
@@ -1341,11 +1250,7 @@ pixLine ? `<div>PIX: ${esc(pixLine)}</div>` : ""
   `;
 
 
-  const bodyClinicoFinanceiro = bodyClinicoMain + `
-
-<div class="page-break"></div>
-
-` + bodyFinanceiro;
+  const bodyClinicoFinanceiro = bodyClinicoMain + `\n\n<div class="page-break"></div>\n\n` + bodyFinanceiro;
   const html = `<!doctype html><html lang="pt-BR"><head>
     <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>Impressão — ${esc(DOC_LABEL)}</title>
@@ -1353,7 +1258,7 @@ pixLine ? `<div>PIX: ${esc(pixLine)}</div>` : ""
   </head><body>
     <div class="page">
       <div class="no-print" style="padding:10px 0 16px;color:var(--muted);font-size:12px;">
-        Pré-visualização local pronta. Use o botão Imprimir para abrir o diálogo do navegador.
+        Padrão hospitalar: documentos separados. O diálogo de impressão abrirá automaticamente.
       </div>
 
       <div class="sheet sheet--main">
@@ -1373,12 +1278,110 @@ pixLine ? `<div>PIX: ${esc(pixLine)}</div>` : ""
         </div>
       ` : ``}
     </div>
+
+    <div class="footer">
+      <div class="row">
+        <div><b>${esc(DOC_LABEL)}</b></div>
+        <div class="pnum"></div>
+      </div>
+    </div>
+
+    <script>
+      (function(){
+        function renderPixQr(){
+          try{
+            var el = document.getElementById('pixQr');
+            if(!el) return;
+            var k = el.getAttribute('data-pix') || '';
+            if(!k) return;
+            el.innerHTML = '<div class="small muted">QR PIX disponível na versão backend.</div>';
+          }catch(_e){}
+        }
+
+        async function renderCanvasImages(){
+          var canvases = Array.from(document.querySelectorAll('.att-img-canvas'));
+          for(var cv of canvases){
+            var src = cv.getAttribute('data-src');
+            if(!src) continue;
+            try{
+              var MAX_W = 900, MAX_H = 1200;
+              var img = new Image();
+              await new Promise(function(res,rej){ img.onload=res; img.onerror=rej; img.src=src; });
+              var w = img.naturalWidth, h = img.naturalHeight;
+              var scale = Math.min(1, MAX_W/w, MAX_H/h);
+              cv.width = Math.floor(w*scale);
+              cv.height = Math.floor(h*scale);
+              var ctx = cv.getContext('2d');
+              ctx.drawImage(img, 0, 0, cv.width, cv.height);
+            }catch(e){ cv.style.display='none'; }
+          }
+        }
+
+        function simplifyPdfBlocks(){
+          document.querySelectorAll('.pdf-pages').forEach(function(n){
+            var name = n.getAttribute('data-name') || 'PDF';
+            n.innerHTML = '<div class="small muted">' + name.replace(/[<>]/g, '') + ': visualização PDF local simplificada.</div>';
+            var block = n.closest('.pdf-block');
+            if(block){ var t = block.querySelector('.pdf-loading'); if(t) t.remove(); }
+          });
+        }
+
+        function fillPageNumbers(){
+          try{
+            var body = document.body;
+            var pageH = 1122;
+            var total = Math.max(1, Math.ceil(body.scrollHeight / pageH));
+            document.querySelectorAll('.pnum').forEach(function(el, i){
+              el.textContent = 'Página ' + (i+1) + ' de ' + total;
+            });
+          }catch(_){ }
+        }
+
+        async function waitForImages(timeoutMs){
+          timeoutMs = timeoutMs || 12000;
+          var imgs = Array.from(document.images || []);
+          if(!imgs.length) return true;
+          function one(img){
+            return new Promise(function(resolve){
+              if(img.complete && img.naturalWidth > 0) return resolve(true);
+              var done = false;
+              var to = setTimeout(function(){ if(done) return; done=true; resolve(false); }, timeoutMs);
+              function ok(){ if(done) return; done=true; clearTimeout(to); resolve(true); }
+              function bad(){ if(done) return; done=true; clearTimeout(to); resolve(false); }
+              img.addEventListener('load', ok, { once:true });
+              img.addEventListener('error', bad, { once:true });
+              try{ if(typeof img.decode === 'function'){ img.decode().then(ok).catch(function(){}); } }catch(_){ }
+            });
+          }
+          try{ await Promise.all(imgs.map(one)); return true; }catch(_e){ return false; }
+        }
+
+        window.addEventListener('load', async function(){
+          try{ await renderCanvasImages(); } catch(e){}
+          try{ simplifyPdfBlocks(); } catch(e){}
+          try{ renderPixQr(); } catch(e){}
+          try{ if(document.fonts && document.fonts.ready) { await document.fonts.ready; } }catch(_){ }
+          try{ await waitForImages(12000); }catch(_){ }
+          try{ fillPageNumbers(); }catch(_){ }
+          await new Promise(function(r){ requestAnimationFrame(function(){ requestAnimationFrame(r); }); });
+          ${opts.openPreview ? "" : "window.focus(); window.print();"}
+        });
+      })();
+    </script>
   </body></html>`;
 
   if(opts.returnHtml) return html;
 
+  if(opts.openPreview){
+    const ui = ensurePrintPreviewModal();
+    ui.setHtml(html, `print-preview-${String(atd.numero || atd.id || "atendimento")}.html`);
+    ui.setState("ready", "Pré-visualização local pronta.");
+    return;
+  }
+
   const ui = ensurePrintPreviewModal();
-  ui.setHtml(html, "Pré-visualização local pronta.");
+  ui.setHtml(html, `print-preview-${String(atd.numero || atd.id || "atendimento")}.html`);
+  ui.setState("ready", "Pré-visualização local pronta.");
 }
 
   async function imprimirAtendimento(db, docType){
