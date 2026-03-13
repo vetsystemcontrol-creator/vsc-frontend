@@ -607,37 +607,6 @@ async function loadEmpresaSnapshot(db){
     });
   }
 
-  let __VSC_PRINT_SYSTEM_LOGO_DATAURL = null;
-  async function getSystemLogoForPrint(){
-    if(__VSC_PRINT_SYSTEM_LOGO_DATAURL) return __VSC_PRINT_SYSTEM_LOGO_DATAURL;
-    const fallbackSvgMarkup = [
-      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 72" aria-label="Vet System Control">',
-      '<rect width="320" height="72" rx="14" fill="#ffffff"/>',
-      '<g transform="translate(8 8)">',
-      '<rect x="0" y="0" width="56" height="56" rx="14" fill="#16a34a"/>',
-      '<path d="M12 35c8-11 18-17 31-19-4 5-8 8-13 10 3 1 6 4 7 7-7-3-14-4-21-1-1 2-3 3-4 3z" fill="#fff" opacity=".96"/>',
-      '<path d="M18 46c9-6 19-8 31-7" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".92"/>',
-      '</g>',
-      '<text x="76" y="30" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#0f172a">Vet</text>',
-      '<text x="76" y="53" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#0f172a">System Control</text>',
-      '</svg>'
-    ].join('');
-    const fallbackSvg = 'data:image/svg+xml;utf8,' + encodeURIComponent(fallbackSvgMarkup);
-    try{
-      const url = new URL('../assets/brand/vsc-logo-horizontal.png', location.href);
-      const res = await fetch(url.toString(), { credentials: 'same-origin' });
-      if(!res.ok) throw new Error('logo_fetch_' + res.status);
-      const blob = await res.blob();
-      const dataUrl = await blobToDataUrl(blob);
-      if(dataUrl){
-        __VSC_PRINT_SYSTEM_LOGO_DATAURL = dataUrl;
-        return dataUrl;
-      }
-    }catch(_e){}
-    __VSC_PRINT_SYSTEM_LOGO_DATAURL = fallbackSvg;
-    return __VSC_PRINT_SYSTEM_LOGO_DATAURL;
-  }
-
   async function hydrateAttachmentsForPrint(atendimento){
     if(!atendimento || !Array.isArray(atendimento.attachments) || !atendimento.attachments.length) return atendimento;
     const tenant = localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "tenant-default";
@@ -674,7 +643,7 @@ async function loadEmpresaSnapshot(db){
         }catch(_err){}
       }
 
-      if(!done && att.id){
+      if(!done && att.id && allowRemoteAttachmentHydrationForPrint()){
         for(const base of bases){
           try{
             const url = `${base}/api/attachments?action=download&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(att.id)}`;
@@ -794,8 +763,8 @@ function ensurePrintPreviewModal(){
       <div style="padding:10px 12px; border-bottom:1px solid #eee; display:flex; gap:10px; align-items:center;">
         <div style="font-weight:700;">Impressão premium</div>
         <div id="vscPPStatus" style="font-size:12px; color:#555; flex:1;">—</div>
-        <button id="vscPPPrint" class="btn" style="padding:6px 10px;">Imprimir</button>
-        <button id="vscPPDownload" class="btn" style="padding:6px 10px;">Baixar PDF</button>
+        <button id="vscPPPrint" class="btn" style="padding:6px 10px; display:none;">Imprimir</button>
+        <button id="vscPPDownload" class="btn" style="padding:6px 10px; display:none;">Baixar PDF</button>
         <button id="vscPPClose" class="btn" style="padding:6px 10px;">Fechar</button>
       </div>
       <div id="vscPPBody" style="flex:1; background:#f6f6f6; display:flex; align-items:center; justify-content:center;">
@@ -825,31 +794,17 @@ function ensurePrintPreviewModal(){
     try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
     currentUrl = "";
     currentMode = "idle";
-    currentName = "print-pack.pdf";
     frame.removeAttribute("srcdoc");
     frame.src = "about:blank";
     frame.style.display = "none";
     loaderEl.style.display = "block";
     errEl.style.display = "none";
-    btnDl.style.display = "inline-flex";
-    btnDl.disabled = true;
-    btnPrint.disabled = true;
-  }
-
-  function printFrame(){
-    try{
-      const w = frame.contentWindow;
-      if(!w){ snack("Pré-visualização ainda não está pronta.", "warn"); return; }
-      w.focus();
-      w.print();
-    }catch(e){
-      snack("Falha ao abrir o diálogo de impressão.", "err");
-    }
+    btnDl.style.display = "none";
+    btnPrint.style.display = "none";
   }
 
   btnClose.addEventListener("click", (e)=>{ e.preventDefault(); close(); });
   m.addEventListener("click", (e)=>{ if(e.target === m) close(); });
-  btnPrint.addEventListener("click", (e)=>{ e.preventDefault(); printFrame(); });
 
   btnDl.addEventListener("click", async (e)=>{
     e.preventDefault();
@@ -865,29 +820,41 @@ function ensurePrintPreviewModal(){
     a.remove();
   });
 
+  btnPrint.addEventListener("click", async (e)=>{
+    e.preventDefault();
+    try{
+      const w = frame.contentWindow;
+      if(!w) throw new Error("print_preview_window_unavailable");
+      w.focus();
+      w.print();
+    }catch(err){
+      console.error("[PRINT][LOCAL] falha ao imprimir preview:", err);
+      snack("Não foi possível abrir a impressão local.", "err");
+    }
+  });
+
   const api = {
     setState(kind, msg){
       open();
       statusEl.textContent = msg || "—";
       if(kind === "loading"){
-        currentMode = "loading";
         loaderEl.style.display = "block";
         frame.style.display = "none";
         errEl.style.display = "none";
-        btnDl.disabled = true;
-        btnPrint.disabled = true;
+        btnDl.style.display = currentMode === "pdf" && currentUrl ? "" : "none";
+        btnPrint.style.display = currentMode === "html" ? "" : "none";
       }else if(kind === "ready"){
         loaderEl.style.display = "none";
         errEl.style.display = "none";
-        btnPrint.disabled = false;
+        btnDl.style.display = currentMode === "pdf" && currentUrl ? "" : "none";
+        btnPrint.style.display = currentMode === "html" ? "" : "none";
       }else if(kind === "error"){
-        currentMode = "error";
         loaderEl.style.display = "none";
         frame.style.display = "none";
         errEl.style.display = "block";
         errEl.textContent = msg || "Erro ao gerar impressão.";
-        btnDl.disabled = true;
-        btnPrint.disabled = true;
+        btnDl.style.display = "none";
+        btnPrint.style.display = "none";
       }
     },
     setPdf(url, filename){
@@ -900,54 +867,51 @@ function ensurePrintPreviewModal(){
       frame.style.display = "block";
       loaderEl.style.display = "none";
       errEl.style.display = "none";
-      btnDl.style.display = "inline-flex";
-      btnDl.disabled = false;
-      btnPrint.disabled = false;
+      btnDl.style.display = "";
+      btnPrint.style.display = "none";
     },
-    setHtml(html, title){
-      currentMode = "html";
+    setHtml(html, filename){
       try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
+      currentMode = "html";
       currentUrl = "";
-      currentName = title || "atendimento";
+      currentName = filename || "print-preview.html";
       frame.src = "about:blank";
       frame.srcdoc = String(html || "");
       frame.style.display = "block";
       loaderEl.style.display = "none";
       errEl.style.display = "none";
       btnDl.style.display = "none";
-      btnDl.disabled = true;
-      btnPrint.disabled = false;
+      btnPrint.style.display = "";
     }
   };
-
-  frame.addEventListener("load", ()=>{
-    if(currentMode === "html"){
-      loaderEl.style.display = "none";
-      frame.style.display = "block";
-      errEl.style.display = "none";
-      btnPrint.disabled = false;
-    }
-  });
 
   m.__api = api;
   open();
   return api;
 }
 
-function shouldUseServerPrint(){
+function isPrintPackBackendEnabled(){
   try{
-    if(window.__VSC_PRINT_BACKEND__ === true || window.VSC_PRINT_BACKEND === true) return true;
-    const meta = document.querySelector('meta[name="vsc-print-backend"]');
-    const content = String(meta && meta.content || "").trim().toLowerCase();
-    if(content === "1" || content === "true" || content === "enabled") return true;
-    const ls = String(localStorage.getItem("vsc_print_backend") || "").trim().toLowerCase();
-    if(ls === "1" || ls === "true" || ls === "enabled") return true;
-  }catch(_e){}
-  return false;
+    if(window.__VSC_ENABLE_PRINT_PACK === true) return true;
+    const raw = localStorage.getItem("vsc_enable_print_pack") || localStorage.getItem("VSC_ENABLE_PRINT_PACK") || "";
+    return raw === "1" || /^true$/i.test(raw);
+  }catch(_){
+    return false;
+  }
 }
 
+function allowRemoteAttachmentHydrationForPrint(){
+  try{
+    const raw = localStorage.getItem("vsc_print_remote_attachments") || localStorage.getItem("VSC_PRINT_REMOTE_ATTACHMENTS") || "";
+    return raw === "1" || /^true$/i.test(raw);
+  }catch(_){
+    return false;
+  }
+}
 
 async function openPrintWindow(payload, docType){
+  // SGQT-PRINT-ENTERPRISE (Premium): gerar PDF server-side e exibir em MODAL (sem navegar / sem abrir 2 abas)
+  // Regra: NÃO usar window.location fallback. Se popup for bloqueado, usamos preview/download via Blob.
   const doc = payload || {};
   let html = openPrintWindowClient(payload, docType, { returnHtml: true });
   // SGQT-PRINT: normalizar HTML (evita MISSING_HTML quando retornar Promise/objeto)
@@ -966,12 +930,6 @@ async function openPrintWindow(payload, docType){
     throw new Error("PRINT_PACK_MISSING_HTML_LOCAL");
   }
 
-
-  if(!shouldUseServerPrint()){
-    const ui = ensurePrintPreviewModal();
-    ui.setState("loading", "Backend de impressão ausente. Gerando pré-visualização local...");
-    return openPrintWindowClient(doc, docType, { openPreview:true, html });
-  }
 
   // Snapshot canônico da Empresa (offline-first)
   // - inclui pix_chave, __logoA e __logoB quando existirem
@@ -1013,6 +971,11 @@ async function openPrintWindow(payload, docType){
   if(doc.atendimento && Array.isArray(doc.atendimento.attachments)){
     const sem = doc.atendimento.attachments.filter(a => a && !a.dataUrl && a.synced_to_r2);
     if(sem.length) console.info('[PRINT] ' + sem.length + ' anexo(s) só no servidor (exibidos como referência no doc):', sem.map(a=>a.name));
+  }
+
+  if(!isPrintPackBackendEnabled()){
+    ui.setState("loading", "Pré-visualização local pronta.");
+    return openPrintWindowClient(doc, docType, { openPreview:true });
   }
 
   let r;
@@ -1066,7 +1029,7 @@ async function openPrintWindow(payload, docType){
 
 
 // Fallback (modo offline / compatibilidade legada): impressão client-side (PDF.js + window.print())
-async function openPrintWindowClient(payload, docType, opts){
+function openPrintWindowClient(payload, docType, opts){
   opts = opts || {};
 
   const R = payload || {};
@@ -1278,12 +1241,10 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     </div>`;
   }).join("");
 
-  const systemLogoSrc = await getSystemLogoForPrint();
-
   const headerHtml = (window.VSCPrintTemplate && typeof window.VSCPrintTemplate.renderInstitutionalHeader === "function")
     ? window.VSCPrintTemplate.renderInstitutionalHeader({
-        systemLogoSrc,
-        systemLogoFallback: 'Vet System Control',
+        systemLogoHtml: `<img class="kado-system-logo" src="${esc(String(new URL('assets/brand/vsc-logo-horizontal.png', location.href)))}" alt="Vet System Control"/>`,
+        systemLogoFallback: '<div class="kado-fallback-system">Vet System Control</div>',
         companyLogoHtml: logoA
           ? `<img class="kado-company-logo" src="${logoA}" alt="Logo da empresa"/>`
           : `<div class="kado-company-logo-fallback">${SYSTEM_LOGO_SVG}</div>`,
@@ -1434,12 +1395,10 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>Impressão — ${esc(DOC_LABEL)}</title>
     <style>${css}</style>
-    <script src="${PDFJS_CDN_BASE}/pdf.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
   </head><body>
     <div class="page">
       <div class="no-print" style="padding:10px 0 16px;color:var(--muted);font-size:12px;">
-        Padrão hospitalar: documentos separados. Use o botão Imprimir do modal para abrir o diálogo de impressão.
+        Padrão hospitalar: documentos separados. O diálogo de impressão abrirá automaticamente.
       </div>
 
       <div class="sheet sheet--main">
@@ -1462,98 +1421,23 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
     <div class="footer">
       <div class="row">
-        <div></div>
+        <div><b>${esc(DOC_LABEL)}</b></div>
         <div class="pnum"></div>
       </div>
     </div>
 
     <script>
       (function(){
-        function dataUrlToUint8(dataUrl){
-          var s = String(dataUrl||"");
-          var i = s.indexOf("base64,");
-          if(i<0) return null;
-          var b64 = s.slice(i+7);
-          var bin = atob(b64);
-          var u8 = new Uint8Array(bin.length);
-          for(var k=0;k<bin.length;k++) u8[k]=bin.charCodeAt(k);
-          return u8;
-        }
-
-        async function renderOnePdf(container){
-          var dataUrl = container.getAttribute('data-dataurl');
-          if(!dataUrl) return;
-          if(window.pdfjsLib && window.pdfjsLib.GlobalWorkerOptions){
-            window.pdfjsLib.GlobalWorkerOptions.workerSrc = "${PDFJS_CDN_BASE}/pdf.worker.min.js";
-          }
-          var bytes = dataUrlToUint8(dataUrl);
-          if(!bytes){ container.innerHTML = '<div class="small muted">Não foi possível ler o PDF (base64 inválido).</div>'; return; }
-          var loadingTask = window.pdfjsLib.getDocument({ data: bytes });
-          var pdf = await loadingTask.promise;
-          var frag = document.createDocumentFragment();
-          for(var p=1; p<=pdf.numPages; p++){
-            var page = await pdf.getPage(p);
-            var viewport = page.getViewport({ scale: 1.6 });
-            var canvas = document.createElement('canvas');
-            canvas.width = Math.floor(viewport.width);
-            canvas.height = Math.floor(viewport.height);
-            var ctx = canvas.getContext('2d', { alpha: false });
-            await page.render({ canvasContext: ctx, viewport: viewport }).promise;
-            var img = document.createElement('img');
-            img.alt = 'PDF página ' + p;
-            img.src = canvas.toDataURL('image/png');
-            frag.appendChild(img);
-          }
-          container.innerHTML = '';
-          container.appendChild(frag);
-          var block = container.closest('.pdf-block');
-          if(block){ var t = block.querySelector('.pdf-loading'); if(t) t.remove(); }
-        }
-
-        async function renderAllPdfs(){
-          var nodes = Array.from(document.querySelectorAll('.pdf-pages'));
-          if(!nodes.length) return;
-          if(!window.pdfjsLib || !window.pdfjsLib.getDocument){
-            nodes.forEach(function(n){
-              n.innerHTML = '<div class="small muted">PDF.js indisponível neste navegador. Use “Abrir PDF em nova aba” para imprimir o PDF.</div>';
-              var block = n.closest('.pdf-block');
-              if(block){ var t = block.querySelector('.pdf-loading'); if(t) t.remove(); }
-            });
-            return;
-          }
-          for(const n of nodes){
-            try{ await renderOnePdf(n); }
-            catch(e){
-              n.innerHTML = '<div class="small muted">Falha ao renderizar PDF. Use “Abrir PDF em nova aba” para imprimir.</div>';
-              var block = n.closest('.pdf-block');
-              if(block){ var t = block.querySelector('.pdf-loading'); if(t) t.remove(); }
-            }
-          }
-        }
-
         function renderPixQr(){
           try{
             var el = document.getElementById('pixQr');
             if(!el) return;
             var k = el.getAttribute('data-pix') || '';
             if(!k) return;
-            if(!window.qrcode){
-              el.innerHTML = '<div class="small muted">QR indisponível.</div>';
-              return;
-            }
-            var qr = window.qrcode(0, 'M');
-            qr.addData(String(k));
-            qr.make();
-            el.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0 });
-            // ajusta tamanho máximo
-            var svg = el.querySelector('svg');
-            if(svg){
-              svg.setAttribute('style','width:160px;height:160px;max-width:160px;max-height:160px;');
-            }
+            el.innerHTML = '<div class="small muted">QR PIX disponível na versão backend.</div>';
           }catch(_e){}
         }
 
-        // Renderiza imagens grandes via canvas (evita travamento)
         async function renderCanvasImages(){
           var canvases = Array.from(document.querySelectorAll('.att-img-canvas'));
           for(var cv of canvases){
@@ -1573,78 +1457,56 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           }
         }
 
-        // Preenche número de páginas no rodapé (Chrome não suporta counter(pages) em about:blank)
+        function simplifyPdfBlocks(){
+          document.querySelectorAll('.pdf-pages').forEach(function(n){
+            var name = n.getAttribute('data-name') || 'PDF';
+            n.innerHTML = '<div class="small muted">' + name.replace(/[<>]/g, '') + ': visualização PDF local simplificada.</div>';
+            var block = n.closest('.pdf-block');
+            if(block){ var t = block.querySelector('.pdf-loading'); if(t) t.remove(); }
+          });
+        }
+
         function fillPageNumbers(){
           try{
             var body = document.body;
-            var pageH = 1122; // altura aproximada A4 a 96dpi (297mm)
+            var pageH = 1122;
             var total = Math.max(1, Math.ceil(body.scrollHeight / pageH));
             document.querySelectorAll('.pnum').forEach(function(el, i){
               el.textContent = 'Página ' + (i+1) + ' de ' + total;
             });
-          }catch(_){}
+          }catch(_){ }
+        }
+
+        async function waitForImages(timeoutMs){
+          timeoutMs = timeoutMs || 12000;
+          var imgs = Array.from(document.images || []);
+          if(!imgs.length) return true;
+          function one(img){
+            return new Promise(function(resolve){
+              if(img.complete && img.naturalWidth > 0) return resolve(true);
+              var done = false;
+              var to = setTimeout(function(){ if(done) return; done=true; resolve(false); }, timeoutMs);
+              function ok(){ if(done) return; done=true; clearTimeout(to); resolve(true); }
+              function bad(){ if(done) return; done=true; clearTimeout(to); resolve(false); }
+              img.addEventListener('load', ok, { once:true });
+              img.addEventListener('error', bad, { once:true });
+              try{ if(typeof img.decode === 'function'){ img.decode().then(ok).catch(function(){}); } }catch(_){ }
+            });
+          }
+          try{ await Promise.all(imgs.map(one)); return true; }catch(_e){ return false; }
         }
 
         window.addEventListener('load', async function(){
-          // 0) Renderizar imagens via canvas (redimensiona grandes)
           try{ await renderCanvasImages(); } catch(e){}
-
-          // 1) Renderizar PDFs (se houver) e inserir como imagens (efeito "escaneado")
-          try{ await renderAllPdfs(); } catch(e){}
-
-          // 1b) Renderizar QR PIX (se houver)
+          try{ simplifyPdfBlocks(); } catch(e){}
           try{ renderPixQr(); } catch(e){}
-
-          // 2) Aguardar carregamento/decodificação de todas as imagens antes de imprimir
-          async function waitForImages(timeoutMs){
-            timeoutMs = timeoutMs || 12000;
-            var imgs = Array.from(document.images || []);
-            if(!imgs.length) return true;
-
-            function one(img){
-              return new Promise(function(resolve){
-                if(img.complete && img.naturalWidth > 0) return resolve(true);
-                var done = false;
-                var to = setTimeout(function(){ if(done) return; done=true; resolve(false); }, timeoutMs);
-                function ok(){ if(done) return; done=true; clearTimeout(to); resolve(true); }
-                function bad(){ if(done) return; done=true; clearTimeout(to); resolve(false); }
-                img.addEventListener('load', ok, { once:true });
-                img.addEventListener('error', bad, { once:true });
-
-                // decode() melhora confiabilidade (Chrome/Edge)
-                try{
-                  if(typeof img.decode === 'function'){
-                    img.decode().then(ok).catch(function(){ /* mantém listeners */ });
-                  }
-                }catch(_){}
-              });
-            }
-
-            // Aguarda todas (não falha se alguma demorar/erro; apenas segue)
-            try{
-              await Promise.all(imgs.map(one));
-              return true;
-            }catch(_e){
-              return false;
-            }
-          }
-
-          // 4) Esperar fontes (evita glitches de render) e dar 2 frames para layout estabilizar
-          try{
-            if(document.fonts && document.fonts.ready) { await document.fonts.ready; }
-          }catch(_){}
-
-          try{ await waitForImages(12000); }catch(_){}
-
-          // Preenche "Página X de Y"
-          try{ fillPageNumbers(); }catch(_){}
-
+          try{ if(document.fonts && document.fonts.ready) { await document.fonts.ready; } }catch(_){ }
+          try{ await waitForImages(12000); }catch(_){ }
+          try{ fillPageNumbers(); }catch(_){ }
           await new Promise(function(r){ requestAnimationFrame(function(){ requestAnimationFrame(r); }); });
-
-          // 5) Imprimir somente após anexos prontos
-          window.focus();
-          window.print();
-        });      })();
+          ${opts.openPreview ? "" : "window.focus(); window.print();"}
+        });
+      })();
     </script>
   </body></html>`;
 
@@ -1652,14 +1514,17 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
   if(opts.openPreview){
     const ui = ensurePrintPreviewModal();
-    ui.setHtml(html, `atendimento-${String(atd.numero || atd.id || "documento")}`);
+    ui.setHtml(html, `print-preview-${String(atd.numero || atd.id || "atendimento")}.html`);
     ui.setState("ready", "Pré-visualização local pronta.");
     return;
   }
 
-  const ui = ensurePrintPreviewModal();
-  ui.setHtml(html, `atendimento-${String(atd.numero || atd.id || "documento")}`);
-  ui.setState("ready", "Pré-visualização local pronta.");
+  const w = window.open("", "_blank");
+  if(!w){ snack("Pop-up bloqueado. Libere pop-ups para imprimir.", "warn"); return; }
+
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
 }
 
   async function imprimirAtendimento(db, docType){
