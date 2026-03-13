@@ -598,6 +598,15 @@ async function loadEmpresaSnapshot(db){
     return Array.from(new Set(bases));
   }
 
+  function buildAttachmentRenderUrl(att, atendimentoId){
+    if(!att || !att.id || !atendimentoId) return "";
+    const tenant = localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "tenant-default";
+    const base = (location.hostname === "127.0.0.1" || location.hostname === "localhost")
+      ? "https://app.vetsystemcontrol.com.br"
+      : location.origin;
+    return `${base}/api/attachments?action=download&tenant=${encodeURIComponent(String(tenant||"tenant-default"))}&atendimento_id=${encodeURIComponent(String(atendimentoId||""))}&attachment_id=${encodeURIComponent(String(att.id||""))}&disposition=inline`;
+  }
+
   async function blobToDataUrl(blob){
     return await new Promise((resolve, reject) => {
       const fr = new FileReader();
@@ -609,14 +618,65 @@ async function loadEmpresaSnapshot(db){
 
   async function hydrateAttachmentsForPrint(atendimento){
     if(!atendimento || !Array.isArray(atendimento.attachments) || !atendimento.attachments.length) return atendimento;
+    const tenant = localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "tenant-default";
     const atendimentoId = atendimento.atendimento_id || atendimento.id || "";
-    atendimento.attachments = atendimento.attachments.map((src) => {
+    if(!atendimentoId) return atendimento;
+
+    const bases = getAttachmentPrintBaseUrls();
+    const hydrated = [];
+    for(const src of atendimento.attachments){
       const att = src ? Object.assign({}, src) : src;
-      if(!att) return att;
-      att.mime = att.mime || att.mime_type || "";
-      att.printUrl = att.dataUrl || buildAttachmentInlineUrl(att, atendimentoId) || "";
-      return att;
-    });
+      if(!att){ hydrated.push(att); continue; }
+      if(att.dataUrl){ hydrated.push(att); continue; }
+
+      const possibleUrls = [
+        att.url,
+        att.download_url,
+        att.downloadUrl,
+        att.r2_url,
+        att.file_url,
+        att.src
+      ].filter(Boolean);
+
+      let done = false;
+
+      for(const rawUrl of possibleUrls){
+        try{
+          const res = await fetch(String(rawUrl), { credentials:"include" });
+          if(!res.ok) throw new Error(`HTTP ${res.status}`);
+          const blob = await res.blob();
+          att.dataUrl = await blobToDataUrl(blob);
+          att.mime = att.mime || blob.type || "";
+          done = true;
+          break;
+        }catch(_err){}
+      }
+
+      if(!done && att.id){
+        for(const base of bases){
+          try{
+            const url = `${base}/api/attachments?action=download&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(att.id)}`;
+            const res = await fetch(url, {
+              headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
+              credentials: base ? "omit" : "include"
+            });
+            if(!res.ok) throw new Error(`HTTP ${res.status}`);
+            const blob = await res.blob();
+            att.dataUrl = await blobToDataUrl(blob);
+            att.mime = att.mime || blob.type || "";
+            done = true;
+            break;
+          }catch(_err){}
+        }
+      }
+
+      if(!done){
+        console.warn("[PRINT][ATTACH] anexo não hidratado para impressão:", att.name || att.id || att);
+      }
+      hydrated.push(att);
+    }
+
+    atendimento.attachments = hydrated;
     return atendimento;
   }
 
@@ -688,35 +748,13 @@ async function getEmpresaPixFromLocalStorage(){
   }
 }
 
-  function getPrintTenant(){
-    return (localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "tenant-default").trim() || "tenant-default";
-  }
-
-  function buildAttachmentInlineUrl(att, atendimentoId){
-    if(!att || !atendimentoId || !att.id) return "";
-    const base = (location.hostname === "127.0.0.1" || location.hostname === "localhost")
-      ? "https://app.vetsystemcontrol.com.br"
-      : "";
-    const tenant = getPrintTenant();
-    return `${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(att.id)}`;
-  }
-
-  function isPrintBackendEnabled(){
-    try{
-      if(window.VSC_ENABLE_PRINT_BACKEND === true) return true;
-      const raw = localStorage.getItem("vsc_enable_print_backend") || localStorage.getItem("VSC_ENABLE_PRINT_BACKEND") || "";
-      return /^(1|true|yes|on)$/i.test(String(raw));
-    }catch(_){
-      return false;
-    }
-  }
-
 
 
 function ensurePrintPreviewModal(){
   let m = document.getElementById("vscPrintPreviewModal");
   if(m && m.__api) return m.__api;
 
+  // Modal shell (injetado para não depender de HTML pré-existente)
   m = document.createElement("div");
   m.id = "vscPrintPreviewModal";
   m.style.position = "fixed";
@@ -736,7 +774,7 @@ function ensurePrintPreviewModal(){
         <div style="font-weight:700;">Impressão premium</div>
         <div id="vscPPStatus" style="font-size:12px; color:#555; flex:1;">—</div>
         <button id="vscPPPrint" class="btn" style="padding:6px 10px;">Imprimir</button>
-        <button id="vscPPDownload" class="btn" style="padding:6px 10px;">Baixar arquivo</button>
+        <button id="vscPPDownload" class="btn" style="padding:6px 10px;">Baixar</button>
         <button id="vscPPClose" class="btn" style="padding:6px 10px;">Fechar</button>
       </div>
       <div id="vscPPBody" style="flex:1; background:#f6f6f6; display:flex; align-items:center; justify-content:center;">
@@ -753,59 +791,51 @@ function ensurePrintPreviewModal(){
   const loaderEl = m.querySelector("#vscPPLoader");
   const errEl = m.querySelector("#vscPPError");
   const btnClose = m.querySelector("#vscPPClose");
-  const btnDl = m.querySelector("#vscPPDownload");
   const btnPrint = m.querySelector("#vscPPPrint");
+  const btnDl = m.querySelector("#vscPPDownload");
 
   let currentUrl = "";
-  let currentName = "print-preview.html";
-  let currentKind = "html";
+  let currentName = "print-pack.pdf";
 
-  function revokeCurrentUrl(){
-    try{ if(currentUrl && /^blob:/.test(currentUrl)) URL.revokeObjectURL(currentUrl); }catch(_){ }
+  function open(){ m.style.display = "flex"; }
+  function close(){
+    m.style.display = "none";
+    // revoga URL anterior para não vazar memória
+    try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
     currentUrl = "";
-  }
-
-  function resetFrame(){
     frame.src = "about:blank";
     frame.style.display = "none";
     loaderEl.style.display = "block";
     errEl.style.display = "none";
   }
 
-  function open(){ m.style.display = "flex"; }
-  function close(){
-    m.style.display = "none";
-    revokeCurrentUrl();
-    resetFrame();
-  }
-
-  async function printCurrentFrame(){
-    try{
-      if(frame.style.display === "none" || !frame.contentWindow){
-        snack("Pré-visualização ainda não está pronta.", "warn");
-        return;
-      }
-      frame.contentWindow.focus();
-      frame.contentWindow.print();
-    }catch(e){
-      console.error("[PRINT][MODAL] falha ao imprimir iframe:", e);
-      snack("Falha ao abrir diálogo de impressão.", "err");
-    }
-  }
-
   btnClose.addEventListener("click", (e)=>{ e.preventDefault(); close(); });
-  btnPrint.addEventListener("click", (e)=>{ e.preventDefault(); printCurrentFrame(); });
   m.addEventListener("click", (e)=>{ if(e.target === m) close(); });
+
+  btnPrint.addEventListener("click", (e)=>{
+    e.preventDefault();
+    if(!currentUrl || !frame.contentWindow){
+      snack("Pré-visualização ainda não está pronta.", "warn");
+      return;
+    }
+    try{
+      frame.contentWindow.focus();
+      setTimeout(()=>{ try{ frame.contentWindow.print(); }catch(_err){} }, 80);
+    }catch(err){
+      console.error("[PRINT][MODAL] falha ao imprimir preview:", err);
+      snack("Falha ao abrir o diálogo de impressão.", "err");
+    }
+  });
 
   btnDl.addEventListener("click", async (e)=>{
     e.preventDefault();
     if(!currentUrl){
-      snack("Arquivo ainda não está pronto.", "warn");
+      snack("Pré-visualização ainda não está pronta.", "warn");
       return;
     }
     const a = document.createElement("a");
     a.href = currentUrl;
-    a.download = currentName || (currentKind === "pdf" ? "print-pack.pdf" : "print-preview.html");
+    a.download = currentName || "print-pack.html";
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -830,23 +860,19 @@ function ensurePrintPreviewModal(){
       }
     },
     setPdf(url, filename){
-      revokeCurrentUrl();
+      try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
       currentUrl = url;
       currentName = filename || "print-pack.pdf";
-      currentKind = "pdf";
-      btnDl.textContent = "Baixar PDF";
       frame.src = url;
       frame.style.display = "block";
       loaderEl.style.display = "none";
       errEl.style.display = "none";
     },
-    setHtml(html, filename){
-      revokeCurrentUrl();
+    setHtml(url, filename){
+      try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
+      currentUrl = url;
       currentName = filename || "print-preview.html";
-      currentKind = "html";
-      btnDl.textContent = "Baixar HTML";
-      currentUrl = URL.createObjectURL(new Blob([String(html || "")], { type: "text/html;charset=utf-8" }));
-      frame.src = currentUrl;
+      frame.src = url;
       frame.style.display = "block";
       loaderEl.style.display = "none";
       errEl.style.display = "none";
@@ -858,82 +884,73 @@ function ensurePrintPreviewModal(){
   return api;
 }
 
-
 async function openPrintWindow(payload, docType){
+  // SGQT-PRINT-ENTERPRISE (Premium): gerar PDF server-side e exibir em MODAL (sem navegar / sem abrir 2 abas)
+  // Regra: NÃO usar window.location fallback. Se popup for bloqueado, usamos preview/download via Blob.
   const doc = payload || {};
-  const ui = ensurePrintPreviewModal();
-  ui.setState("loading", isPrintBackendEnabled() ? "Gerando PDF premium (incluindo anexos)…" : "Preparando pré-visualização de impressão…");
-
-  let html = openPrintWindowClient(doc, docType, { returnHtml: true });
+  let html = openPrintWindowClient(payload, docType, { returnHtml: true });
+  // SGQT-PRINT: normalizar HTML (evita MISSING_HTML quando retornar Promise/objeto)
   try{
     if(html && typeof html.then === "function") html = await html;
   }catch(e){
     console.error("[SGQT-PRINT][HTML] falha ao resolver html Promise:", e);
   }
-  if(typeof html !== "string") html = (html == null ? "" : String(html));
-  if(!html.trim()){
-    ui.setState("error", "HTML de impressão vazio.");
-    throw new Error("PRINT_HTML_EMPTY");
+  if(typeof html !== "string") html = (html==null ? "" : String(html));
+  const __htmlLen = (html && html.length) ? html.length : 0;
+  if(!html || !html.trim()){
+    console.error("[SGQT-PRINT][HTML] vazio/ausente. len=", __htmlLen);
+    const ui = ensurePrintPreviewModal();
+    ui.setState("error", "HTML da impressão está vazio (bloqueado localmente).");
+    snack("Impressão premium: HTML vazio — não foi enviado ao backend.", "err");
+    throw new Error("PRINT_PACK_MISSING_HTML_LOCAL");
   }
 
-  if(!isPrintBackendEnabled()){
-    ui.setHtml(html, `print-preview-${String(doc.atendimento?.numero || "atendimento")}.html`);
-    ui.setState("ready", "Pré-visualização pronta.");
-    return;
+
+  // Snapshot canônico da Empresa (offline-first)
+  // - inclui pix_chave, __logoA e __logoB quando existirem
+  var empresaSnap = Object.assign({}, getEmpresaSnapshotForPrint(), doc.empresa || {});
+  if(!empresaSnap.__logoA){
+    try{ empresaSnap.__logoA = await getEmpresaLogoAFromLocalStorage(); }catch(e){}
   }
 
   const reqBody = {
-    html,
+    html: html,
+    html_len: __htmlLen,
+    doc_type: docType,
+    doc_uuid: (doc.atendimento && doc.atendimento.atendimento_id) ? String(doc.atendimento.atendimento_id) : undefined,
+    doc_id: (doc.atendimento && (doc.atendimento.numero || doc.atendimento.id)) ? String(doc.atendimento.numero || doc.atendimento.id) : undefined,
+    empresa: empresaSnap,
     atendimento: doc.atendimento || {},
-    empresa: doc.empresa || {},
-    cliente: doc.cliente || {},
-    animais: doc.animais || [],
-    doc_id: doc.atendimento?.id || doc.atendimento?.atendimento_id || "",
-    doc_uuid: doc.atendimento?.id || doc.atendimento?.atendimento_id || "",
-    generated_at: doc.gerado_em || isoNow()
+    cliente: doc.cliente || doc.cliente_proprietario || {},
+    pacientes: Array.isArray(doc.animais) ? doc.animais.map(a => ({
+      nome: a && (a.nome || a.name || a.animal_nome || a.paciente_nome || a.id || a._id) ? String(a.nome || a.name || a.animal_nome || a.paciente_nome || a.id || a._id) : ""
+    })).filter(p => p && p.nome) : [],
+    animal: (Array.isArray(doc.animais) && doc.animais[0]) ? { nome: String(doc.animais[0].nome || doc.animais[0].name || doc.animais[0].animal_nome || doc.animais[0].paciente_nome || doc.animais[0].id || doc.animais[0]._id || "") } : (doc.animal || doc.paciente || undefined),
+    front_html: html,
+    attachments: Array.isArray(doc.atendimento && doc.atendimento.attachments) ? doc.atendimento.attachments.map(a => ({
+      name: a.name || a.nome,
+      kind: a.kind || (String(a.mime||"")==="application/pdf" ? "PDF" : "Imagem"),
+      dataUrl: a.dataUrl,
+      mime: a.mime,
+      created_at: a.created_at || a.data || a.ts,
+      descricao: a.descricao || a.description || a.desc || ""
+    })) : [],
   };
 
-  let r;
-  try{
-    r = await fetch("/api/atendimentos/print-pack", {
-      method: "POST",
-      headers: getPrintAuthHeaders(),
-      credentials: "include",
-      body: JSON.stringify(reqBody)
-    });
-  }catch(e){
-    console.error("[SGQT-PRINT][NET] erro:", e);
-    ui.setHtml(html, `print-preview-${String(reqBody.doc_uuid || reqBody.doc_id || reqBody.atendimento?.numero || "atendimento")}.html`);
-    ui.setState("ready", "Backend indisponível. Pré-visualização local pronta.");
-    return;
+  const ui = ensurePrintPreviewModal();
+  ui.setState("loading", "Gerando PDF premium (incluindo anexos)…");
+
+  // Anexos: usa apenas o que já está em memória local (dataUrl).
+  // NÃO faz download em tempo de impressão — evita travamento da UI.
+  // Arquivos apenas no servidor aparecem com aviso no documento impresso.
+  if(doc.atendimento && Array.isArray(doc.atendimento.attachments)){
+    const sem = doc.atendimento.attachments.filter(a => a && !a.dataUrl && a.synced_to_r2);
+    if(sem.length) console.info('[PRINT] ' + sem.length + ' anexo(s) só no servidor (exibidos como referência no doc):', sem.map(a=>a.name));
   }
 
-  if(!r.ok){
-    let detail = "";
-    try{ detail = await r.text(); }catch(_){ }
-    console.error("[SGQT-PRINT][HTTP] status:", r.status, detail);
-    ui.setHtml(html, `print-preview-${String(reqBody.doc_uuid || reqBody.doc_id || reqBody.atendimento?.numero || "atendimento")}.html`);
-    ui.setState("ready", `Backend de impressão indisponível (${r.status}). Pré-visualização local pronta.`);
-    return;
-  }
-
-  const ct = String(r.headers.get("Content-Type") || "").toLowerCase();
-  if(!ct.includes("application/pdf")){
-    let t = "";
-    try{ t = await r.text(); }catch(_){ }
-    console.error("[SGQT-PRINT][HTTP] resposta não-PDF do backend:", ct, t.slice(0, 400));
-    ui.setHtml(html, `print-preview-${String(reqBody.doc_uuid || reqBody.doc_id || reqBody.atendimento?.numero || "atendimento")}.html`);
-    ui.setState("ready", "Backend não retornou PDF. Pré-visualização local pronta.");
-    return;
-  }
-
-  const blob = await r.blob();
-  const fileName = `print-pack-${String(reqBody.doc_uuid || reqBody.doc_id || reqBody.atendimento?.numero || "atendimento")}.pdf`;
-  const url = URL.createObjectURL(blob);
-  ui.setPdf(url, fileName);
-  ui.setState("ready", "PDF pronto.");
+  ui.setState("loading", "Gerando pré-visualização local...");
+  return openPrintWindowClient(doc, docType, { openPreview:true });
 }
-
 
 
 // Fallback (modo offline / compatibilidade legada): impressão client-side (PDF.js + window.print())
@@ -942,14 +959,12 @@ function openPrintWindowClient(payload, docType, opts){
 
   const R = payload || {};
   const empresa = R.empresa || {};
-  const logoA = empresa.__logoA || empresa.logoA || empresa.logo_a || empresa.logo_a_dataurl || empresa.logo_a_dataUrl || empresa.logo_a_dataURL || empresa.logo_data_url || empresa.logoDataUrl || empresa.logoCliente || empresa.logo_cliente || "";
-  const logoB = empresa.__logoB || empresa.logoB || empresa.logo_b || empresa.logo_b_dataurl || empresa.logo_b_dataUrl || empresa.logo_b_dataURL || "";
+    const logoA = empresa.__logoA || empresa.logoA || empresa.logo_a || empresa.logo_a_dataurl || empresa.logo_a_dataUrl || empresa.logo_a_dataURL || empresa.logo_data_url || empresa.logoDataUrl || empresa.logoCliente || empresa.logo_cliente || "";
   const pixKey = empresa.pix_chave || empresa.chave_pix || empresa.pixKey || empresa.pix || empresa.pix_chave_copia_cola || "";
-  const pixLine = [empresa.pix_tipo || "", pixKey || "", empresa.pix_nome || ""].filter(Boolean).join(" • ");
+  const logoB = empresa.__logoB || empresa.logoB || empresa.logo_b || empresa.logo_b_dataurl || empresa.logo_b_dataUrl || empresa.logo_b_dataURL || "";
   const atd = R.atendimento || {};
   const cli = R.cliente || {};
   const animais = Array.isArray(R.animais) ? R.animais : [];
-  const atendimentoId = atd.atendimento_id || atd.id || "";
 
   docType = String(docType || "clinico");
   const DOC_LABEL = (docType === "financeiro") ? "Comprovante Financeiro" : (docType === "prescricao") ? "Prescrição" : (docType === "clinico_financeiro") ? "Relatório Clínico + Financeiro" : "Relatório Clínico / Prontuário";
@@ -968,12 +983,13 @@ function openPrintWindowClient(payload, docType, opts){
   <path d="M24 46c7-5 16-7 26-6" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".9"/>
 </svg>`;
 
-  const animaisTxt = animais.length ? animais.map(a => a.nome || a.id).filter(Boolean).join(", ") : (Array.isArray(atd._animal_names) ? atd._animal_names.join(", ") : "—");
+  const empLine = [empresa.cnpj, empresa.endereco, [empresa.telefone, empresa.email].filter(Boolean).join(" • ")].filter(Boolean).join("<br/>");
+  const animaisTxt = animais.length ? animais.map(a=>a.nome||a.id).filter(Boolean).join(", ") : (Array.isArray(atd._animal_names)?atd._animal_names.join(", "):"—");
   const itens = Array.isArray(atd.itens) ? atd.itens : [];
   const totals = atd.totals || {};
   const atts = Array.isArray(atd.attachments) ? atd.attachments : [];
-  const vitalsByAnimal = atd.vitals_by_animal || {};
 
+  const vitalsByAnimal = atd.vitals_by_animal || {};
   function vitalsLine(v){
     if(!v) return "—";
     const parts = [];
@@ -991,7 +1007,7 @@ function openPrintWindowClient(payload, docType, opts){
   const vet = atd.responsavel_snapshot || {};
   const vetLine = [
     vet.full_name || vet.username || "",
-    (vet.crmv_uf && vet.crmv_num) ? ("CRMV-" + vet.crmv_uf + " Nº " + vet.crmv_num) : ""
+    (vet.crmv_uf && vet.crmv_num) ? ("CRMV-"+vet.crmv_uf+" Nº "+vet.crmv_num) : ""
   ].filter(Boolean).join(" — ");
 
   const institutionalCss = (window.VSCPrintTemplate && typeof window.VSCPrintTemplate.getInstitutionalCss === "function")
@@ -1021,9 +1037,9 @@ th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08
 .tot .box{min-width:320px;}
 .section-title{margin-top:18px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.12em;color:#0f766e;}
 img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid var(--bd);border-radius:10px;}
+.pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
 .muted{color:var(--muted);}
 .att{margin:12px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:12px;break-inside:avoid;page-break-inside:avoid;}
-.att + .att{margin-top:18px;}
 .att-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:8px;}
 .att-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:#334155;}
 .att-kind{font-size:11px;color:var(--muted);font-weight:800;white-space:nowrap;}
@@ -1031,8 +1047,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 .att-desc-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.09em;font-weight:800;margin-bottom:5px;}
 .att-desc{font-size:12px;color:#0f172a;white-space:pre-wrap;line-height:1.45;}
 .att-nodata{font-size:12px;color:#92400e;background:#fff7ed;padding:8px 10px;border-radius:8px;margin-top:6px;border:1px solid #fed7aa;}
-.att-inline-image{display:block;max-width:100%;height:auto;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;}
-.att-pdf-object{display:block;width:100%;height:1120px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;}
 .wmLocal{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; user-select:none; z-index:0;}
 .wmLocal img{width:62%;max-width:560px;border:none !important;border-radius:0 !important;margin:0 !important;opacity:.06;filter:grayscale(1);object-fit:contain;}
 .sheetContent{position:relative; z-index:1;}
@@ -1042,7 +1056,9 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   .no-print{display:none !important;}
   body{margin:0;}
   .page{max-width:none;padding:0;}
-  .box,.att,.att-media,object,embed,img,tr{break-inside:avoid;page-break-inside:avoid;}
+  .box,.att,.pdf-block,.att-media,tr,img,canvas{break-inside:avoid;page-break-inside:avoid;}
+  .pdf-pages img{break-inside:avoid;page-break-inside:avoid;break-after:page;page-break-after:always;}
+  .pdf-pages img:last-child{break-after:auto;page-break-after:auto;}
   .sheet{padding:0;}
   .sheet + .sheet{break-before:page;page-break-before:always;margin-top:0;}
   .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.5mm 10mm;font-size:9px;color:var(--muted);background:#fff;}
@@ -1050,62 +1066,102 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 }
   `;
 
-  const rowsFinanceiro = itens.length ? itens.map(it => {
-    const sub = (Number(it.qtd || 0) * Number(it.vu || 0));
+
+  const rowsFinanceiro = itens.length ? itens.map(it=>{
+    const sub = (Number(it.qtd||0)*Number(it.vu||0));
     return `<tr>
-      <td>${esc(it.tipo || "")}</td>
-      <td>${esc(it.desc || "")}</td>
-      <td class="right">${esc(String(it.qtd || 0))}</td>
-      <td class="right">${esc(fmtBRL(it.vu || 0))}</td>
+      <td>${esc(it.tipo||"")}</td>
+      <td>${esc(it.desc||"")}</td>
+      <td class="right">${esc(String(it.qtd||0))}</td>
+      <td class="right">${esc(fmtBRL(it.vu||0))}</td>
       <td class="right">${esc(fmtBRL(sub))}</td>
     </tr>`;
   }).join("") : `<tr><td colspan="5" class="muted">Nenhum item lançado.</td></tr>`;
 
-  const rowsClinico = itens.length ? itens.map(it => `<tr>
-      <td>${esc(it.tipo || "")}</td>
-      <td>${esc(it.desc || "")}</td>
-      <td class="right">${esc(String(it.qtd || 0))}</td>
-    </tr>`).join("") : `<tr><td colspan="3" class="muted">Nenhum item registrado.</td></tr>`;
+  const rowsClinico = itens.length ? itens.map(it=>{
+    return `<tr>
+      <td>${esc(it.tipo||"")}</td>
+      <td>${esc(it.desc||"")}</td>
+      <td class="right">${esc(String(it.qtd||0))}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="3" class="muted">Nenhum item registrado.</td></tr>`;
 
-  const prescProdutos = itens.filter(it => String(it.tipo || "") === "PRODUTO");
+  const prescProdutos = itens.filter(it => String(it.tipo||"") === "PRODUTO");
   const prescRowsSrc = prescProdutos.length ? prescProdutos : [{desc:"",qtd:""},{desc:"",qtd:""},{desc:"",qtd:""}];
-  const rowsPrescricao = prescRowsSrc.map(it => `<tr>
-      <td>${esc(it.desc || "")}</td>
-      <td class="right">${esc(String(it.qtd || ""))}</td>
+  const rowsPrescricao = prescRowsSrc.map(it=>{
+    return `<tr>
+      <td>${esc(it.desc||"")}</td>
+      <td class="right">${esc(String(it.qtd||""))}</td>
       <td></td><td></td><td></td>
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
 
+  const attachmentOwnerId = atd.id || atd.atendimento_id || "";
   const attHtml = ((docType === "clinico") || (docType === "clinico_financeiro")) ? (
-    atts.length ? atts.map((a, idx) => {
+    atts.length ? atts.map((a, idx)=>{
       const mime = String(a.mime || a.mime_type || "").toLowerCase();
-      const fileName = String(a.name || a.filename || ("Anexo " + (idx + 1)));
-      const name = esc(fileName);
+      const isPdf = mime === "application/pdf" || /\.pdf$/i.test(String(a.name||""));
+      const name = esc(a.name || ("Anexo " + (idx+1)));
+      const sizeKb = a.size ? Math.round(a.size/1024) + " KB" : "";
       const desc = esc(a.descricao || a.description || a.desc || "—");
-      const src = a.dataUrl || a.printUrl || buildAttachmentInlineUrl(a, atendimentoId);
-      const sizeLabel = a.size ? bytesToHuman(a.size) : "";
-      const isPdf = mime === "application/pdf" || /\.pdf$/i.test(fileName);
-      const isImg = /^image\//.test(mime) || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(fileName);
-      let mediaHtml = `<div class="att-nodata">⚠ O arquivo não pôde ser carregado para a impressão.</div>`;
-      if(src && isPdf){
-        mediaHtml = `<object data="${src}" type="application/pdf" class="att-pdf-object"><embed src="${src}" type="application/pdf" class="att-pdf-object" /><div class="att-nodata">PDF indisponível para incorporação neste navegador.</div></object>`;
-      }else if(src && isImg){
-        mediaHtml = `<img class="att-inline-image" src="${src}" alt="${name}" />`;
+      const renderUrl = buildAttachmentRenderUrl(a, attachmentOwnerId);
+      const hasRenderable = !!(a.dataUrl || renderUrl);
+      if(!hasRenderable){
+        return `
+          <section class="att">
+            <div class="att-head">
+              <div class="att-title">${name}</div>
+              <div class="att-kind">${isPdf ? "PDF" : "Imagem"}${sizeKb ? ` • ${sizeKb}` : ""}</div>
+            </div>
+            <div class="att-nodata">⚠ O arquivo não pôde ser carregado para a impressão.</div>
+            <div class="att-desc-wrap">
+              <div class="att-desc-label">Descrição clínica do anexo</div>
+              <div class="att-desc">${desc}</div>
+            </div>
+          </section>
+        `;
       }
-      return `<section class="att">
-        <div class="att-head">
-          <div class="att-title">${name}</div>
-          <div class="att-kind">${isPdf ? "PDF" : (isImg ? "Imagem" : "Arquivo")}${sizeLabel ? ` • ${sizeLabel}` : ""}</div>
-        </div>
-        <div class="att-media">${mediaHtml}</div>
-        <div class="att-desc-wrap">
-          <div class="att-desc-label">Descrição clínica do anexo</div>
-          <div class="att-desc">${desc}</div>
-        </div>
-      </section>`;
-    }).join("") : `<div class="small muted">Nenhum anexo clínico registrado.</div>`
+      if(isPdf){
+        const dataAttr = a.dataUrl ? ` data-dataurl="${a.dataUrl}"` : "";
+        const urlAttr = renderUrl ? ` data-pdf-url="${esc(renderUrl)}"` : "";
+        return `
+          <section class="att">
+            <div class="att-head">
+              <div class="att-title">${name}</div>
+              <div class="att-kind">PDF${sizeKb ? ` • ${sizeKb}` : ""}</div>
+            </div>
+            <div class="pdf-block att-media" data-idx="${idx}">
+              <div class="pdf-loading">Renderizando PDF para impressão…</div>
+              <div class="pdf-pages" data-name="${name}"${dataAttr}${urlAttr}></div>
+            </div>
+            <div class="att-desc-wrap">
+              <div class="att-desc-label">Descrição clínica do anexo</div>
+              <div class="att-desc">${desc}</div>
+            </div>
+          </section>
+        `;
+      }
+      const imageSrc = a.dataUrl || renderUrl;
+      return `
+        <section class="att">
+          <div class="att-head">
+            <div class="att-title">${name}</div>
+            <div class="att-kind">Imagem${sizeKb ? ` • ${sizeKb}` : ""}</div>
+          </div>
+          <div class="att-media">
+            <img data-anexo="1" src="${imageSrc}" alt="${name}" loading="eager" decoding="sync" style="max-width:100%;display:block;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;" />
+          </div>
+          <div class="att-desc-wrap">
+            <div class="att-desc-label">Descrição clínica do anexo</div>
+            <div class="att-desc">${desc}</div>
+          </div>
+        </section>
+      `;
+    }).join("")
+    : `<div class="small muted">Nenhum anexo clínico registrado.</div>`
   ) : "";
 
-  const vitalsHtml = (animais.length ? animais : (Array.isArray(atd.animal_ids) ? atd.animal_ids.map(id => ({id, nome:id})) : [])).map(a => {
+  const vitalsHtml = (animais.length ? animais : (Array.isArray(atd.animal_ids) ? atd.animal_ids.map(id=>({id, nome:id})) : [])).map(a=>{
     const id = String(a.id || "");
     const nm = String(a.nome || id || "Paciente");
     const v = vitalsByAnimal[id] || null;
@@ -1117,23 +1173,23 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
   const headerHtml = (window.VSCPrintTemplate && typeof window.VSCPrintTemplate.renderInstitutionalHeader === "function")
     ? window.VSCPrintTemplate.renderInstitutionalHeader({
-        systemLogoSrc: `${location.origin}/assets/brand/vsc-logo-horizontal.png`,
+        systemLogoHtml: `<img class="kado-system-logo" src="${location.origin}/assets/brand/vsc-logo-horizontal.png" alt="Vet System Control" />`,
         systemLogoFallback: '<div class="kado-fallback-system">Vet System Control</div>',
         companyLogoHtml: logoA
           ? `<img class="kado-company-logo" src="${logoA}" alt="Logo da empresa"/>`
           : `<div class="kado-company-logo-fallback">${SYSTEM_LOGO_SVG}</div>`,
-        companyName: esc(empresa.nome || empresa.nome_fantasia || empresa.razao_social || "Empresa"),
+        companyName: esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa"),
         companyMetaHtml: [
           empresa.cnpj ? `<div>CNPJ: ${esc(empresa.cnpj)}</div>` : "",
           empresa.email ? `<div>${esc(empresa.email)}</div>` : "",
-          pixLine ? `<div>PIX: ${esc(pixLine)}</div>` : ""
+          pixKey ? `<div>PIX</div>` : ""
         ].filter(Boolean).join(""),
         documentTitle: esc(DOC_LABEL),
         documentMetaHtml: [
-          `<div><b>Nº:</b> ${esc(atd.numero || "—")}</div>`,
-          `<div><b>Status:</b> ${esc(atd.status || "—")}</div>`,
+          `<div><b>Nº:</b> ${esc(atd.numero||"—")}</div>`,
+          `<div><b>Status:</b> ${esc(atd.status||"—")}</div>`,
           `<div><b>Data de emissão:</b> ${esc(fmtDate(R.gerado_em))}</div>`,
-          `<div><b>Paciente(s):</b> ${esc(animaisTxt || "—")}</div>`
+          `<div><b>Paciente(s):</b> ${esc(animaisTxt||"—")}</div>`
         ].join("")
       })
     : '';
@@ -1144,11 +1200,11 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         originLine1: 'Vet System Control • ERP Equine',
         originLine2: 'Documento operacional para atendimento, balcão e auditoria clínica.',
         clientLabel: 'Cliente / Proprietário',
-        clientValue: esc(cli.nome || cli.razao_social || atd.cliente_label || "—"),
+        clientValue: esc(cli.nome||cli.razao_social||atd.cliente_label||"—"),
         patientLabel: 'Paciente(s)',
-        patientValue: esc(animaisTxt || "—"),
+        patientValue: esc(animaisTxt||"—"),
         vetLabel: 'Veterinário / Responsável',
-        vetValue: esc(vetLine || "—"),
+        vetValue: esc(vetLine||"—"),
         attachmentsLabel: 'Anexos clínicos',
         attachmentsValue: esc(String(atts.length || 0)),
         dateLabel: 'Data',
@@ -1178,10 +1234,29 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   `
     : ``;
 
+
   const bodyClinicoAttachments = `
     <div class="section-title">Anexos</div>
     <div class="attachments">${attHtml || `<div class="small muted">Nenhum anexo.</div>`}</div>
   `;
+
+
+  const pixBox = pixKey ? `
+    <div class="section-title">Pagamento via PIX</div>
+    <div class="box">
+      <div class="grid" style="grid-template-columns:1fr 180px; align-items:start;">
+        <div>
+          <div class="lbl">Chave PIX (copia e cola)</div>
+          <div class="val" style="word-break:break-all;">${esc(pixKey)}</div>
+          <div class="small muted">Aponte a câmera do app do banco para o QR ao lado ou copie a chave acima.</div>
+        </div>
+        <div>
+          <div class="lbl" style="text-align:center;">QR PIX</div>
+          <div id="pixQr" data-pix="${esc(pixKey)}" style="display:flex;justify-content:center;"></div>
+        </div>
+      </div>
+    </div>
+  ` : ``;
 
   const bodyFinanceiro = `
     <div class="section-title">Lançamentos</div>
@@ -1198,10 +1273,10 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     <div class="tot">
       <div class="box">
         <div class="grid">
-          <div><div class="lbl">Itens</div><div class="val">${esc(fmtBRL(totals.total_itens || 0))}</div></div>
-          <div><div class="lbl">Desconto</div><div class="val">${esc(fmtBRL(totals.desconto_calc || 0))}</div></div>
-          <div><div class="lbl">Deslocamento</div><div class="val">${esc(fmtBRL(totals.deslocamento || 0))}</div></div>
-          <div><div class="lbl">Total Geral</div><div class="val">${esc(fmtBRL(totals.total_geral || 0))}</div></div>
+          <div><div class="lbl">Itens</div><div class="val">${esc(fmtBRL(totals.total_itens||0))}</div></div>
+          <div><div class="lbl">Desconto</div><div class="val">${esc(fmtBRL(totals.desconto_calc||0))}</div></div>
+          <div><div class="lbl">Deslocamento</div><div class="val">${esc(fmtBRL(totals.deslocamento||0))}</div></div>
+          <div><div class="lbl">Total Geral</div><div class="val">${esc(fmtBRL(totals.total_geral||0))}</div></div>
         </div>
       </div>
     </div>
@@ -1216,14 +1291,14 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       <div class="grid">
         <div>
           <div class="lbl">Cliente / Proprietário</div>
-          <div class="val">${esc(cli.nome || cli.razao_social || atd.cliente_label || "—")}</div>
-          <div class="small">${esc([cli.doc || cli.cnpj || cli.cpf || "", cli.telefone || cli.fone || ""].filter(Boolean).join(" • "))}</div>
+          <div class="val">${esc(cli.nome||cli.razao_social||atd.cliente_label||"—")}</div>
+          <div class="small">${esc([cli.doc||cli.cnpj||cli.cpf||"", cli.telefone||cli.fone||""].filter(Boolean).join(" • "))}</div>
         </div>
         <div>
           <div class="lbl">Paciente(s)</div>
-          <div class="val">${esc(animaisTxt || "—")}</div>
+          <div class="val">${esc(animaisTxt||"—")}</div>
           <div class="small"><strong>Data:</strong> ${esc(fmtDate(atd.created_at))}</div>
-          <div class="small"><strong>Veterinário:</strong> ${esc(vetLine || "—")}</div>
+          <div class="small"><strong>Veterinário:</strong> ${esc(vetLine||"—")}</div>
         </div>
       </div>
     </div>
@@ -1244,92 +1319,257 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     <div class="small muted">Complete posologia conforme avaliação clínica. Para antimicrobianos e itens controlados, seguir exigências vigentes.</div>
   `;
 
-  const bodyClinicoFinanceiro = bodyClinicoMain + `
 
-<div class="page-break"></div>
-
-` + bodyFinanceiro;
+  const bodyClinicoFinanceiro = bodyClinicoMain + `\n\n<div class="page-break"></div>\n\n` + bodyFinanceiro;
   const html = `<!doctype html><html lang="pt-BR"><head>
     <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>Impressão — ${esc(DOC_LABEL)}</title>
     <style>${css}</style>
+    <script src="${PDFJS_CDN_BASE}/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
   </head><body>
     <div class="page">
       <div class="no-print" style="padding:10px 0 16px;color:var(--muted);font-size:12px;">
-        Pré-visualização pronta. Use o botão Imprimir no modal para abrir o diálogo do navegador.
+        Padrão hospitalar: documentos separados. O diálogo de impressão abrirá automaticamente.
       </div>
 
       <div class="sheet sheet--main">
         ${(docType === "clinico" && logoB) ? `<div class="wmLocal"><img src="${logoB}" alt="Marca d'água"/></div>` : ``}
         <div class="sheetContent">
           ${headerHtml}
+
           ${(docType === "financeiro") ? bodyFinanceiro : (docType === "prescricao") ? bodyPrescricao : (docType === "clinico_financeiro") ? bodyClinicoFinanceiro : bodyClinicoMain}
         </div>
       </div>
 
       ${(((docType === "clinico") || (docType === "clinico_financeiro")) && atts.length) ? `
         <div class="sheet sheet--attachments">
-          <div class="sheetContent">${bodyClinicoAttachments}</div>
+          <div class="sheetContent">
+            ${bodyClinicoAttachments}
+          </div>
         </div>
       ` : ``}
     </div>
 
     <div class="footer">
       <div class="row">
-        <div><b>${esc(DOC_SPEC)}</b> • ${esc(DOC_LABEL)} • Emitido em ${esc(new Date(R.gerado_em || Date.now()).toLocaleString("pt-BR"))}</div>
+        <div>
+          <div><b>${esc(DOC_SPEC)}</b> • ${esc(DOC_LABEL)} • Emitido em ${esc(new Date(R.gerado_em||Date.now()).toLocaleString("pt-BR"))}</div>
+          <div>Hash: <span id="docHash">calculando…</span></div>
+        </div>
         <div class="pnum"></div>
       </div>
     </div>
 
     <script>
       (function(){
+        function dataUrlToUint8(dataUrl){
+          var s = String(dataUrl||"");
+          var i = s.indexOf("base64,");
+          if(i<0) return null;
+          var b64 = s.slice(i+7);
+          var bin = atob(b64);
+          var u8 = new Uint8Array(bin.length);
+          for(var k=0;k<bin.length;k++) u8[k]=bin.charCodeAt(k);
+          return u8;
+        }
+
+        async function renderOnePdf(container){
+          var dataUrl = container.getAttribute('data-dataurl');
+          if(!dataUrl) return;
+          if(window.pdfjsLib && window.pdfjsLib.GlobalWorkerOptions){
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = "${PDFJS_CDN_BASE}/pdf.worker.min.js";
+          }
+          var loadingTask;
+          if(dataUrl){
+            var bytes = dataUrlToUint8(dataUrl);
+            if(!bytes){ container.innerHTML = '<div class="small muted">Não foi possível ler o PDF (base64 inválido).</div>'; return; }
+            loadingTask = window.pdfjsLib.getDocument({ data: bytes });
+          }else{
+            loadingTask = window.pdfjsLib.getDocument({ url: pdfUrl, withCredentials: true });
+          }
+          var pdf = await loadingTask.promise;
+          var frag = document.createDocumentFragment();
+          for(var p=1; p<=pdf.numPages; p++){
+            var page = await pdf.getPage(p);
+            var viewport = page.getViewport({ scale: 1.6 });
+            var canvas = document.createElement('canvas');
+            canvas.width = Math.floor(viewport.width);
+            canvas.height = Math.floor(viewport.height);
+            var ctx = canvas.getContext('2d', { alpha: false });
+            await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+            var img = document.createElement('img');
+            img.alt = 'PDF página ' + p;
+            img.src = canvas.toDataURL('image/png');
+            frag.appendChild(img);
+          }
+          container.innerHTML = '';
+          container.appendChild(frag);
+          var block = container.closest('.pdf-block');
+          if(block){ var t = block.querySelector('.pdf-loading'); if(t) t.remove(); }
+        }
+
+        async function renderAllPdfs(){
+          var nodes = Array.from(document.querySelectorAll('.pdf-pages'));
+          if(!nodes.length) return;
+          if(!window.pdfjsLib || !window.pdfjsLib.getDocument){
+            nodes.forEach(function(n){
+              n.innerHTML = '<div class="small muted">PDF.js indisponível neste navegador. Use “Abrir PDF em nova aba” para imprimir o PDF.</div>';
+              var block = n.closest('.pdf-block');
+              if(block){ var t = block.querySelector('.pdf-loading'); if(t) t.remove(); }
+            });
+            return;
+          }
+          for(const n of nodes){
+            try{ await renderOnePdf(n); }
+            catch(e){
+              n.innerHTML = '<div class="small muted">Falha ao renderizar PDF. Use “Abrir PDF em nova aba” para imprimir.</div>';
+              var block = n.closest('.pdf-block');
+              if(block){ var t = block.querySelector('.pdf-loading'); if(t) t.remove(); }
+            }
+          }
+        }
+
+        async function sha256Hex(text){
+          try{
+            if(!window.crypto || !crypto.subtle) return null;
+            var enc = new TextEncoder();
+            var buf = enc.encode(String(text||""));
+            var digest = await crypto.subtle.digest('SHA-256', buf);
+            var arr = Array.from(new Uint8Array(digest));
+            return arr.map(function(b){return b.toString(16).padStart(2,'0');}).join('');
+          }catch(e){ return null; }
+        }
+
+
+        function renderPixQr(){
+          try{
+            var el = document.getElementById('pixQr');
+            if(!el) return;
+            var k = el.getAttribute('data-pix') || '';
+            if(!k) return;
+            if(!window.qrcode){
+              el.innerHTML = '<div class="small muted">QR indisponível.</div>';
+              return;
+            }
+            var qr = window.qrcode(0, 'M');
+            qr.addData(String(k));
+            qr.make();
+            el.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0 });
+            // ajusta tamanho máximo
+            var svg = el.querySelector('svg');
+            if(svg){
+              svg.setAttribute('style','width:160px;height:160px;max-width:160px;max-height:160px;');
+            }
+          }catch(_e){}
+        }
+
+        // Preenche número de páginas no rodapé (Chrome não suporta counter(pages) em about:blank)
         function fillPageNumbers(){
           try{
             var body = document.body;
-            var pageH = 1122;
+            var pageH = 1122; // altura aproximada A4 a 96dpi (297mm)
             var total = Math.max(1, Math.ceil(body.scrollHeight / pageH));
             document.querySelectorAll('.pnum').forEach(function(el, i){
-              el.textContent = 'Página ' + (i + 1) + ' de ' + total;
+              el.textContent = 'Página ' + (i+1) + ' de ' + total;
             });
-          }catch(_){ }
-        }
-
-        async function waitForImages(timeoutMs){
-          timeoutMs = timeoutMs || 12000;
-          var imgs = Array.from(document.images || []);
-          if(!imgs.length) return true;
-          function one(img){
-            return new Promise(function(resolve){
-              if(img.complete && img.naturalWidth > 0) return resolve(true);
-              var done = false;
-              var to = setTimeout(function(){ if(done) return; done = true; resolve(false); }, timeoutMs);
-              function ok(){ if(done) return; done = true; clearTimeout(to); resolve(true); }
-              function bad(){ if(done) return; done = true; clearTimeout(to); resolve(false); }
-              img.addEventListener('load', ok, { once:true });
-              img.addEventListener('error', bad, { once:true });
-              try{ if(typeof img.decode === 'function') img.decode().then(ok).catch(function(){}); }catch(_){ }
-            });
-          }
-          try{ await Promise.all(imgs.map(one)); }catch(_){ }
-          return true;
+          }catch(_){}
         }
 
         window.addEventListener('load', async function(){
-          try{ if(document.fonts && document.fonts.ready) await document.fonts.ready; }catch(_){ }
-          try{ await waitForImages(12000); }catch(_){ }
-          try{ fillPageNumbers(); }catch(_){ }
-        });
-      })();
+          // 1) Renderizar PDFs (se houver) e inserir como imagens (efeito "escaneado")
+          try{ await renderAllPdfs(); } catch(e){}
+
+          // 1b) Renderizar QR PIX (se houver)
+          try{ renderPixQr(); } catch(e){}
+
+          // 2) Aguardar carregamento/decodificação de todas as imagens antes de imprimir
+          async function waitForImages(timeoutMs){
+            timeoutMs = timeoutMs || 12000;
+            var imgs = Array.from(document.images || []);
+            if(!imgs.length) return true;
+
+            function one(img){
+              return new Promise(function(resolve){
+                if(img.complete && img.naturalWidth > 0) return resolve(true);
+                var done = false;
+                var to = setTimeout(function(){ if(done) return; done=true; resolve(false); }, timeoutMs);
+                function ok(){ if(done) return; done=true; clearTimeout(to); resolve(true); }
+                function bad(){ if(done) return; done=true; clearTimeout(to); resolve(false); }
+                img.addEventListener('load', ok, { once:true });
+                img.addEventListener('error', bad, { once:true });
+
+                // decode() melhora confiabilidade (Chrome/Edge)
+                try{
+                  if(typeof img.decode === 'function'){
+                    img.decode().then(ok).catch(function(){ /* mantém listeners */ });
+                  }
+                }catch(_){}
+              });
+            }
+
+            // Aguarda todas (não falha se alguma demorar/erro; apenas segue)
+            try{
+              await Promise.all(imgs.map(one));
+              return true;
+            }catch(_e){
+              return false;
+            }
+          }
+
+          // 3) Gerar hash de auditoria (integridade)
+          try{
+            var audit = ${JSON.stringify({
+              spec: DOC_SPEC,
+              label: DOC_LABEL,
+              docType: docType,
+              numero: atd.numero || "",
+              status: atd.status || "",
+              gerado_em: R.gerado_em || "",
+              atendimento_id: atd.id || atd.atendimento_id || ""
+            })};
+            var h = await sha256Hex(JSON.stringify(audit));
+            var el = document.getElementById('docHash');
+            if(el) el.textContent = h ? h : '(indisponível neste navegador)';
+          }catch(_e){}
+
+          // 4) Esperar fontes (evita glitches de render) e dar 2 frames para layout estabilizar
+          try{
+            if(document.fonts && document.fonts.ready) { await document.fonts.ready; }
+          }catch(_){}
+
+          try{ await waitForImages(12000); }catch(_){}
+
+          // Preenche "Página X de Y"
+          try{ fillPageNumbers(); }catch(_){}
+
+          await new Promise(function(r){ requestAnimationFrame(function(){ requestAnimationFrame(r); }); });
+
+          // 5) Preview pronto. A impressão é acionada pelo botão do modal.
+          window.__VSC_PRINT_READY__ = true;
+        });      })();
     </script>
   </body></html>`;
 
   if(opts.returnHtml) return html;
-  const ui = ensurePrintPreviewModal();
-  ui.setHtml(html, `print-preview-${String(atd.numero || "atendimento")}.html`);
-  ui.setState("ready", "Pré-visualização pronta.");
-  return html;
-}
 
+  if(opts.openPreview){
+    const ui = ensurePrintPreviewModal();
+    ui.setState("loading", "Gerando pré-visualização local...");
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    ui.setHtml(url, `print-preview-${String(atd.numero || atd.id || "atendimento")}.html`);
+    ui.setState("ready", "Pré-visualização local pronta.");
+    return;
+  }
+
+  const w = window.open("", "_blank");
+  if(!w){ snack("Pop-up bloqueado. Libere pop-ups para imprimir.", "warn"); return; }
+
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+}
 
   async function imprimirAtendimento(db, docType){
     try{
