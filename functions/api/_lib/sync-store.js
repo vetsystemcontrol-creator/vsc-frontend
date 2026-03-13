@@ -44,7 +44,6 @@ const STORE_NAME_MAP = Object.freeze({
   estoque_reasons: 'estoque_reasons',
   tenant_subscription: 'tenant_subscription',
   billing_events: 'billing_events',
-  empresa: 'empresa',
   animais_racas: 'animais_racas',
   animais_pelagens: 'animais_pelagens',
   animais_especies: 'animais_especies',
@@ -52,6 +51,7 @@ const STORE_NAME_MAP = Object.freeze({
   animal_vaccines: 'animal_vaccines',
   documentos: 'documents',
   documents: 'documents',
+  empresa: 'empresa',
 });
 
 const SNAPSHOT_IMPORT_EXCLUDED_STORES = new Set([
