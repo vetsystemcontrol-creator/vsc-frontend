@@ -364,10 +364,17 @@
       const sync = _getVSC_CLOUD_SYNC();
       if (!sync) throw new Error('VSC_CLOUD_SYNC não disponível');
       const result = await sync.manualSync();
-      const pushed = result && result.pushed;
-      const stores = result && result.applied && result.applied.importedStores;
-      const msg = 'Push: ' + (pushed ? 'enviado' : 'sem pendências') +
-                  (stores ? ' · Pull: ' + stores.length + ' stores' : '');
+      if (!result || result.ok === false) {
+        throw new Error((result && result.error) || 'sync_failed');
+      }
+      const pushed = !!(result && result.pushed);
+      const stores = result && result.applied && Array.isArray(result.applied.importedStores)
+        ? result.applied.importedStores
+        : null;
+      const msg = result && result.partial
+        ? 'Push parcial: ' + String(result.pending || 0) + ' pendente(s) em segundo plano'
+        : ('Push: ' + (pushed ? 'enviado' : 'sem pendências') +
+          (result && result.notModified ? ' · Pull: sem alterações remotas' : (stores ? ' · Pull: ' + stores.length + ' stores' : '')));
       _addHistory({ ok: true, msg });
       _render({ syncing: false, error: null });
     } catch(e) {
