@@ -141,7 +141,7 @@
       try { controller.abort(); } catch (_) {}
     }, Math.max(1, Number(timeoutMs) || 1));
     try {
-      return await fetch(url, { credentials: 'include', ...options, signal: controller.signal });
+      return await fetch(url, { ...options, credentials: 'include', signal: controller.signal });
     } catch (err) {
       if (String(err && err.name || '') === 'AbortError') {
         throw new Error(`network_timeout_${timeoutMs}ms`);
@@ -198,8 +198,8 @@
     const mode = _getSyncTargetMode();
     if (_isLocalStaticMode()) return REMOTE_BASE;
     if (_isWranglerDev()) {
-      if (mode === 'local') return '';
-      return REMOTE_BASE;
+      if (mode === 'remote') return REMOTE_BASE;
+      return '';
     }
     return '';
   }
@@ -291,21 +291,20 @@
     return (all || []).filter(e => e && e.status === 'PENDING').length;
   }
 
-
   async function _refreshPendingStats(db = null) {
-    let localDb = db;
-    let openedHere = false;
+    let handle = db;
+    let shouldClose = false;
     try {
-      if (!localDb) {
-        localDb = await _openDB();
-        openedHere = true;
+      if (!handle) {
+        handle = await _openDB();
+        shouldClose = true;
       }
-      const pending = await _countPending(localDb);
-      _stats.pending = Number(pending || 0) || 0;
-      return _stats.pending;
+      const pending = await _countPending(handle);
+      _stats.pending = pending;
+      return pending;
     } finally {
-      if (openedHere && localDb) {
-        try { localDb.close(); } catch (_) {}
+      if (shouldClose && handle) {
+        try { handle.close(); } catch (_) {}
       }
     }
   }
@@ -647,12 +646,26 @@
       return true;
     },
 
-    async syncNow() {
+    async syncNow(options = {}) {
       // Forced drain until idle once (useful for manual button)
       _enabled = true;
-      const result = await _drainLoop({ force: true });
-      try { await _refreshPendingStats(); } catch (_) {}
-      return { ...this.status(), result };
+      const budgetMs = Math.max(0, Number(options && options.budgetMs) || 0);
+      const startedAt = _now();
+      await _refreshPendingStats().catch(() => {});
+      await _drainLoop({ force: true });
+      const pending = await _refreshPendingStats().catch(() => Number(_stats.pending || 0) || 0);
+      const status = this.status();
+      const elapsedMs = _now() - startedAt;
+      return {
+        ...status,
+        ok: !status.lastError && pending === 0,
+        pending,
+        total_open: pending,
+        elapsedMs,
+        budgetMs,
+        budgetExceeded: budgetMs > 0 && elapsedMs > budgetMs,
+        ackedDelta: Number(status.last_sent || status.acked || 0) || 0,
+      };
     },
 
     // Compatibilidade retroativa: módulos legados ainda chamam relay.kick()

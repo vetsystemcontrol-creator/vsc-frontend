@@ -69,28 +69,26 @@ const SNAPSHOT_IMPORT_ALLOWED_STORES = Array.from(new Set(Object.values(STORE_NA
   .filter((store) => !SNAPSHOT_IMPORT_EXCLUDED_STORES.has(store));
 
 
-function corsHeaders(request) {
+function corsHeaders(request, methods = 'GET, POST, PUT, PATCH, DELETE, OPTIONS') {
   const origin = String(request?.headers?.get('Origin') || '').trim();
-  const explicitOrigin = (
-    /^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin) ||
-    /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)
-  ) ? origin : '';
-  const allowOrigin = explicitOrigin || '*';
+  const allowed = /^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin) || /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin);
   const headers = {
-    'Access-Control-Allow-Origin': allowOrigin,
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization, If-None-Match, If-Match, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token, X-VSC-Client-Session',
+    'Access-Control-Allow-Origin': allowed && origin ? origin : 'https://app.vetsystemcontrol.com.br',
+    'Access-Control-Allow-Methods': methods,
+    'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization, If-None-Match, If-Match, Origin, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token, X-VSC-Client-Session',
     'Access-Control-Expose-Headers': 'Content-Type, Content-Length, ETag, X-VSC-State-Revision',
     'Access-Control-Max-Age': '86400',
-    'Cache-Control': 'no-store',
-    'Vary': 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',
+    Vary: 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',
   };
-  if (explicitOrigin) headers['Access-Control-Allow-Credentials'] = 'true';
+  if (allowed && origin) headers['Access-Control-Allow-Credentials'] = 'true';
   return headers;
 }
 
-function json(data, status = 200, request = null) {
-  return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...corsHeaders(request) } });
+function json(data, status = 200, request = null, extraHeaders = {}) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...JSON_HEADERS, ...corsHeaders(request), ...extraHeaders },
+  });
 }
 
 function isD1Like(db) {

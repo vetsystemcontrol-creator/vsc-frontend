@@ -14,16 +14,18 @@ const ALLOWED_HEADERS = [
 ].join(', ');
 const EXPOSE_HEADERS = ['Content-Type', 'Cache-Control', 'ETag', 'X-VSC-State-Revision'].join(', ');
 
-function resolveCorsOrigin(request) {
-  const origin = request.headers.get('Origin') || '';
-  if (!origin) return '*';
-  if (/^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin)) return origin;
-  if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) return origin;
-  return 'https://app.vetsystemcontrol.com.br';
+function resolveCorsConfig(request) {
+  const origin = String(request.headers.get('Origin') || '').trim();
+  if (!origin) {
+    return { allowOrigin: 'https://app.vetsystemcontrol.com.br', allowCredentials: false };
+  }
+  if (/^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin)) return { allowOrigin: origin, allowCredentials: true };
+  if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) return { allowOrigin: origin, allowCredentials: true };
+  return { allowOrigin: 'https://app.vetsystemcontrol.com.br', allowCredentials: false };
 }
 
 function buildCorsHeaders(request) {
-  const allowOrigin = resolveCorsOrigin(request);
+  const { allowOrigin, allowCredentials } = resolveCorsConfig(request);
   const headers = {
     'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Methods': ALLOWED_METHODS,
@@ -32,7 +34,7 @@ function buildCorsHeaders(request) {
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',
   };
-  if (allowOrigin !== '*') headers['Access-Control-Allow-Credentials'] = 'true';
+  if (allowCredentials) headers['Access-Control-Allow-Credentials'] = 'true';
   return headers;
 }
 

@@ -56,7 +56,7 @@
       const proto = String(location.protocol || '').toLowerCase();
       if (proto === 'file:') return REMOTE_BASE;
       if (proto === 'http:' && isLocalDev()) {
-        return getSyncTargetMode() === 'local' ? location.origin : REMOTE_BASE;
+        return getSyncTargetMode() === 'remote' ? REMOTE_BASE : location.origin;
       }
     } catch (_) {}
     return location.origin;
@@ -110,16 +110,21 @@
   }
 
   function apiCandidates() {
-    const remoteBase = resolveRemoteBase();
-    const urls = [
-      `${remoteBase}/api/sync/pull`,
-      `${remoteBase}/api/state?action=pull`,
-    ];
+    const base = resolveRemoteBase();
+    const urls = [];
 
-    if (remoteBase !== location.origin) {
-      // Em DEV local evita /api/sync/pull local; usa só state local como fallback.
-      urls.push('/api/state?action=pull');
+    if (base) {
+      urls.push(`${base}/api/sync/pull`);
+      urls.push(`${base}/api/state?action=pull`);
     }
+
+    if (location.origin && base !== location.origin) {
+      urls.push(`${location.origin}/api/sync/pull`);
+      urls.push(`${location.origin}/api/state?action=pull`);
+    }
+
+    urls.push('/api/sync/pull');
+    urls.push('/api/state?action=pull');
 
     return Array.from(new Set(urls));
   }
@@ -143,7 +148,7 @@
   async function fetchWithTimeout(url, options, timeoutMs, label) {
     const wrapped = makeTimeoutController(timeoutMs);
     try {
-      return await fetch(url, { credentials: 'include', ...options, signal: wrapped.controller.signal });
+      return await fetch(url, { ...options, credentials: 'include', signal: wrapped.controller.signal });
     } catch (err) {
       const name = err && err.name ? String(err.name) : '';
       if (name === 'AbortError' || String(err || '').includes('timeout_')) {
@@ -435,34 +440,20 @@
 
       const relayStatus = relay && typeof relay.status === 'function' ? relay.status() : null;
       const openItems = Number(relayStatus && (relayStatus.total_open ?? relayStatus.pending) || 0) || 0;
-      const relayLastError = relayStatus && (relayStatus.lastError || relayStatus.last_error)
-        ? String(relayStatus.lastError || relayStatus.last_error)
-        : '';
-      const pushedAny = !!(
-        (pushResult && pushResult.result && pushResult.result.ackedDelta) ||
-        (pushResult && pushResult.ackedDelta) ||
-        (relayStatus && relayStatus.acked > 0)
-      );
-
-      if (relayLastError) {
-        throw new Error(`push_failed:${relayLastError}`);
-      }
 
       if (openItems > 0) {
-        const error = `push_failed_pending_${openItems}`;
-        notifyUI('error', `Sincronização incompleta. ${openItems} item(ns) permaneceram pendentes.`, {
-          phase: 'push',
-          pushResult,
-          relayStatus,
-          pending: openItems,
-          error,
-        });
+        localStorage.setItem(SYNC_KEY, nowIso());
+        notifyUI(
+          'partial',
+          `Envio parcial concluído. ${openItems} item(ns) seguem em segundo plano.`,
+          { phase: 'push', pushResult, pending: openItems }
+        );
         return {
           ok: false,
-          error: 'push_failed',
-          pushed: pushedAny,
+          error: 'push_pending',
+          partial: true,
+          pushed: !!(pushResult && (pushResult.ackedDelta || pushResult.acked || pushResult.last_sent)),
           pushResult,
-          relayStatus,
           pending: openItems,
         };
       }
@@ -473,9 +464,8 @@
         notifyUI('success', '', { phase: 'push+pull', pushResult, not_modified: true });
         return {
           ok: true,
-          pushed: pushedAny,
+          pushed: !!(pushResult && pushResult.ackedDelta),
           pushResult,
-          relayStatus,
           not_modified: true,
         };
       }
@@ -485,9 +475,8 @@
       notifyUI('success', '', { phase: 'push+pull', pushResult, applied, source: result.source });
       return {
         ok: true,
-        pushed: pushedAny,
+        pushed: !!(pushResult && pushResult.ackedDelta),
         pushResult,
-        relayStatus,
         applied,
         source: result.source,
       };
