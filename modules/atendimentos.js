@@ -1022,49 +1022,33 @@ function openPrintWindowClient(payload, docType, opts){
     (vet.crmv_uf && vet.crmv_num) ? ("CRMV-"+vet.crmv_uf+" Nº "+vet.crmv_num) : ""
   ].filter(Boolean).join(" — ");
 
-  const printTpl = (window.VSC_PRINT_TEMPLATE && typeof window.VSC_PRINT_TEMPLATE.create === "function")
-    ? window.VSC_PRINT_TEMPLATE.create({ esc })
-    : null;
-  const companyLogoHtml = logoA
-    ? `<img class="company-logo" src="${logoA}" alt="Logo da empresa"/>`
-    : `<div style="width:152px;height:152px;margin-left:auto;display:flex;align-items:center;justify-content:center;background:#fff;">${SYSTEM_LOGO_SVG}</div>`;
-  const headerHtml = printTpl ? printTpl.renderHeader({
-    systemLogoSrc: "assets/brand/vsc-logo-horizontal.png",
-    systemLogoFallback: '<div class=&quot;kado-text&quot; style=&quot;font-size:22px;font-weight:900;&quot;>Vet System Control</div>',
-    companyName: empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa",
-    companyLines: [
-      empresa.cnpj ? "CNPJ: "+empresa.cnpj : "",
-      empresa.email||"",
-      empresa.pix_chave ? "PIX" : ""
-    ],
-    reportTitle: DOC_LABEL,
-    reportLines: [
-      `<b>Nº:</b> ${esc(atd.numero||"—")}`,
-      `<b>Status:</b> ${esc(atd.status||"—")}`,
-      `<b>Data de emissão:</b> ${esc(fmtDate(R.gerado_em))}`,
-      `<b>Paciente(s):</b> ${esc(animaisTxt||"—")}`
-    ],
-    companyLogoHtml
-  }) : "";
+  const institutionalCss = (window.VSCPrintTemplate && typeof window.VSCPrintTemplate.getInstitutionalCss === "function")
+    ? window.VSCPrintTemplate.getInstitutionalCss()
+    : ``;
 
-  const css = `${printTpl ? printTpl.baseCss() : ""}
+  const css = `
+${institutionalCss}
+:root{--text:#0f172a;--muted:#64748b;--bd:#d8e1ec;--soft:#f8fbfd;--brand:#0f766e;--brand2:#0ea5e9;}
+body{font-family:'DM Sans',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--text);margin:0;background:#fff;}
+.page{max-width:920px;margin:0 auto;padding:22px 26px 34px;}
+.sheet{position:relative;}
+.sheet + .sheet{margin-top:14px;}
+.sheet--attachments{padding-top:4px;}
+.small{font-size:11px;color:var(--muted);line-height:1.45;}
 .box{border:1px solid var(--bd);border-radius:14px;padding:12px 14px;margin:10px 0;background:#fff;}
-.box.slim{padding:10px 14px;min-height:56px;}
-.box.stack-title{padding:12px 14px 10px;}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
 .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:800;}
 .val{font-size:13px;font-weight:800;margin-top:3px;}
 .pre{white-space:pre-wrap;font-weight:600;line-height:1.55;}
 .table-tight{margin-top:8px;}
 table{width:100%;border-collapse:collapse;margin-top:8px;border-top:1px solid var(--bd);}
-th,td{border-bottom:1px solid var(--bd);padding:8px 12px;font-size:12.5px;vertical-align:top;}
+th,td{border-bottom:1px solid var(--bd);padding:8px 10px;font-size:12.5px;vertical-align:top;}
 th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;text-align:left;}
 .right{text-align:right;}
 .tot{display:flex;justify-content:flex-end;margin-top:10px;}
 .tot .box{min-width:320px;}
-.section-title{margin:16px 0 8px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.16em;color:var(--brand);}
+.section-title{margin-top:18px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.12em;color:#0f766e;}
 img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid var(--bd);border-radius:10px;}
-.hdr img,.wmLocal img{border:none !important;border-radius:0 !important;}
 .pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
 .muted{color:var(--muted);}
 .att{margin:12px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:12px;break-inside:avoid;page-break-inside:avoid;}
@@ -1076,18 +1060,24 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 .att-desc{font-size:12px;color:#0f172a;white-space:pre-wrap;line-height:1.45;}
 .att-nodata{font-size:12px;color:#92400e;background:#fff7ed;padding:8px 10px;border-radius:8px;margin-top:6px;border:1px solid #fed7aa;}
 .wmLocal{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; user-select:none; z-index:0;}
-.wmLocal img{width:62%;max-width:560px;margin:0 !important;opacity:.06;filter:grayscale(1);object-fit:contain;}
+.wmLocal img{width:62%;max-width:560px;border:none !important;border-radius:0 !important;margin:0 !important;opacity:.06;filter:grayscale(1);object-fit:contain;}
 .sheetContent{position:relative; z-index:1;}
 .footer{display:none;}
 @media print{
+  @page{ size:A4; margin:10mm 10mm 22mm 10mm; }
   .no-print{display:none !important;}
+  body{margin:0;}
+  .page{max-width:none;padding:0;}
   .box,.att,.pdf-block,.att-media,tr,img,canvas{break-inside:avoid;page-break-inside:avoid;}
   .pdf-pages img{break-inside:avoid;page-break-inside:avoid;break-after:page;page-break-after:always;}
   .pdf-pages img:last-child{break-after:auto;page-break-after:auto;}
+  .sheet{padding:0;}
+  .sheet + .sheet{break-before:page;page-break-before:always;margin-top:0;}
   .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.5mm 10mm;font-size:9px;color:var(--muted);background:#fff;}
   .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:center;}
 }
   `;
+
 
   const rowsFinanceiro = itens.length ? itens.map(it=>{
     const sub = (Number(it.qtd||0)*Number(it.vu||0));
@@ -1188,44 +1178,69 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     </div>`;
   }).join("");
 
-  const bodyClinicoMain = `${printTpl ? printTpl.renderInstitutionalCover({
-    spec: DOC_SPEC,
-    origin: "Vet System Control • ERP Equine",
-    purpose: "Registro operacional para atendimento, balcão e auditoria clínica.",
-    summaryTitle: "Resumo institucional",
-    fields: [
-      { label: "Cliente / Proprietário", value: cli.nome||cli.razao_social||atd.cliente_label||"—", extra: cli.telefone||cli.fone||"" },
-      { label: "Paciente(s)", value: animaisTxt||"—" },
-      { label: "Veterinário / Responsável", value: vetLine||"—" },
-      { label: "Anexos clínicos", value: String(atts.length || 0) }
-    ],
-    rightTitle: "Data",
-    rightValue: fmtDate(atd.created_at)
-  }) : ""}
+  const headerHtml = (window.VSCPrintTemplate && typeof window.VSCPrintTemplate.renderInstitutionalHeader === "function")
+    ? window.VSCPrintTemplate.renderInstitutionalHeader({
+        systemLogoSrc: 'assets/brand/vsc-logo-horizontal.png',
+        systemLogoFallback: '<div class="kado-fallback-system">Vet System Control</div>',
+        companyLogoHtml: logoA
+          ? `<img class="kado-company-logo" src="${logoA}" alt="Logo da empresa"/>`
+          : `<div class="kado-company-logo-fallback">${SYSTEM_LOGO_SVG}</div>`,
+        companyName: esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa"),
+        companyMetaHtml: [
+          empresa.cnpj ? `<div>CNPJ: ${esc(empresa.cnpj)}</div>` : "",
+          empresa.email ? `<div>${esc(empresa.email)}</div>` : "",
+          pixKey ? `<div>PIX</div>` : ""
+        ].filter(Boolean).join(""),
+        documentTitle: esc(DOC_LABEL),
+        documentMetaHtml: [
+          `<div><b>Nº:</b> ${esc(atd.numero||"—")}</div>`,
+          `<div><b>Status:</b> ${esc(atd.status||"—")}</div>`,
+          `<div><b>Data de emissão:</b> ${esc(fmtDate(R.gerado_em))}</div>`,
+          `<div><b>Paciente(s):</b> ${esc(animaisTxt||"—")}</div>`
+        ].join("")
+      })
+    : '';
 
-    <div class="page-break"></div>
+  const bodyClinicoMain = (window.VSCPrintTemplate && typeof window.VSCPrintTemplate.renderClinicalInstitutionalCover === "function")
+    ? window.VSCPrintTemplate.renderClinicalInstitutionalCover({
+        spec: esc(DOC_SPEC),
+        originLine1: 'Vet System Control • ERP Equine',
+        originLine2: 'Documento operacional para atendimento, balcão e auditoria clínica.',
+        clientLabel: 'Cliente / Proprietário',
+        clientValue: esc(cli.nome||cli.razao_social||atd.cliente_label||"—"),
+        patientLabel: 'Paciente(s)',
+        patientValue: esc(animaisTxt||"—"),
+        vetLabel: 'Veterinário / Responsável',
+        vetValue: esc(vetLine||"—"),
+        attachmentsLabel: 'Anexos clínicos',
+        attachmentsValue: esc(String(atts.length || 0)),
+        dateLabel: 'Data',
+        dateValue: esc(fmtDate(atd.created_at))
+      }) + `
 
     <div class="section-title">Sinais vitais</div>
     ${vitalsHtml || `<div class="small muted">Nenhum sinal vital registrado.</div>`}
 
     <div class="section-title">Anamnese / Queixa / Observações</div>
-    <div class="box slim"><div class="pre">${esc(atd.observacoes || "—")}</div></div>
+    <div class="box"><div class="pre">${esc(atd.observacoes || "—")}</div></div>
 
     <div class="section-title">Diagnóstico</div>
-    <div class="box slim"><div class="pre">${esc(atd.cli_diagnostico || "—")}</div></div>
+    <div class="box"><div class="pre">${esc(atd.cli_diagnostico || "—")}</div></div>
 
     <div class="section-title">Conduta / Evolução</div>
-    <div class="box stack-title"><div class="pre">${esc(atd.cli_evolucao || "—")}</div></div>
+    <div class="box"><div class="pre">${esc(atd.cli_evolucao || "—")}</div></div>
 
     <div class="section-title">Procedimentos / Materiais / Itens utilizados (sem valores)</div>
     <table class="table-tight">
       <thead><tr>
-        <th style="width:140px;">Tipo</th><th>Descrição</th>
+        <th style="width:110px;">Tipo</th><th>Descrição</th>
         <th style="width:70px;" class="right">Qtd</th>
       </tr></thead>
       <tbody>${rowsClinico}</tbody>
     </table>
-  `;
+  `
+    : ``;
+
 
   const bodyClinicoAttachments = `
     <div class="section-title">Anexos</div>
@@ -1328,7 +1343,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       <div class="sheet sheet--main">
         ${(docType === "clinico" && logoB) ? `<div class="wmLocal"><img src="${logoB}" alt="Marca d'água"/></div>` : ``}
         <div class="sheetContent">
-${headerHtml}
+          ${headerHtml}
 
           ${(docType === "financeiro") ? bodyFinanceiro : (docType === "prescricao") ? bodyPrescricao : (docType === "clinico_financeiro") ? bodyClinicoFinanceiro : bodyClinicoMain}
         </div>
