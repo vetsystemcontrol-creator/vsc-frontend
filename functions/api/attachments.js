@@ -14,10 +14,12 @@
  * POST /api/attachments?action=delete
  *   Body: { atendimento_id, attachment_id }
  */
+
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
 };
+
 function corsHeaders(request) {
   const origin = request?.headers?.get('Origin') || '';
   if (/^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin))
@@ -26,15 +28,18 @@ function corsHeaders(request) {
     return { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin' };
   return { 'Access-Control-Allow-Origin': '*' };
 }
+
 function json(data, status = 200, request = null) {
   return new Response(JSON.stringify(data), {
     status,
     headers: { ...JSON_HEADERS, ...(request ? corsHeaders(request) : {}) },
   });
 }
+
 function getBucket(env) {
   return env?.BACKUPS_BUCKET || null;
 }
+
 function getTenant(request) {
   return (
     request.headers.get('X-VSC-Tenant') ||
@@ -42,18 +47,23 @@ function getTenant(request) {
     'tenant-default'
   ).slice(0, 64);
 }
+
 function r2Key(tenant, atendimento_id, attachment_id) {
   return `attachments/${tenant}/${atendimento_id}/${attachment_id}`;
 }
+
 async function handleUpload(request, env) {
   const bucket = getBucket(env);
   if (!bucket) return json({ ok: false, error: 'r2_not_configured' }, 501, request);
+
   const tenant = getTenant(request);
   const body = await request.json().catch(() => ({}));
   const { atendimento_id, attachment_id, filename, mime_type, data_base64 } = body;
+
   if (!atendimento_id || !attachment_id || !data_base64) {
     return json({ ok: false, error: 'atendimento_id, attachment_id e data_base64 são obrigatórios' }, 400, request);
   }
+
   // Decode base64
   let bytes;
   try {
@@ -64,6 +74,7 @@ async function handleUpload(request, env) {
   } catch (e) {
     return json({ ok: false, error: 'base64_decode_failed', detail: String(e) }, 400, request);
   }
+
   const key = r2Key(tenant, atendimento_id, attachment_id);
   const meta = {
     tenant,
@@ -74,43 +85,57 @@ async function handleUpload(request, env) {
     uploaded_at: new Date().toISOString(),
     bytes: String(bytes.length),
   };
+
   await bucket.put(key, bytes, {
     httpMetadata: { contentType: meta.mime_type },
     customMetadata: meta,
   });
+
   return json({ ok: true, key, bytes: bytes.length, meta }, 200, request);
 }
+
 async function handleDownload(request, env, url) {
   const bucket = getBucket(env);
   if (!bucket) return json({ ok: false, error: 'r2_not_configured' }, 501, request);
+
   const tenant = getTenant(request);
   const atendimento_id = url.searchParams.get('atendimento_id');
   const attachment_id = url.searchParams.get('attachment_id');
+
   if (!atendimento_id || !attachment_id) {
     return json({ ok: false, error: 'atendimento_id e attachment_id obrigatórios' }, 400, request);
   }
+
   const key = r2Key(tenant, atendimento_id, attachment_id);
   const obj = await bucket.get(key);
   if (!obj) return json({ ok: false, error: 'not_found' }, 404, request);
+
   const meta = obj.customMetadata || {};
-  const rawName = String(meta.filename || attachment_id || 'arquivo').replace(/[\r\n"]/g, '_');
-  const disposition = String(url.searchParams.get('disposition') || 'attachment').toLowerCase() === 'inline' ? 'inline' : 'attachment';
+  const safeFilename = String(meta.filename || attachment_id || 'arquivo').replace(/[\r\n"]/g, '_');
+  const disposition = String(url.searchParams.get('disposition') || 'attachment').toLowerCase() === 'inline'
+    ? 'inline'
+    : 'attachment';
   const headers = new Headers({
     ...corsHeaders(request),
     'content-type': meta.mime_type || 'application/octet-stream',
-    'content-disposition': `${disposition}; filename="${rawName}"`,
+    'content-disposition': `${disposition}; filename="${safeFilename}"`,
     'cache-control': disposition === 'inline' ? 'private, no-store' : 'private, max-age=3600',
   });
+
   return new Response(obj.body, { status: 200, headers });
 }
+
 async function handleList(request, env, url) {
   const bucket = getBucket(env);
   if (!bucket) return json({ ok: false, error: 'r2_not_configured' }, 501, request);
+
   const tenant = getTenant(request);
   const atendimento_id = url.searchParams.get('atendimento_id');
+
   const prefix = atendimento_id
     ? `attachments/${tenant}/${atendimento_id}/`
     : `attachments/${tenant}/`;
+
   const listed = await bucket.list({ prefix, limit: 1000 });
   const items = (listed.objects || []).map(obj => ({
     key: obj.key,
@@ -118,25 +143,32 @@ async function handleList(request, env, url) {
     uploaded_at: obj.uploaded || null,
     meta: obj.customMetadata || {},
   }));
+
   return json({ ok: true, tenant, atendimento_id, items, total: items.length }, 200, request);
 }
+
 async function handleDelete(request, env) {
   const bucket = getBucket(env);
   if (!bucket) return json({ ok: false, error: 'r2_not_configured' }, 501, request);
+
   const tenant = getTenant(request);
   const body = await request.json().catch(() => ({}));
   const { atendimento_id, attachment_id } = body;
+
   if (!atendimento_id || !attachment_id) {
     return json({ ok: false, error: 'atendimento_id e attachment_id obrigatórios' }, 400, request);
   }
+
   const key = r2Key(tenant, atendimento_id, attachment_id);
   await bucket.delete(key);
   return json({ ok: true, key }, 200, request);
 }
+
 export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
+
   // CORS preflight
   if (method === 'OPTIONS') {
     return new Response(null, {
@@ -150,18 +182,22 @@ export async function onRequest(context) {
       },
     });
   }
+
   try {
     const action = url.searchParams.get('action') || (method === 'GET' ? 'list' : 'upload');
+
     if (method === 'GET') {
       if (action === 'download') return await handleDownload(request, env, url);
       if (action === 'list') return await handleList(request, env, url);
       return json({ ok: false, error: 'unknown_action' }, 400, request);
     }
+
     if (method === 'POST') {
       if (action === 'upload') return await handleUpload(request, env);
       if (action === 'delete') return await handleDelete(request, env);
       return json({ ok: false, error: 'unknown_action' }, 400, request);
     }
+
     return json({ ok: false, error: 'method_not_allowed' }, 405, request);
   } catch (error) {
     return json({ ok: false, error: 'attachments_failed', detail: String(error?.message || error) }, 500, request);
