@@ -519,27 +519,16 @@ async function loadEmpresaSnapshot(db){
       if(hasStore(db, st)){
         const all = await idbGetAll(db, st);
         const r = (Array.isArray(all) ? all : [])[0];
-        if(r){
-          let lsPix = {};
-          try{ lsPix = getEmpresaSnapshotForPrint() || {}; }catch(_){ lsPix = {}; }
-          return {
-            nome: r.nome || r.razao_social || r.fantasia || "",
-            cnpj: r.cnpj || r.doc || "",
-            endereco: r.endereco || r.endereco_completo || "",
-            cidade: r.cidade || "",
-            uf: r.uf || "",
-            telefone: r.telefone || r.fone || "",
-            email: r.email || "",
-            site: r.site || "",
-            crmv: r.crmv || r.crmv_num || "",
-            // Logos (enterprise): tenta vários campos + localStorage (fonte canônica offline-first)
-            __logoA: (r.__logoA || r.logoA || r.logo_a || r.logo_a_dataurl || r.logo_a_dataUrl || r.logo_a_dataURL || r.logo_data_url || r.logoDataUrl || r.logoCliente || r.logo_cliente || "") || (await getEmpresaLogoAFromLocalStorage()),
-            pix_tipo: r.pix_tipo || r.tipo_pix || r.chave_pix_tipo || lsPix.pix_tipo || "",
-            pix_nome: r.pix_nome || r.nome_pix || r.favorecido_pix || lsPix.pix_nome || "",
-            pix_chave: (r.pix_chave || r.chave_pix || r.pixKey || r.pix || r.pix_chave_copia_cola || "") || lsPix.pix_chave || (await getEmpresaPixFromLocalStorage()),
-            pix_chave_norm: r.pix_chave_norm || lsPix.pix_chave_norm || "",
-          };
-        }
+        if(r) return {
+          nome: r.nome || r.razao_social || r.fantasia || "",
+          cnpj: r.cnpj || r.doc || "",
+          endereco: r.endereco || r.endereco_completo || "",
+          telefone: r.telefone || r.fone || "",
+          email: r.email || "",
+          // Logos (enterprise): tenta vários campos + localStorage (fonte canônica offline-first)
+          __logoA: (r.__logoA || r.logoA || r.logo_a || r.logo_a_dataurl || r.logo_a_dataUrl || r.logo_a_dataURL || r.logo_data_url || r.logoDataUrl || r.logoCliente || r.logo_cliente || "") || (await getEmpresaLogoAFromLocalStorage()),
+          pix_chave: (r.pix_chave || r.chave_pix || r.pixKey || r.pix || r.pix_chave_copia_cola || "") || (await getEmpresaPixFromLocalStorage()),
+        };
       }
     }
     // Fallback canônico: config_params (empresa.js persiste aqui via IDB)
@@ -582,17 +571,10 @@ async function loadEmpresaSnapshot(db){
         nome:     getKey("empresa_nome") || getKey("razao_social") || "",
         cnpj:     getKey("empresa_cnpj") || getKey("cnpj") || "",
         endereco: getKey("empresa_endereco") || getKey("endereco") || "",
-        cidade:   getKey("empresa_cidade") || getKey("cidade") || "",
-        uf:       getKey("empresa_uf") || getKey("uf") || "",
         telefone: getKey("empresa_telefone") || getKey("telefone") || "",
         email:    getKey("empresa_email") || getKey("email") || "",
-        site:     getKey("empresa_site") || getKey("site") || "",
-        crmv:     getKey("empresa_crmv") || getKey("crmv") || "",
         __logoA:  getKey("empresa_logo_a") || getKey("logo_a") || (await getEmpresaLogoAFromLocalStorage()),
-        pix_tipo: getKey("pix_tipo") || getKey("tipo_pix") || "",
-        pix_nome: getKey("pix_nome") || getKey("nome_pix") || getKey("favorecido_pix") || "",
         pix_chave: getKey("pix_chave") || getKey("chave_pix") || getKey("pix") || (await getEmpresaPixFromLocalStorage()),
-        pix_chave_norm: getKey("pix_chave_norm") || "",
       };
     }
     // Último recurso: só localStorage
@@ -604,6 +586,89 @@ async function loadEmpresaSnapshot(db){
       }catch(_){}
     }
     return { nome:"", cnpj:"", endereco:"", telefone:"", email:"" };
+  }
+
+
+  function getAttachmentPrintBaseUrls(){
+    const bases = [];
+    if(location.hostname === "127.0.0.1" || location.hostname === "localhost"){
+      bases.push("https://app.vetsystemcontrol.com.br");
+    }
+    bases.push("");
+    return Array.from(new Set(bases));
+  }
+
+  async function blobToDataUrl(blob){
+    return await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result || ""));
+      fr.onerror = () => reject(fr.error || new Error("blob_to_dataurl_failed"));
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  async function hydrateAttachmentsForPrint(atendimento){
+    if(!atendimento || !Array.isArray(atendimento.attachments) || !atendimento.attachments.length) return atendimento;
+    const tenant = localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "tenant-default";
+    const atendimentoId = atendimento.atendimento_id || atendimento.id || "";
+    if(!atendimentoId) return atendimento;
+
+    const bases = getAttachmentPrintBaseUrls();
+    const hydrated = [];
+    for(const src of atendimento.attachments){
+      const att = src ? Object.assign({}, src) : src;
+      if(!att){ hydrated.push(att); continue; }
+      if(att.dataUrl){ hydrated.push(att); continue; }
+
+      const possibleUrls = [
+        att.url,
+        att.download_url,
+        att.downloadUrl,
+        att.r2_url,
+        att.file_url,
+        att.src
+      ].filter(Boolean);
+
+      let done = false;
+
+      for(const rawUrl of possibleUrls){
+        try{
+          const res = await fetch(String(rawUrl), { credentials:"include" });
+          if(!res.ok) throw new Error(`HTTP ${res.status}`);
+          const blob = await res.blob();
+          att.dataUrl = await blobToDataUrl(blob);
+          att.mime = att.mime || blob.type || "";
+          done = true;
+          break;
+        }catch(_err){}
+      }
+
+      if(!done && att.id){
+        for(const base of bases){
+          try{
+            const url = `${base}/api/attachments?action=download&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(att.id)}`;
+            const res = await fetch(url, {
+              headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
+              credentials: base ? "omit" : "include"
+            });
+            if(!res.ok) throw new Error(`HTTP ${res.status}`);
+            const blob = await res.blob();
+            att.dataUrl = await blobToDataUrl(blob);
+            att.mime = att.mime || blob.type || "";
+            done = true;
+            break;
+          }catch(_err){}
+        }
+      }
+
+      if(!done){
+        console.warn("[PRINT][ATTACH] anexo não hidratado para impressão:", att.name || att.id || att);
+      }
+      hydrated.push(att);
+    }
+
+    atendimento.attachments = hydrated;
+    return atendimento;
   }
 
   async function buildPrintData(db){
@@ -622,7 +687,11 @@ async function loadEmpresaSnapshot(db){
       ? (await Promise.all(rec.animal_ids.map(id => idbGet(db,"animais_master", id)))).filter(Boolean)
       : [];
 
-    return { empresa, cliente, animais, atendimento: rec, gerado_em: isoNow() };
+    const atendimentoPrint = await hydrateAttachmentsForPrint(Object.assign({}, rec, {
+      attachments: Array.isArray(rec.attachments) ? rec.attachments.map(a => a ? Object.assign({}, a) : a) : []
+    }));
+
+    return { empresa, cliente, animais, atendimento: atendimentoPrint, gerado_em: isoNow() };
   }
 
 // SGQT-PRINT-3.0 (Premium Enterprise) — melhor prática: gerar PDF server-side (Chromium headless)
@@ -671,48 +740,6 @@ async function getEmpresaPixFromLocalStorage(){
 }
 
 
-async function hydrateRemoteAttachmentsForPrint(atendimentoId, attachments){
-  const list = Array.isArray(attachments) ? attachments : [];
-  if(!atendimentoId || !list.length) return list;
-
-  const tenant = (() => {
-    try{ return localStorage.getItem('vsc_tenant') || localStorage.getItem('VSC_TENANT') || 'tenant-default'; }
-    catch(_){ return 'tenant-default'; }
-  })();
-  const base = (location.hostname==='127.0.0.1'||location.hostname==='localhost')
-    ? 'https://app.vetsystemcontrol.com.br' : '';
-
-  async function blobToDataUrl(blob){
-    return await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ''));
-      reader.onerror = () => reject(reader.error || new Error('Falha ao ler blob'));
-      reader.readAsDataURL(blob);
-    });
-  }
-
-  for(const att of list){
-    if(!att || att.dataUrl || !att.synced_to_r2 || !att.id) continue;
-    try{
-      const url = `${base}/api/attachments?action=download&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(att.id)}`;
-      const res = await fetch(url, {
-        method: 'GET',
-        headers: { 'X-VSC-Tenant': tenant },
-        credentials: 'include'
-      });
-      if(!res.ok) throw new Error(`HTTP ${res.status}`);
-      const blob = await res.blob();
-      att.dataUrl = await blobToDataUrl(blob);
-      att.print_hydrated = true;
-    }catch(e){
-      att.print_fetch_error = String((e && e.message) || e || 'erro');
-      console.warn('[PRINT][ATTACHMENT_FETCH_FAIL]', att.name || att.id || 'anexo', att.print_fetch_error);
-    }
-  }
-  return list;
-}
-
-
 
 function ensurePrintPreviewModal(){
   let m = document.getElementById("vscPrintPreviewModal");
@@ -737,7 +764,6 @@ function ensurePrintPreviewModal(){
       <div style="padding:10px 12px; border-bottom:1px solid #eee; display:flex; gap:10px; align-items:center;">
         <div style="font-weight:700;">Impressão premium</div>
         <div id="vscPPStatus" style="font-size:12px; color:#555; flex:1;">—</div>
-        <button id="vscPPPrint" class="btn" style="padding:6px 10px;">Imprimir</button>
         <button id="vscPPDownload" class="btn" style="padding:6px 10px;">Baixar PDF</button>
         <button id="vscPPClose" class="btn" style="padding:6px 10px;">Fechar</button>
       </div>
@@ -755,12 +781,9 @@ function ensurePrintPreviewModal(){
   const loaderEl = m.querySelector("#vscPPLoader");
   const errEl = m.querySelector("#vscPPError");
   const btnClose = m.querySelector("#vscPPClose");
-  const btnPrint = m.querySelector("#vscPPPrint");
   const btnDl = m.querySelector("#vscPPDownload");
 
   let currentUrl = "";
-  let currentHtml = "";
-  let currentMode = "pdf";
   let currentName = "print-pack.pdf";
 
   function open(){ m.style.display = "flex"; }
@@ -769,9 +792,6 @@ function ensurePrintPreviewModal(){
     // revoga URL anterior para não vazar memória
     try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
     currentUrl = "";
-    currentHtml = "";
-    currentMode = "pdf";
-    frame.removeAttribute("srcdoc");
     frame.src = "about:blank";
     frame.style.display = "none";
     loaderEl.style.display = "block";
@@ -781,41 +801,19 @@ function ensurePrintPreviewModal(){
   btnClose.addEventListener("click", (e)=>{ e.preventDefault(); close(); });
   m.addEventListener("click", (e)=>{ if(e.target === m) close(); });
 
-  btnPrint.addEventListener("click", (e)=>{
-    e.preventDefault();
-    try{
-      const win = frame.contentWindow;
-      if(!win) throw new Error('PRINT_FRAME_UNAVAILABLE');
-      statusEl.textContent = 'Abrindo diálogo de impressão…';
-      win.focus();
-      win.print();
-    }catch(err){
-      console.error('[PRINT][LOCAL_PRINT_FAIL]', err);
-      snack('Não foi possível abrir a impressão local.', 'err');
-    }
-  });
-
   btnDl.addEventListener("click", async (e)=>{
     e.preventDefault();
-    if(currentMode === 'pdf' && currentUrl){
-      const a = document.createElement("a");
-      a.href = currentUrl;
-      a.download = currentName || "print-pack.pdf";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+    if(!currentUrl){
+      snack("PDF ainda não está pronto.", "warn");
       return;
     }
-    try{
-      const win = frame.contentWindow;
-      if(!win) throw new Error('PDF_FRAME_UNAVAILABLE');
-      statusEl.textContent = 'No modo local, selecione “Salvar como PDF” no diálogo de impressão.';
-      win.focus();
-      win.print();
-    }catch(err){
-      console.error('[PRINT][LOCAL_PDF_FAIL]', err);
-      snack('PDF local ainda não está pronto.', 'warn');
-    }
+    // download via <a download>
+    const a = document.createElement("a");
+    a.href = currentUrl;
+    a.download = currentName || "print-pack.pdf";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   });
 
   const api = {
@@ -837,28 +835,14 @@ function ensurePrintPreviewModal(){
       }
     },
     setPdf(url, filename){
+      // troca URL anterior
       try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
       currentUrl = url;
-      currentHtml = '';
-      currentMode = 'pdf';
       currentName = filename || "print-pack.pdf";
-      frame.removeAttribute('srcdoc');
       frame.src = url;
       frame.style.display = "block";
       loaderEl.style.display = "none";
       errEl.style.display = "none";
-    },
-    setHtml(html, filename){
-      try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
-      currentUrl = '';
-      currentHtml = String(html || '');
-      currentMode = 'html';
-      currentName = filename || 'print-pack.pdf';
-      frame.src = 'about:blank';
-      frame.srcdoc = currentHtml;
-      frame.style.display = 'block';
-      loaderEl.style.display = 'none';
-      errEl.style.display = 'none';
     }
   };
 
@@ -871,13 +855,6 @@ async function openPrintWindow(payload, docType){
   // SGQT-PRINT-ENTERPRISE (Premium): gerar PDF server-side e exibir em MODAL (sem navegar / sem abrir 2 abas)
   // Regra: NÃO usar window.location fallback. Se popup for bloqueado, usamos preview/download via Blob.
   const doc = payload || {};
-  if(doc.atendimento && Array.isArray(doc.atendimento.attachments)){
-    try{
-      await hydrateRemoteAttachmentsForPrint(doc.atendimento.atendimento_id || doc.atendimento.id || doc.atendimento.numero, doc.atendimento.attachments);
-    }catch(e){
-      console.warn('[PRINT][ATTACHMENTS_HYDRATE_FAIL]', e);
-    }
-  }
   let html = openPrintWindowClient(payload, docType, { returnHtml: true });
   // SGQT-PRINT: normalizar HTML (evita MISSING_HTML quando retornar Promise/objeto)
   try{
@@ -938,12 +915,6 @@ async function openPrintWindow(payload, docType){
     if(sem.length) console.info('[PRINT] ' + sem.length + ' anexo(s) só no servidor (exibidos como referência no doc):', sem.map(a=>a.name));
   }
 
-  const isLocalPreviewEnv = (location.hostname === '127.0.0.1' || location.hostname === 'localhost');
-  if(isLocalPreviewEnv){
-    ui.setState("loading", "Ambiente local sem backend de impressão. Gerando impressão local...");
-    return openPrintWindowClient(doc, docType, { openPreview:true });
-  }
-
   let r;
   try{
     r = await fetch("/api/atendimentos/print-pack", {
@@ -995,7 +966,7 @@ async function openPrintWindow(payload, docType){
 
 
 // Fallback (modo offline / compatibilidade legada): impressão client-side (PDF.js + window.print())
-async function openPrintWindowClient(payload, docType, opts){
+function openPrintWindowClient(payload, docType, opts){
   opts = opts || {};
 
   const R = payload || {};
@@ -1029,9 +1000,6 @@ async function openPrintWindowClient(payload, docType, opts){
   const itens = Array.isArray(atd.itens) ? atd.itens : [];
   const totals = atd.totals || {};
   const atts = Array.isArray(atd.attachments) ? atd.attachments : [];
-  if(atd && atts.length){
-    try{ await hydrateRemoteAttachmentsForPrint(atd.atendimento_id || atd.id || atd.numero, atts); }catch(e){ console.warn('[PRINT][LOCAL_ATTACHMENTS_HYDRATE_FAIL]', e); }
-  }
 
   const vitalsByAnimal = atd.vitals_by_animal || {};
   function vitalsLine(v){
@@ -1054,122 +1022,73 @@ async function openPrintWindowClient(payload, docType, opts){
     (vet.crmv_uf && vet.crmv_num) ? ("CRMV-"+vet.crmv_uf+" Nº "+vet.crmv_num) : ""
   ].filter(Boolean).join(" — ");
 
-  function formatPixTipoLabel(tipo){
-    const map = {
-      cpf: 'CPF',
-      cnpj: 'CNPJ',
-      telefone: 'Telefone',
-      celular: 'Celular',
-      phone: 'Telefone',
-      email: 'E-mail',
-      evp: 'Chave aleatória',
-      aleatoria: 'Chave aleatória',
-      random: 'Chave aleatória'
-    };
-    const key = String(tipo || '').trim().toLowerCase();
-    return map[key] || (tipo ? String(tipo) : '');
-  }
-
-  function buildPixInstitutionalLine(empresa){
-    const tipo = formatPixTipoLabel(empresa && (empresa.pix_tipo || empresa.tipo_pix || empresa.chave_pix_tipo || ''));
-    const chave = String(empresa && (empresa.pix_chave || empresa.chave_pix || empresa.pixKey || empresa.pix || empresa.pix_chave_copia_cola || '') || '').trim();
-    const nome = String(empresa && (empresa.pix_nome || empresa.nome_pix || empresa.favorecido_pix || '') || '').trim();
-    if(!tipo && !chave && !nome) return '';
-    const parts = [];
-    if(tipo) parts.push('Tipo: ' + esc(tipo));
-    if(chave) parts.push('Chave: ' + esc(chave));
-    if(nome) parts.push('Favorecido: ' + esc(nome));
-    return '<strong>PIX:</strong> ' + parts.join(' • ');
-  }
-
-  const pixInstitutionalLine = buildPixInstitutionalLine(empresa);
-
   const css = `
-:root{--text:#0f172a;--muted:#64748b;--bd:#e2e8f0;}
+:root{--text:#0f172a;--muted:#64748b;--bd:#d8e1ec;--soft:#f8fbfd;--brand:#0f766e;--brand2:#0ea5e9;}
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--text);margin:0;background:#fff;}
-.page{max-width:920px;margin:0 auto;padding:24px 26px 36px;}
+.page{max-width:920px;margin:0 auto;padding:22px 26px 34px;}
 .sheet{position:relative;}
-.sheet + .sheet{margin-top:18px;}
-.hdr{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;border-bottom:2px solid var(--bd);padding-bottom:14px;margin-bottom:16px;}
-.hdr-left{display:flex;gap:14px;align-items:flex-start;}
-
-.sysBrand{display:flex;gap:8px;align-items:center;}
-.sysIcon svg{height:34px;width:auto;display:block;}
-.sysName{line-height:1.05}
-.sysMain{font-size:13px;font-weight:900;letter-spacing:-.02em;}
-.sysSub{font-size:11px;color:var(--muted);font-weight:800;}
-.logoA{width:54px;height:54px;object-fit:contain;border:none;border-radius:0;margin:0;}
-.hdr h1{font-size:16px;margin:0;font-weight:900;letter-spacing:-.02em;}
-.small{font-size:11px;color:var(--muted);line-height:1.4;}
-.box{border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin:10px 0;}
+.sheet + .sheet{margin-top:14px;}
+.sheet--attachments{padding-top:4px;}
+.hdr{border:1px solid #cbd5e1;border-radius:20px;padding:14px 16px 12px;background:#fff;overflow:hidden;margin-bottom:12px;}
+.hdr::after{content:"";display:block;height:8px;border-radius:999px;margin:12px -16px -12px;background:linear-gradient(90deg,#16a34a 0%, #14b8a6 44%, #0ea5e9 100%);}
+.hdr-grid{display:grid;grid-template-columns:minmax(360px,1.45fr) minmax(180px,.7fr);gap:18px;align-items:start;}
+.brand-row{display:grid;grid-template-columns:170px 1fr;gap:18px;align-items:start;}
+.system-logo{width:100%;height:auto;display:block;margin:0;}
+.company-logo{width:152px;max-width:100%;height:152px;object-fit:contain;display:block;margin:0 0 0 auto;border:none;}
+.company-box{display:grid;gap:10px;align-content:start;}
+.emp-nome{font-size:18px;line-height:1.1;font-weight:900;letter-spacing:-.02em;margin:0;color:#0f172a;}
+.emp-dados{font-size:12px;line-height:1.55;color:#334155;}
+.doc-title{font-size:15px;line-height:1.2;font-weight:900;letter-spacing:.04em;text-transform:uppercase;margin:2px 0 12px;}
+.doc-meta{display:grid;gap:8px;font-size:12px;line-height:1.45;color:#334155;}
+.doc-meta b{font-size:13px;color:#0f172a;}
+.plain-meta{display:grid;gap:4px;margin:10px 0 12px;}
+.plain-meta .k{font-size:11px;font-weight:900;letter-spacing:.11em;text-transform:uppercase;color:#64748b;}
+.plain-meta .v{font-size:15px;font-weight:900;line-height:1.3;color:#0f172a;}
+.plain-text{font-size:12px;line-height:1.6;color:#0f172a;font-weight:700;}
+.section-label{margin:16px 0 8px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.14em;color:var(--brand);}
+.grid-summary{display:grid;grid-template-columns:1fr auto;gap:18px;align-items:start;}
+.summary-date{min-width:180px;text-align:right;}
+.small{font-size:11px;color:var(--muted);line-height:1.45;}
+.box{border:1px solid var(--bd);border-radius:14px;padding:12px 14px;margin:10px 0;background:#fff;}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-.lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700;}
-.val{font-size:13px;font-weight:800;margin-top:2px;}
-.pre{white-space:pre-wrap;font-weight:600;}
-table{width:100%;border-collapse:collapse;margin-top:8px;}
+.lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:800;}
+.val{font-size:13px;font-weight:800;margin-top:3px;}
+.pre{white-space:pre-wrap;font-weight:600;line-height:1.55;}
+.table-tight{margin-top:8px;}
+table{width:100%;border-collapse:collapse;margin-top:8px;border-top:1px solid var(--bd);}
 th,td{border-bottom:1px solid var(--bd);padding:8px 10px;font-size:12.5px;vertical-align:top;}
-th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:left;}
+th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;text-align:left;}
 .right{text-align:right;}
 .tot{display:flex;justify-content:flex-end;margin-top:10px;}
 .tot .box{min-width:320px;}
-.section-title{margin-top:18px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.08em;color:#0b1220;}
+.section-title{margin-top:18px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.12em;color:#0f766e;}
 img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid var(--bd);border-radius:10px;}
 .pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
 .muted{color:var(--muted);}
-.att{margin:14px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:10px;break-inside:avoid;}
-.att-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:#334155;margin-bottom:6px;}
-.att-desc{font-size:12px;color:var(--muted);margin-top:6px;font-style:italic;}
-.att-nodata{font-size:12px;color:#b45309;background:#fef3c7;padding:8px 10px;border-radius:6px;margin-top:6px;}
-
-/* Marca d'água (somente relatório) */
-.wmLocal{
-  position:absolute; inset:0;
-  display:flex; align-items:center; justify-content:center;
-  pointer-events:none; user-select:none;
-  z-index:0;
-}
-.wmLocal img{
-  width:62%;
-  max-width:560px;
-  border:none !important;
-  border-radius:0 !important;
-  margin:0 !important;
-  opacity:.08;
-  filter:grayscale(1);
-  object-fit:contain;
-}
+.att{margin:12px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:12px;break-inside:avoid;page-break-inside:avoid;}
+.att-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:8px;}
+.att-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:#334155;}
+.att-kind{font-size:11px;color:var(--muted);font-weight:800;white-space:nowrap;}
+.att-desc-wrap{margin-top:10px;padding-top:10px;border-top:1px dashed #cbd5e1;}
+.att-desc-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.09em;font-weight:800;margin-bottom:5px;}
+.att-desc{font-size:12px;color:#0f172a;white-space:pre-wrap;line-height:1.45;}
+.att-nodata{font-size:12px;color:#92400e;background:#fff7ed;padding:8px 10px;border-radius:8px;margin-top:6px;border:1px solid #fed7aa;}
+.wmLocal{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; user-select:none; z-index:0;}
+.wmLocal img{width:62%;max-width:560px;border:none !important;border-radius:0 !important;margin:0 !important;opacity:.06;filter:grayscale(1);object-fit:contain;}
 .sheetContent{position:relative; z-index:1;}
-
 .footer{display:none;}
-
 @media print{
-  @page{ size:A4; margin:12mm 12mm 30mm 12mm; } /* reserva espaço p/ rodapé fixo */
+  @page{ size:A4; margin:10mm 10mm 22mm 10mm; }
   .no-print{display:none !important;}
   body{margin:0;}
   .page{max-width:none;padding:0;}
-  .box{break-inside:avoid;}
-  .attachments{break-inside:auto;}
-  .att{break-inside:avoid;}
-  .att-media{break-inside:avoid;}
-  .att-media img{max-height:250mm;}
-  .pdf-pages img{break-inside:avoid; break-after:page;}
-  .pdf-pages img:last-child{break-after:auto;}
-
-  table{break-inside:auto;}
-  tr{break-inside:avoid;}
-  img{break-inside:avoid;}
+  .box,.att,.pdf-block,.att-media,tr,img,canvas{break-inside:avoid;page-break-inside:avoid;}
+  .pdf-pages img{break-inside:avoid;page-break-inside:avoid;break-after:page;page-break-after:always;}
+  .pdf-pages img:last-child{break-after:auto;page-break-after:auto;}
   .sheet{padding:0;}
-  .sheet + .sheet{break-before:page; margin-top:0;}
-  .footer{
-    display:block;
-    position:fixed; left:0; right:0; bottom:0;
-    border-top:1px solid var(--bd);
-    padding:3mm 12mm 3mm;
-    font-size:9px; color:var(--muted);
-    background:#fff;
-  }
+  .sheet + .sheet{break-before:page;page-break-before:always;margin-top:0;}
+  .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.5mm 10mm;font-size:9px;color:var(--muted);background:#fff;}
   .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:center;}
-  /* counter(pages) não funciona no Chrome para about:blank - JS preenche .pnum */
 }
   `;
 
@@ -1204,41 +1123,58 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
   const attHtml = ((docType === "clinico") || (docType === "clinico_financeiro")) ? (
     atts.length ? atts.map((a, idx)=>{
-      const isPdf = String(a.mime||"")==="application/pdf";
-      const name = esc(a.name||("Anexo "+(idx+1)));
+      const mime = String(a.mime || a.mime_type || "").toLowerCase();
+      const isPdf = mime === "application/pdf" || /\.pdf$/i.test(String(a.name||""));
+      const name = esc(a.name || ("Anexo " + (idx+1)));
       const hasData = !!a.dataUrl;
       const sizeKb = a.size ? Math.round(a.size/1024) + " KB" : "";
+      const desc = esc(a.descricao || a.description || a.desc || "—");
       if(!hasData){
-        // Sem dataUrl — mostra referência (arquivo está no servidor)
         return `
           <section class="att">
-            <div class="att-title">${name} ${isPdf ? "• PDF" : "• Imagem"} ${sizeKb ? "• "+sizeKb : ""}</div>
-            <div class="att-nodata">⚠ Não foi possível incorporar este anexo automaticamente${a.print_fetch_error ? ` (${esc(a.print_fetch_error)})` : ''}. Mantenha o arquivo disponível no atendimento para conferência.</div>
-            ${a.descricao ? `<div class="att-desc"><strong>Descrição do anexo:</strong> ${esc(a.descricao)}</div>` : ""}
+            <div class="att-head">
+              <div class="att-title">${name}</div>
+              <div class="att-kind">${isPdf ? "PDF" : "Imagem"}${sizeKb ? ` • ${sizeKb}` : ""}</div>
+            </div>
+            <div class="att-nodata">⚠ O arquivo não pôde ser carregado para a impressão.</div>
+            <div class="att-desc-wrap">
+              <div class="att-desc-label">Descrição clínica do anexo</div>
+              <div class="att-desc">${desc}</div>
+            </div>
           </section>
         `;
       }
       if(isPdf){
         return `
           <section class="att">
-            <div class="att-title">${name} • PDF ${sizeKb ? "• "+sizeKb : ""}</div>
-            <div class="no-print small"><a href="${a.dataUrl}" target="_blank" rel="noopener">Abrir PDF em nova aba</a></div>
+            <div class="att-head">
+              <div class="att-title">${name}</div>
+              <div class="att-kind">PDF${sizeKb ? ` • ${sizeKb}` : ""}</div>
+            </div>
             <div class="pdf-block att-media" data-idx="${idx}">
               <div class="pdf-loading">Renderizando PDF para impressão…</div>
               <div class="pdf-pages" data-name="${name}" data-dataurl="${a.dataUrl}"></div>
             </div>
-            ${a.descricao ? `<div class="att-desc"><strong>Descrição do anexo:</strong> ${esc(a.descricao)}</div>` : ""}
+            <div class="att-desc-wrap">
+              <div class="att-desc-label">Descrição clínica do anexo</div>
+              <div class="att-desc">${desc}</div>
+            </div>
           </section>
         `;
       }
-      // Imagem — usa canvas para redimensionar antes de imprimir (evita travamento com imagens grandes)
       return `
         <section class="att">
-          <div class="att-title">${name} • Imagem ${sizeKb ? "• "+sizeKb : ""}</div>
+          <div class="att-head">
+            <div class="att-title">${name}</div>
+            <div class="att-kind">Imagem${sizeKb ? ` • ${sizeKb}` : ""}</div>
+          </div>
           <div class="att-media">
             <canvas class="att-img-canvas" data-src="${a.dataUrl}" style="max-width:100%;display:block;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;"></canvas>
           </div>
-          ${a.descricao ? `<div class="att-desc">${esc(a.descricao)}</div>` : ""}
+          <div class="att-desc-wrap">
+            <div class="att-desc-label">Descrição clínica do anexo</div>
+            <div class="att-desc">${desc}</div>
+          </div>
         </section>
       `;
     }).join("")
@@ -1256,20 +1192,39 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   }).join("");
 
   const bodyClinicoMain = `
+    <div class="plain-meta">
+      <div class="k">Especificação</div>
+      <div class="v">${esc(DOC_SPEC)}</div>
+    </div>
 
-    <div class="box">
-      <div class="grid">
-        <div>
-          <div class="lbl">Cliente / Proprietário</div>
-          <div class="val">${esc(cli.nome||cli.razao_social||atd.cliente_label||"—")}</div>
-          <div class="small">${esc([cli.doc||cli.cnpj||cli.cpf||"", cli.telefone||cli.fone||"", cli.email||""].filter(Boolean).join(" • "))}</div>
-          <div class="small">${esc([cli.endereco||"", cli.cidade||"", cli.uf||"", cli.cep? ("CEP: "+cli.cep):""].filter(Boolean).join(" • "))}</div>
+    <div class="plain-text">Vet System Control • ERP Equine</div>
+    <div class="plain-text">Documento operacional para atendimento, balcão e auditoria clínica.</div>
+
+    <div class="section-label">Controle do documento</div>
+    <div class="section-label" style="margin-top:18px; color:#0f766e;">Resumo institucional</div>
+    <div class="grid-summary">
+      <div>
+        <div class="plain-meta">
+          <div class="k">Cliente / Proprietário</div>
+          <div class="v">${esc(cli.nome||cli.razao_social||atd.cliente_label||"—")}</div>
         </div>
-        <div>
-          <div class="lbl">Paciente(s)</div>
-          <div class="val">${esc(animaisTxt||"—")}</div>
-          <div class="small"><strong>Data:</strong> ${esc(fmtDate(atd.created_at))}</div>
-          <div class="small"><strong>Veterinário:</strong> ${esc(vetLine||"—")}</div>
+        <div class="plain-meta">
+          <div class="k">Paciente(s)</div>
+          <div class="v">${esc(animaisTxt||"—")}</div>
+        </div>
+        <div class="plain-meta">
+          <div class="k">Veterinário / Responsável</div>
+          <div class="v">${esc(vetLine||"—")}</div>
+        </div>
+        <div class="plain-meta">
+          <div class="k">Anexos clínicos</div>
+          <div class="v">${esc(String(atts.length || 0))}</div>
+        </div>
+      </div>
+      <div class="summary-date">
+        <div class="plain-meta">
+          <div class="k">Data</div>
+          <div class="v">${esc(fmtDate(atd.created_at))}</div>
         </div>
       </div>
     </div>
@@ -1287,7 +1242,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     <div class="box"><div class="pre">${esc(atd.cli_evolucao || "—")}</div></div>
 
     <div class="section-title">Procedimentos / Materiais / Itens utilizados (sem valores)</div>
-    <table>
+    <table class="table-tight">
       <thead><tr>
         <th style="width:110px;">Tipo</th><th>Descrição</th>
         <th style="width:70px;" class="right">Qtd</th>
@@ -1320,22 +1275,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   ` : ``;
 
   const bodyFinanceiro = `
-    <div class="box">
-      <div class="grid">
-        <div>
-          <div class="lbl">Cliente / Proprietário</div>
-          <div class="val">${esc(cli.nome||cli.razao_social||atd.cliente_label||"—")}</div>
-          <div class="small">${esc([cli.doc||cli.cnpj||cli.cpf||"", cli.telefone||cli.fone||""].filter(Boolean).join(" • "))}</div>
-        </div>
-        <div>
-          <div class="lbl">Referência</div>
-          <div class="val">${esc(animaisTxt||"—")}</div>
-          <div class="small"><strong>Data:</strong> ${esc(fmtDate(atd.created_at))}</div>
-          <div class="small"><strong>Atendente/Vet:</strong> ${esc(vetLine||"—")}</div>
-        </div>
-      </div>
-    </div>
-
     <div class="section-title">Lançamentos</div>
     <table>
       <thead><tr>
@@ -1402,45 +1341,47 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>Impressão — ${esc(DOC_LABEL)}</title>
     <style>${css}</style>
+    <script src="${PDFJS_CDN_BASE}/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
   </head><body>
     <div class="page">
       <div class="no-print" style="padding:10px 0 16px;color:var(--muted);font-size:12px;">
-        Padrão hospitalar: revise a pré-visualização e use Imprimir ou Baixar PDF.
+        Padrão hospitalar: documentos separados. O diálogo de impressão abrirá automaticamente.
       </div>
 
       <div class="sheet sheet--main">
         ${(docType === "clinico" && logoB) ? `<div class="wmLocal"><img src="${logoB}" alt="Marca d'água"/></div>` : ``}
         <div class="sheetContent">
           <div class="hdr">
-            <!-- Logo empresa (destaque, lado esquerdo) -->
-            <div class="hdr-logos">
-              ${logoA ? `<img class="logoA" src="${logoA}" alt="Logo"/>` : `<div style="width:56px;height:56px;border-radius:4px;background:linear-gradient(135deg,#16a34a,#0369a1);display:flex;align-items:center;justify-content:center;">${SYSTEM_LOGO_SVG}</div>`}
+            <div class="hdr-grid">
+              <div class="brand-row">
+                <div>
+                  <img class="system-logo" src="assets/brand/vsc-logo-horizontal.png" alt="Vet System Control" onerror="this.outerHTML='<div class=&quot;plain-text&quot;>Vet System Control</div>';" />
+                </div>
+                <div class="company-box">
+                  <div class="emp-nome">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa")}</div>
+                  <div class="emp-dados">${[
+                    empresa.cnpj ? "CNPJ: "+empresa.cnpj : "",
+                    empresa.endereco||"",
+                    empresa.email||""
+                  ].filter(Boolean).join("<br/>")}</div>
+                </div>
+              </div>
+              <div>
+                ${logoA ? `<img class="company-logo" src="${logoA}" alt="Logo da empresa"/>` : `<div style="width:152px;height:152px;border:1px solid #cbd5e1;border-radius:16px;margin-left:auto;display:flex;align-items:center;justify-content:center;background:#fff;">${SYSTEM_LOGO_SVG}</div>`}
+              </div>
             </div>
-            <!-- Dados da empresa (centro) -->
-            <div class="hdr-empresa">
-              <div class="emp-nome">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa")}</div>
-              ${empresa.razao_social && (empresa.razao_social !== empresa.nome) ? `<div class="emp-sub">${esc(empresa.razao_social)}</div>` : ""}
-              <div class="emp-dados">${[
-                empresa.cnpj ? "CNPJ: "+esc(empresa.cnpj) : "",
-                empresa.crmv ? "CRMV: "+esc(empresa.crmv) : "",
-                empresa.endereco ? esc(empresa.endereco) : "",
-                [empresa.cidade, empresa.uf].filter(Boolean).map(esc).join("/") || "",
-                [empresa.telefone, empresa.email].filter(Boolean).map(esc).join("  •  ") || "",
-                pixInstitutionalLine
-              ].filter(Boolean).join("<br/>")}</div>
-            </div>
-            <!-- Identificação do documento (direita) -->
-            <div class="hdr-doc">
-              <div class="doc-tipo">${esc(DOC_LABEL)}</div>
-              <div class="doc-num"><strong>Nº:</strong> ${esc(atd.numero||"—")}</div>
-              <div class="doc-status"><strong>Status:</strong> ${esc(atd.status||"—")}</div>
-              <div class="doc-data"><strong>Data:</strong> ${esc(fmtDate(R.gerado_em))}</div>
-            </div>
-            <!-- Crédito sistema (rodapé do cabeçalho) -->
-            <div class="sys-credit">
-              ${SYSTEM_LOGO_SVG}
-              <span class="sysMain">Vet System Control</span>
-              <span class="sysSub">| Equine — Sistema de Gestão Veterinária</span>
+            <div class="hdr-grid" style="margin-top:10px;grid-template-columns:minmax(360px,1.45fr) minmax(180px,.7fr);">
+              <div></div>
+              <div>
+                <div class="doc-title">${esc(DOC_LABEL)}</div>
+                <div class="doc-meta">
+                  <div><b>Nº:</b> ${esc(atd.numero||"—")}</div>
+                  <div><b>Status:</b> ${esc(atd.status||"—")}</div>
+                  <div><b>Data de emissão:</b> ${esc(fmtDate(R.gerado_em))}</div>
+                  <div><b>Paciente(s):</b> ${esc(animaisTxt||"—")}</div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1469,30 +1410,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
     <script>
       (function(){
-        var PDFJS_SRC = "${PDFJS_CDN_BASE}/pdf.min.js";
-        var PDFJS_WORKER_SRC = "${PDFJS_CDN_BASE}/pdf.worker.min.js";
-        var QRCODE_SRC = "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js";
-
-        function loadExternalScript(src){
-          return new Promise(function(resolve, reject){
-            if(!src) return reject(new Error('SCRIPT_SRC_EMPTY'));
-            var existing = document.querySelector('script[data-print-src="' + src + '"]');
-            if(existing){
-              if(existing.dataset.loaded === '1') return resolve(true);
-              existing.addEventListener('load', function(){ resolve(true); }, { once:true });
-              existing.addEventListener('error', function(){ reject(new Error('SCRIPT_LOAD_FAIL')); }, { once:true });
-              return;
-            }
-            var script = document.createElement('script');
-            script.src = src;
-            script.async = true;
-            script.dataset.printSrc = src;
-            script.onload = function(){ script.dataset.loaded = '1'; resolve(true); };
-            script.onerror = function(){ reject(new Error('SCRIPT_LOAD_FAIL')); };
-            document.head.appendChild(script);
-          });
-        }
-
         function dataUrlToUint8(dataUrl){
           var s = String(dataUrl||"");
           var i = s.indexOf("base64,");
@@ -1508,7 +1425,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           var dataUrl = container.getAttribute('data-dataurl');
           if(!dataUrl) return;
           if(window.pdfjsLib && window.pdfjsLib.GlobalWorkerOptions){
-            window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_SRC;
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = "${PDFJS_CDN_BASE}/pdf.worker.min.js";
           }
           var bytes = dataUrlToUint8(dataUrl);
           if(!bytes){ container.innerHTML = '<div class="small muted">Não foi possível ler o PDF (base64 inválido).</div>'; return; }
@@ -1537,9 +1454,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         async function renderAllPdfs(){
           var nodes = Array.from(document.querySelectorAll('.pdf-pages'));
           if(!nodes.length) return;
-          if(!window.pdfjsLib || !window.pdfjsLib.getDocument){
-            try{ await loadExternalScript(PDFJS_SRC); }catch(_loadErr){}
-          }
           if(!window.pdfjsLib || !window.pdfjsLib.getDocument){
             nodes.forEach(function(n){
               n.innerHTML = '<div class="small muted">PDF.js indisponível neste navegador. Use “Abrir PDF em nova aba” para imprimir o PDF.</div>';
@@ -1570,15 +1484,12 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         }
 
 
-        async function renderPixQr(){
+        function renderPixQr(){
           try{
             var el = document.getElementById('pixQr');
             if(!el) return;
             var k = el.getAttribute('data-pix') || '';
             if(!k) return;
-            if(!window.qrcode){
-              try{ await loadExternalScript(QRCODE_SRC); }catch(_loadErr){}
-            }
             if(!window.qrcode){
               el.innerHTML = '<div class="small muted">QR indisponível.</div>';
               return;
@@ -1699,20 +1610,26 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
           await new Promise(function(r){ requestAnimationFrame(function(){ requestAnimationFrame(r); }); });
 
-          // 5) Sinalizar prontidão; a impressão é acionada pelos botões do preview.
-          document.body.setAttribute('data-print-ready', '1');
+          // 5) Imprimir somente após anexos prontos
+          window.focus();
+          window.print();
         });      })();
     </script>
   </body></html>`;
 
   if(opts.returnHtml) return html;
 
-  const ui = ensurePrintPreviewModal();
-  ui.setState("loading", "Preparando pré-visualização local…");
-  const fileName = `print-pack-${String(atd.atendimento_id || atd.id || atd.numero || "atendimento")}.pdf`;
-  ui.setHtml(html, fileName);
-  ui.setState("ready", "Pré-visualização pronta. Use Imprimir ou Baixar PDF.");
-  return;
+  const w = window.open("", "_blank");
+  if(!w){ snack("Pop-up bloqueado. Libere pop-ups para imprimir.", "warn"); return; }
+
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+
+  // Auto-abre diálogo de impressão após carregar (inclui opção "Salvar como PDF")
+  w.addEventListener("load", () => {
+    setTimeout(() => { try{ w.print(); }catch(_){} }, 800);
+  });
 }
 
   async function imprimirAtendimento(db, docType){
