@@ -43,9 +43,7 @@
     return `
       <div class="kado-hdr">
         <div class="kado-hdr-grid">
-          <div class="kado-system-wrap">
-            <img class="kado-system-logo" src="${safe(data.systemLogoSrc)}" alt="Vet System Control" onerror="this.outerHTML='${safe(data.systemLogoFallback).replace(/'/g, '&#39;')}'" />
-          </div>
+          <div class="kado-system-wrap">${safe(data.systemLogoHtml) || (safe(data.systemLogoSrc) ? `<img class="kado-system-logo" src="${safe(data.systemLogoSrc)}" alt="Vet System Control" />` : safe(data.systemLogoFallback))}</div>
           <div class="kado-company-logo-wrap">${safe(data.companyLogoHtml)}</div>
           <div class="kado-company-box">
             <div class="kado-company-name">${safe(data.companyName)}</div>
