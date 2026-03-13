@@ -1,8 +1,9 @@
-// vsc-cloud-sync.js — refatoração do fluxo manual de sincronização
+// vsc-cloud-sync.js — sincronização manual e pull robusto
 (() => {
   'use strict';
 
   const SYNC_KEY = 'vsc_last_sync';
+  const SNAPSHOT_CACHE_KEY = 'vsc_last_snapshot_meta';
   const TENANT = 'tenant-default';
   const REMOTE_BASE = 'https://app.vetsystemcontrol.com.br';
   const SYNC_TARGET_MODE_KEY = 'vsc_sync_target_mode';
@@ -29,19 +30,6 @@
     } catch (_) {}
   }
 
-  function status() {
-    return {
-      tenant: TENANT,
-      syncing: !!isSyncing,
-      last_sync: localStorage.getItem(SYNC_KEY) || null,
-      api_base: shouldUseRemoteBase() ? REMOTE_BASE : '',
-    };
-  }
-
-  function getEtagKey(url) {
-    return `vsc_sync_etag::${url}`;
-  }
-
   function getHost() {
     try {
       return String(location.hostname || '').toLowerCase();
@@ -63,19 +51,24 @@
     }
   }
 
-  function shouldUseRemoteBase() {
+  function resolveRemoteBase() {
     try {
       const proto = String(location.protocol || '').toLowerCase();
-      if (proto === 'file:') return true;
+      if (proto === 'file:') return REMOTE_BASE;
+      if (proto === 'http:' && isLocalDev()) {
+        return getSyncTargetMode() === 'local' ? location.origin : REMOTE_BASE;
+      }
     } catch (_) {}
-    if (isLocalDev()) {
-      return getSyncTargetMode() !== 'local';
-    }
-    return getSyncTargetMode() === 'remote';
+    return location.origin;
   }
 
-  function buildApiUrl(path) {
-    return `${shouldUseRemoteBase() ? REMOTE_BASE : ''}${path}`;
+  function status() {
+    return {
+      tenant: TENANT,
+      syncing: !!isSyncing,
+      last_sync: localStorage.getItem(SYNC_KEY) || null,
+      api_base: resolveRemoteBase(),
+    };
   }
 
   function getSyncToken() {
@@ -94,7 +87,7 @@
 
   function buildCommonHeaders() {
     const headers = {
-      'Accept': 'application/json',
+      Accept: 'application/json',
       'X-VSC-Tenant': TENANT,
     };
     const token = getSyncToken();
@@ -103,14 +96,17 @@
   }
 
   function apiCandidates() {
-    const relative = ['/api/sync/pull', '/api/state?action=pull'];
-    const absolute = [
-      `${REMOTE_BASE}/api/sync/pull`,
-      `${REMOTE_BASE}/api/state?action=pull`,
+    const remoteBase = resolveRemoteBase();
+    const urls = [
+      `${remoteBase}/api/sync/pull`,
+      `${remoteBase}/api/state?action=pull`,
     ];
 
-    if (shouldUseRemoteBase()) return absolute;
-    return relative;
+    if (remoteBase !== location.origin) {
+      urls.push('/api/sync/pull', '/api/state?action=pull');
+    }
+
+    return Array.from(new Set(urls));
   }
 
   function makeTimeoutController(timeoutMs) {
@@ -120,7 +116,7 @@
       try {
         controller.abort(new Error(`timeout_${safeTimeout}ms`));
       } catch (_) {
-        try { controller.abort(); } catch (_) {}
+        try { controller.abort(); } catch (__){}
       }
     }, safeTimeout);
     return {
@@ -154,21 +150,39 @@
       const list = data[storeName];
       if (Array.isArray(list)) rows += list.length;
     }
-    const revision = Number(body && body.revision || body && body.meta && body.meta.state_revision || 0) || 0;
+    const revision = Number(
+      body && body.revision ||
+      body && body.meta && body.meta.state_revision ||
+      0
+    ) || 0;
+
     return {
       rows,
       stores: stores.length,
       revision,
-      score: (rows * 1000000) + (revision * 1000) + stores,
+      score: (rows * 1_000_000) + (revision * 1_000) + stores.length,
     };
+  }
+
+  function readSnapshotCacheMeta() {
+    try {
+      return JSON.parse(localStorage.getItem(SNAPSHOT_CACHE_KEY) || '{}') || {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function writeSnapshotCacheMeta(meta) {
+    try {
+      localStorage.setItem(SNAPSHOT_CACHE_KEY, JSON.stringify(meta || {}));
+    } catch (_) {}
   }
 
   async function fetchCandidate(url) {
     const headers = buildCommonHeaders();
-    try {
-      const etag = localStorage.getItem(getEtagKey(url)) || '';
-      if (etag) headers['If-None-Match'] = etag;
-    } catch (_) {}
+    const cacheMeta = readSnapshotCacheMeta();
+    const knownEtag = cacheMeta[url] && cacheMeta[url].etag ? String(cacheMeta[url].etag) : '';
+    if (knownEtag) headers['If-None-Match'] = knownEtag;
 
     const response = await fetchWithTimeout(
       url,
@@ -182,27 +196,45 @@
     );
 
     if (response.status === 304) {
-      return { url, body: { ok: true, not_modified: true, snapshot: { data: {} } }, metrics: { rows: 0, stores: 0, revision: 0, score: 0 }, notModified: true };
+      return {
+        url,
+        body: null,
+        not_modified: true,
+        metrics: {
+          rows: Number(cacheMeta[url] && cacheMeta[url].rows || 0) || 0,
+          stores: Number(cacheMeta[url] && cacheMeta[url].stores || 0) || 0,
+          revision: Number(cacheMeta[url] && cacheMeta[url].revision || 0) || 0,
+          score: Number(cacheMeta[url] && cacheMeta[url].score || 0) || 0,
+        },
+      };
     }
 
     if (!response.ok) {
       throw new Error(`pull_http_${response.status}`);
     }
 
-    try {
-      const etag = response.headers.get('etag') || '';
-      if (etag) localStorage.setItem(getEtagKey(url), etag);
-    } catch (_) {}
-
     const body = await response.json();
     if (!(body && body.ok && body.snapshot && body.snapshot.data)) {
       throw new Error('pull_invalid_payload');
     }
 
+    const metrics = snapshotMetrics(body);
+    writeSnapshotCacheMeta({
+      ...cacheMeta,
+      [url]: {
+        etag: response.headers.get('ETag') || null,
+        rows: metrics.rows,
+        stores: metrics.stores,
+        revision: metrics.revision,
+        score: metrics.score,
+      },
+    });
+
     return {
       url,
       body,
-      metrics: snapshotMetrics(body),
+      not_modified: false,
+      metrics,
     };
   }
 
@@ -210,10 +242,22 @@
     const urls = apiCandidates();
     let lastErr = null;
     let best = null;
+    let saw304 = false;
 
     for (const url of urls) {
       try {
         const candidate = await fetchCandidate(url);
+        if (candidate.not_modified) {
+          saw304 = true;
+          try {
+            console.info('[VSC_SYNC] snapshot não modificado', {
+              url: candidate.url,
+              revision: candidate.metrics.revision,
+            });
+          } catch (_) {}
+          if (!best || candidate.metrics.score > best.metrics.score) best = candidate;
+          continue;
+        }
 
         try {
           console.info('[VSC_SYNC] snapshot candidato', {
@@ -224,23 +268,22 @@
           });
         } catch (_) {}
 
-        if (!best || candidate.metrics.score > best.metrics.score) {
-          best = candidate;
-        }
-
-        // Fora do DEV local, não precisamos comparar todas as origens.
+        if (!best || candidate.metrics.score > best.metrics.score) best = candidate;
         if (!isLocalDev()) {
-          return candidate.body;
+          return { ok: true, payload: candidate.body, source: candidate.url, not_modified: false };
         }
       } catch (err) {
         lastErr = err;
         try {
-          console.warn('[VSC_SYNC] snapshot falhou', { url, error: String(err && (err.message || err) || err) });
+          console.warn('[VSC_SYNC] snapshot falhou', {
+            url,
+            error: String(err && (err.message || err) || err),
+          });
         } catch (_) {}
       }
     }
 
-    if (best) {
+    if (best && best.body) {
       try {
         console.info('[VSC_SYNC] snapshot escolhido', {
           url: best.url,
@@ -249,7 +292,15 @@
           revision: best.metrics.revision,
         });
       } catch (_) {}
-      return best.body;
+      return { ok: true, payload: best.body, source: best.url, not_modified: false };
+    }
+
+    if (best && best.not_modified) {
+      return { ok: true, payload: null, source: best.url, not_modified: true };
+    }
+
+    if (saw304) {
+      return { ok: true, payload: null, source: null, not_modified: true };
     }
 
     throw lastErr || new Error('pull_failed');
@@ -296,6 +347,13 @@
         { mode: 'merge_newer' }
       );
 
+      try {
+        const empresaRows = filteredData.empresa;
+        if (Array.isArray(empresaRows) && empresaRows.length) {
+          localStorage.setItem('vsc_empresa_v1', JSON.stringify(empresaRows[0]));
+        }
+      } catch (_) {}
+
       return { ok: true, importedStores: Object.keys(filteredData) };
     } finally {
       try { db.close(); } catch (_) {}
@@ -313,11 +371,17 @@
     notifyUI('syncing');
 
     try {
-      const payload = await fetchSnapshot();
-      const applied = payload && payload.not_modified ? { ok: true, importedStores: [] } : await applySnapshot(payload.snapshot);
+      const result = await fetchSnapshot();
+      if (result.not_modified) {
+        localStorage.setItem(SYNC_KEY, nowIso());
+        notifyUI('success', '', { phase: 'pull', not_modified: true });
+        return { ok: true, pulled: false, not_modified: true };
+      }
+
+      const applied = await applySnapshot(result.payload.snapshot);
       localStorage.setItem(SYNC_KEY, nowIso());
-      notifyUI('success', payload && payload.not_modified ? 'Sem alterações remotas.' : '', { phase: 'pull', applied, not_modified: !!(payload && payload.not_modified) });
-      return { ok: true, pulled: true, applied, not_modified: !!(payload && payload.not_modified) };
+      notifyUI('success', '', { phase: 'pull', applied, source: result.source });
+      return { ok: true, pulled: true, applied, source: result.source };
     } catch (err) {
       notifyUI('error', String(err && (err.message || err) || 'pull_failed'));
       throw err;
@@ -360,7 +424,13 @@
       }
 
       const relayStatus = relay && typeof relay.status === 'function' ? relay.status() : null;
-      const openItems = Number(relayStatus && relayStatus.total_open || relayStatus && relayStatus.pending || 0) || 0;
+      const openItems = Number(
+        relayStatus && (
+          relayStatus.total_open ??
+          relayStatus.pending ??
+          (relayStatus.stats && relayStatus.stats.pending)
+        ) || 0
+      ) || 0;
 
       if (openItems > 0) {
         localStorage.setItem(SYNC_KEY, nowIso());
@@ -372,17 +442,34 @@
         return {
           ok: true,
           partial: true,
-          pushed: !!pushResult,
+          pushed: !!(pushResult && pushResult.processedAny),
           pushResult,
           pending: openItems,
         };
       }
 
-      const payload = await fetchSnapshot();
-      const applied = payload && payload.not_modified ? { ok: true, importedStores: [] } : await applySnapshot(payload.snapshot);
+      const result = await fetchSnapshot();
+      if (result.not_modified) {
+        localStorage.setItem(SYNC_KEY, nowIso());
+        notifyUI('success', '', { phase: 'push+pull', pushResult, not_modified: true });
+        return {
+          ok: true,
+          pushed: !!(pushResult && pushResult.processedAny),
+          pushResult,
+          not_modified: true,
+        };
+      }
+
+      const applied = await applySnapshot(result.payload.snapshot);
       localStorage.setItem(SYNC_KEY, nowIso());
-      notifyUI('success', payload && payload.not_modified ? 'Sem alterações remotas.' : '', { phase: 'push+pull', pushResult, applied, not_modified: !!(payload && payload.not_modified) });
-      return { ok: true, pushed: !!pushResult, pushResult, applied, not_modified: !!(payload && payload.not_modified) };
+      notifyUI('success', '', { phase: 'push+pull', pushResult, applied, source: result.source });
+      return {
+        ok: true,
+        pushed: !!(pushResult && pushResult.processedAny),
+        pushResult,
+        applied,
+        source: result.source,
+      };
     } catch (err) {
       notifyUI('error', String(err && (err.message || err) || 'manual_sync_failed'));
       throw err;

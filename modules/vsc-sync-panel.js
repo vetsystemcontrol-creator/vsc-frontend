@@ -367,11 +367,19 @@
       if (!result || result.ok === false) {
         throw new Error((result && result.error) || 'sync_failed');
       }
-      const pushed = result && result.pushed;
+
+      const pushed = !!(result && result.pushed);
+      const partial = !!(result && result.partial);
+      const notModified = !!(result && result.not_modified);
       const stores = result && result.applied && result.applied.importedStores;
-      const msg = (result && result.partial)
-        ? ('Push parcial · pendentes: ' + String(result.pending || 0))
-        : ('Push: ' + (pushed ? 'enviado' : 'sem pendências') + ((result && result.not_modified) ? ' · Pull: sem alterações' : (stores ? ' · Pull: ' + stores.length + ' stores' : '')));
+      let msg = 'Push: ' + (pushed ? 'enviado' : 'sem pendências');
+      if (partial) {
+        msg += ' · Continuação em segundo plano';
+      } else if (stores) {
+        msg += ' · Pull: ' + stores.length + ' stores';
+      } else if (notModified) {
+        msg += ' · Pull: sem alterações remotas';
+      }
       _addHistory({ ok: true, msg });
       _render({ syncing: false, error: null });
     } catch(e) {

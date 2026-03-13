@@ -598,34 +598,6 @@ async function loadEmpresaSnapshot(db){
     return Array.from(new Set(bases));
   }
 
-  function getAttachmentTenant(){
-    try{
-      return String(localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "tenant-default");
-    }catch(_){
-      return "tenant-default";
-    }
-  }
-
-  function buildAttachmentDownloadCandidates(att, atendimentoId, opts){
-    opts = opts || {};
-    const id = att && (att.id || att.attachment_id || att.attachmentId || att.file_id || att.fileId);
-    if(!id || !atendimentoId) return [];
-    const tenant = encodeURIComponent(getAttachmentTenant());
-    const disposition = opts.inline ? '&disposition=inline' : '';
-    const qs = `action=download&atendimento_id=${encodeURIComponent(String(atendimentoId))}&attachment_id=${encodeURIComponent(String(id))}&tenant=${tenant}${disposition}`;
-    return getAttachmentPrintBaseUrls().map(base => `${base}/api/attachments?${qs}`);
-  }
-
-  function firstAttachmentUrl(att, atendimentoId, opts){
-    const candidates = [];
-    if(att){
-      const known = [att.url, att.download_url, att.downloadUrl, att.r2_url, att.file_url, att.src];
-      for(const raw of known){ if(raw) candidates.push(String(raw)); }
-    }
-    for(const generated of buildAttachmentDownloadCandidates(att, atendimentoId, opts)) candidates.push(generated);
-    return candidates.find(Boolean) || "";
-  }
-
   async function blobToDataUrl(blob){
     return await new Promise((resolve, reject) => {
       const fr = new FileReader();
@@ -638,16 +610,11 @@ async function loadEmpresaSnapshot(db){
   async function hydrateAttachmentsForPrint(atendimento){
     if(!atendimento || !Array.isArray(atendimento.attachments) || !atendimento.attachments.length) return atendimento;
     const atendimentoId = atendimento.atendimento_id || atendimento.id || "";
-    if(!atendimentoId) return atendimento;
-
     atendimento.attachments = atendimento.attachments.map((src) => {
       const att = src ? Object.assign({}, src) : src;
       if(!att) return att;
-      const inlineUrl = firstAttachmentUrl(att, atendimentoId, { inline:true });
-      const downloadUrl = firstAttachmentUrl(att, atendimentoId, { inline:false });
-      if(inlineUrl) att.inlineUrl = inlineUrl;
-      if(downloadUrl) att.downloadUrl = downloadUrl;
-      if(!att.mime && att.mime_type) att.mime = att.mime_type;
+      att.mime = att.mime || att.mime_type || "";
+      att.printUrl = att.dataUrl || buildAttachmentInlineUrl(att, atendimentoId) || "";
       return att;
     });
     return atendimento;
@@ -721,6 +688,29 @@ async function getEmpresaPixFromLocalStorage(){
   }
 }
 
+  function getPrintTenant(){
+    return (localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "tenant-default").trim() || "tenant-default";
+  }
+
+  function buildAttachmentInlineUrl(att, atendimentoId){
+    if(!att || !atendimentoId || !att.id) return "";
+    const base = (location.hostname === "127.0.0.1" || location.hostname === "localhost")
+      ? "https://app.vetsystemcontrol.com.br"
+      : "";
+    const tenant = getPrintTenant();
+    return `${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(att.id)}`;
+  }
+
+  function isPrintBackendEnabled(){
+    try{
+      if(window.VSC_ENABLE_PRINT_BACKEND === true) return true;
+      const raw = localStorage.getItem("vsc_enable_print_backend") || localStorage.getItem("VSC_ENABLE_PRINT_BACKEND") || "";
+      return /^(1|true|yes|on)$/i.test(String(raw));
+    }catch(_){
+      return false;
+    }
+  }
+
 
 
 function ensurePrintPreviewModal(){
@@ -741,12 +731,12 @@ function ensurePrintPreviewModal(){
   m.style.justifyContent = "center";
 
   m.innerHTML = `
-    <div style="width:min(1180px, 97vw); height:min(94vh, 980px); background:#fff; border-radius:12px; overflow:hidden; box-shadow:0 12px 40px rgba(0,0,0,0.35); display:flex; flex-direction:column;">
+    <div style="width:min(980px, 96vw); height:min(92vh, 920px); background:#fff; border-radius:12px; overflow:hidden; box-shadow:0 12px 40px rgba(0,0,0,0.35); display:flex; flex-direction:column;">
       <div style="padding:10px 12px; border-bottom:1px solid #eee; display:flex; gap:10px; align-items:center;">
         <div style="font-weight:700;">Impressão premium</div>
         <div id="vscPPStatus" style="font-size:12px; color:#555; flex:1;">—</div>
         <button id="vscPPPrint" class="btn" style="padding:6px 10px;">Imprimir</button>
-        <button id="vscPPDownload" class="btn" style="padding:6px 10px;">Baixar</button>
+        <button id="vscPPDownload" class="btn" style="padding:6px 10px;">Baixar arquivo</button>
         <button id="vscPPClose" class="btn" style="padding:6px 10px;">Fechar</button>
       </div>
       <div id="vscPPBody" style="flex:1; background:#f6f6f6; display:flex; align-items:center; justify-content:center;">
@@ -767,42 +757,55 @@ function ensurePrintPreviewModal(){
   const btnPrint = m.querySelector("#vscPPPrint");
 
   let currentUrl = "";
-  let currentName = "print-pack.pdf";
+  let currentName = "print-preview.html";
+  let currentKind = "html";
 
-  function open(){ m.style.display = "flex"; }
-  function revokeCurrent(){ try{ if(currentUrl && /^blob:/i.test(currentUrl)) URL.revokeObjectURL(currentUrl); }catch(_){} }
-  function close(){
-    m.style.display = "none";
-    revokeCurrent();
+  function revokeCurrentUrl(){
+    try{ if(currentUrl && /^blob:/.test(currentUrl)) URL.revokeObjectURL(currentUrl); }catch(_){ }
     currentUrl = "";
-    currentName = "print-pack.pdf";
+  }
+
+  function resetFrame(){
     frame.src = "about:blank";
     frame.style.display = "none";
     loaderEl.style.display = "block";
     errEl.style.display = "none";
   }
 
-  btnClose.addEventListener("click", (e)=>{ e.preventDefault(); close(); });
-  m.addEventListener("click", (e)=>{ if(e.target === m) close(); });
+  function open(){ m.style.display = "flex"; }
+  function close(){
+    m.style.display = "none";
+    revokeCurrentUrl();
+    resetFrame();
+  }
 
-  btnPrint.addEventListener("click", async (e)=>{
-    e.preventDefault();
+  async function printCurrentFrame(){
     try{
-      const win = frame && frame.contentWindow;
-      if(!win){ snack("Pré-visualização ainda não está pronta.", "warn"); return; }
-      win.focus();
-      win.print();
-    }catch(err){
-      snack("Falha ao iniciar impressão: " + (err && err.message ? err.message : "erro"), "err");
+      if(frame.style.display === "none" || !frame.contentWindow){
+        snack("Pré-visualização ainda não está pronta.", "warn");
+        return;
+      }
+      frame.contentWindow.focus();
+      frame.contentWindow.print();
+    }catch(e){
+      console.error("[PRINT][MODAL] falha ao imprimir iframe:", e);
+      snack("Falha ao abrir diálogo de impressão.", "err");
     }
-  });
+  }
+
+  btnClose.addEventListener("click", (e)=>{ e.preventDefault(); close(); });
+  btnPrint.addEventListener("click", (e)=>{ e.preventDefault(); printCurrentFrame(); });
+  m.addEventListener("click", (e)=>{ if(e.target === m) close(); });
 
   btnDl.addEventListener("click", async (e)=>{
     e.preventDefault();
-    if(!currentUrl){ snack("Arquivo ainda não está pronto.", "warn"); return; }
+    if(!currentUrl){
+      snack("Arquivo ainda não está pronto.", "warn");
+      return;
+    }
     const a = document.createElement("a");
     a.href = currentUrl;
-    a.download = currentName || "impressao-atendimento.html";
+    a.download = currentName || (currentKind === "pdf" ? "print-pack.pdf" : "print-preview.html");
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -827,19 +830,22 @@ function ensurePrintPreviewModal(){
       }
     },
     setPdf(url, filename){
-      revokeCurrent();
+      revokeCurrentUrl();
       currentUrl = url;
       currentName = filename || "print-pack.pdf";
+      currentKind = "pdf";
+      btnDl.textContent = "Baixar PDF";
       frame.src = url;
       frame.style.display = "block";
       loaderEl.style.display = "none";
       errEl.style.display = "none";
     },
     setHtml(html, filename){
-      revokeCurrent();
-      const blob = new Blob([String(html || "")], { type:"text/html;charset=utf-8" });
-      currentUrl = URL.createObjectURL(blob);
-      currentName = filename || "impressao-atendimento.html";
+      revokeCurrentUrl();
+      currentName = filename || "print-preview.html";
+      currentKind = "html";
+      btnDl.textContent = "Baixar HTML";
+      currentUrl = URL.createObjectURL(new Blob([String(html || "")], { type: "text/html;charset=utf-8" }));
       frame.src = currentUrl;
       frame.style.display = "block";
       loaderEl.style.display = "none";
@@ -852,55 +858,98 @@ function ensurePrintPreviewModal(){
   return api;
 }
 
+
 async function openPrintWindow(payload, docType){
   const doc = payload || {};
+  const ui = ensurePrintPreviewModal();
+  ui.setState("loading", isPrintBackendEnabled() ? "Gerando PDF premium (incluindo anexos)…" : "Preparando pré-visualização de impressão…");
+
   let html = openPrintWindowClient(doc, docType, { returnHtml: true });
   try{
     if(html && typeof html.then === "function") html = await html;
   }catch(e){
-    console.error("[PRINT][HTML] falha ao resolver HTML de impressão:", e);
+    console.error("[SGQT-PRINT][HTML] falha ao resolver html Promise:", e);
   }
-  html = (typeof html === "string") ? html : String(html || "");
-  if(!html.trim()) throw new Error("PRINT_HTML_EMPTY");
-
-  const useBackend = !!(window.VSC_ENABLE_PRINT_PACK || localStorage.getItem("vsc_enable_print_pack") === "1");
-  if(useBackend){
-    try{
-      const ui = ensurePrintPreviewModal();
-      ui.setState("loading", "Gerando PDF premium…");
-      const r = await fetch("/api/atendimentos/print-pack", {
-        method: "POST",
-        headers: getPrintAuthHeaders(),
-        credentials: "include",
-        body: JSON.stringify({ html, doc_type: docType, atendimento: doc.atendimento || {}, empresa: doc.empresa || {} })
-      });
-      if(r.ok && String(r.headers.get("Content-Type") || "").toLowerCase().includes("application/pdf")){
-        const blob = await r.blob();
-        ui.setPdf(URL.createObjectURL(blob), `print-pack-${String((doc.atendimento && (doc.atendimento.numero || doc.atendimento.id || doc.atendimento.atendimento_id)) || "atendimento")}.pdf`);
-        ui.setState("ready", "PDF pronto.");
-        return;
-      }
-    }catch(err){
-      console.warn("[PRINT] backend premium indisponível, usando preview local:", err);
-    }
+  if(typeof html !== "string") html = (html == null ? "" : String(html));
+  if(!html.trim()){
+    ui.setState("error", "HTML de impressão vazio.");
+    throw new Error("PRINT_HTML_EMPTY");
   }
 
-  return openPrintWindowClient(doc, docType, { openPreview:true });
+  if(!isPrintBackendEnabled()){
+    ui.setHtml(html, `print-preview-${String(doc.atendimento?.numero || "atendimento")}.html`);
+    ui.setState("ready", "Pré-visualização pronta.");
+    return;
+  }
+
+  const reqBody = {
+    html,
+    atendimento: doc.atendimento || {},
+    empresa: doc.empresa || {},
+    cliente: doc.cliente || {},
+    animais: doc.animais || [],
+    doc_id: doc.atendimento?.id || doc.atendimento?.atendimento_id || "",
+    doc_uuid: doc.atendimento?.id || doc.atendimento?.atendimento_id || "",
+    generated_at: doc.gerado_em || isoNow()
+  };
+
+  let r;
+  try{
+    r = await fetch("/api/atendimentos/print-pack", {
+      method: "POST",
+      headers: getPrintAuthHeaders(),
+      credentials: "include",
+      body: JSON.stringify(reqBody)
+    });
+  }catch(e){
+    console.error("[SGQT-PRINT][NET] erro:", e);
+    ui.setHtml(html, `print-preview-${String(reqBody.doc_uuid || reqBody.doc_id || reqBody.atendimento?.numero || "atendimento")}.html`);
+    ui.setState("ready", "Backend indisponível. Pré-visualização local pronta.");
+    return;
+  }
+
+  if(!r.ok){
+    let detail = "";
+    try{ detail = await r.text(); }catch(_){ }
+    console.error("[SGQT-PRINT][HTTP] status:", r.status, detail);
+    ui.setHtml(html, `print-preview-${String(reqBody.doc_uuid || reqBody.doc_id || reqBody.atendimento?.numero || "atendimento")}.html`);
+    ui.setState("ready", `Backend de impressão indisponível (${r.status}). Pré-visualização local pronta.`);
+    return;
+  }
+
+  const ct = String(r.headers.get("Content-Type") || "").toLowerCase();
+  if(!ct.includes("application/pdf")){
+    let t = "";
+    try{ t = await r.text(); }catch(_){ }
+    console.error("[SGQT-PRINT][HTTP] resposta não-PDF do backend:", ct, t.slice(0, 400));
+    ui.setHtml(html, `print-preview-${String(reqBody.doc_uuid || reqBody.doc_id || reqBody.atendimento?.numero || "atendimento")}.html`);
+    ui.setState("ready", "Backend não retornou PDF. Pré-visualização local pronta.");
+    return;
+  }
+
+  const blob = await r.blob();
+  const fileName = `print-pack-${String(reqBody.doc_uuid || reqBody.doc_id || reqBody.atendimento?.numero || "atendimento")}.pdf`;
+  const url = URL.createObjectURL(blob);
+  ui.setPdf(url, fileName);
+  ui.setState("ready", "PDF pronto.");
 }
 
 
-// Fallback (modo offline / compatibilidade legada): impressão client-side (HTML local no modal)
+
+// Fallback (modo offline / compatibilidade legada): impressão client-side (PDF.js + window.print())
 function openPrintWindowClient(payload, docType, opts){
   opts = opts || {};
 
   const R = payload || {};
   const empresa = R.empresa || {};
-    const logoA = empresa.__logoA || empresa.logoA || empresa.logo_a || empresa.logo_a_dataurl || empresa.logo_a_dataUrl || empresa.logo_a_dataURL || empresa.logo_data_url || empresa.logoDataUrl || empresa.logoCliente || empresa.logo_cliente || "";
-  const pixKey = empresa.pix_chave || empresa.chave_pix || empresa.pixKey || empresa.pix || empresa.pix_chave_copia_cola || "";
+  const logoA = empresa.__logoA || empresa.logoA || empresa.logo_a || empresa.logo_a_dataurl || empresa.logo_a_dataUrl || empresa.logo_a_dataURL || empresa.logo_data_url || empresa.logoDataUrl || empresa.logoCliente || empresa.logo_cliente || "";
   const logoB = empresa.__logoB || empresa.logoB || empresa.logo_b || empresa.logo_b_dataurl || empresa.logo_b_dataUrl || empresa.logo_b_dataURL || "";
+  const pixKey = empresa.pix_chave || empresa.chave_pix || empresa.pixKey || empresa.pix || empresa.pix_chave_copia_cola || "";
+  const pixLine = [empresa.pix_tipo || "", pixKey || "", empresa.pix_nome || ""].filter(Boolean).join(" • ");
   const atd = R.atendimento || {};
   const cli = R.cliente || {};
   const animais = Array.isArray(R.animais) ? R.animais : [];
+  const atendimentoId = atd.atendimento_id || atd.id || "";
 
   docType = String(docType || "clinico");
   const DOC_LABEL = (docType === "financeiro") ? "Comprovante Financeiro" : (docType === "prescricao") ? "Prescrição" : (docType === "clinico_financeiro") ? "Relatório Clínico + Financeiro" : "Relatório Clínico / Prontuário";
@@ -919,13 +968,12 @@ function openPrintWindowClient(payload, docType, opts){
   <path d="M24 46c7-5 16-7 26-6" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".9"/>
 </svg>`;
 
-  const empLine = [empresa.cnpj, empresa.endereco, [empresa.telefone, empresa.email].filter(Boolean).join(" • ")].filter(Boolean).join("<br/>");
-  const animaisTxt = animais.length ? animais.map(a=>a.nome||a.id).filter(Boolean).join(", ") : (Array.isArray(atd._animal_names)?atd._animal_names.join(", "):"—");
+  const animaisTxt = animais.length ? animais.map(a => a.nome || a.id).filter(Boolean).join(", ") : (Array.isArray(atd._animal_names) ? atd._animal_names.join(", ") : "—");
   const itens = Array.isArray(atd.itens) ? atd.itens : [];
   const totals = atd.totals || {};
   const atts = Array.isArray(atd.attachments) ? atd.attachments : [];
-
   const vitalsByAnimal = atd.vitals_by_animal || {};
+
   function vitalsLine(v){
     if(!v) return "—";
     const parts = [];
@@ -943,7 +991,7 @@ function openPrintWindowClient(payload, docType, opts){
   const vet = atd.responsavel_snapshot || {};
   const vetLine = [
     vet.full_name || vet.username || "",
-    (vet.crmv_uf && vet.crmv_num) ? ("CRMV-"+vet.crmv_uf+" Nº "+vet.crmv_num) : ""
+    (vet.crmv_uf && vet.crmv_num) ? ("CRMV-" + vet.crmv_uf + " Nº " + vet.crmv_num) : ""
   ].filter(Boolean).join(" — ");
 
   const institutionalCss = (window.VSCPrintTemplate && typeof window.VSCPrintTemplate.getInstitutionalCss === "function")
@@ -973,15 +1021,9 @@ th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08
 .tot .box{min-width:320px;}
 .section-title{margin-top:18px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.12em;color:#0f766e;}
 img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid var(--bd);border-radius:10px;}
-.att + .att{margin-top:18px;break-before:page;page-break-before:always;}
-.att-media{margin-top:8px;}
-.att-media--image{display:flex;justify-content:center;align-items:flex-start;}
-.att-image{width:100%;max-width:100%;max-height:none;object-fit:contain;background:#fff;}
-.att-media--pdf{background:#fff;border:1px solid var(--bd);border-radius:10px;overflow:hidden;}
-.att-pdf-object{display:block;width:100%;height:1120px;border:0;background:#fff;}
-.pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
 .muted{color:var(--muted);}
 .att{margin:12px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:12px;break-inside:avoid;page-break-inside:avoid;}
+.att + .att{margin-top:18px;}
 .att-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:8px;}
 .att-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:#334155;}
 .att-kind{font-size:11px;color:var(--muted);font-weight:800;white-space:nowrap;}
@@ -989,6 +1031,8 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 .att-desc-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.09em;font-weight:800;margin-bottom:5px;}
 .att-desc{font-size:12px;color:#0f172a;white-space:pre-wrap;line-height:1.45;}
 .att-nodata{font-size:12px;color:#92400e;background:#fff7ed;padding:8px 10px;border-radius:8px;margin-top:6px;border:1px solid #fed7aa;}
+.att-inline-image{display:block;max-width:100%;height:auto;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;}
+.att-pdf-object{display:block;width:100%;height:1120px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;}
 .wmLocal{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; user-select:none; z-index:0;}
 .wmLocal img{width:62%;max-width:560px;border:none !important;border-radius:0 !important;margin:0 !important;opacity:.06;filter:grayscale(1);object-fit:contain;}
 .sheetContent{position:relative; z-index:1;}
@@ -998,9 +1042,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   .no-print{display:none !important;}
   body{margin:0;}
   .page{max-width:none;padding:0;}
-  .box,.att,.pdf-block,.att-media,tr,img,canvas{break-inside:avoid;page-break-inside:avoid;}
-  .pdf-pages img{break-inside:avoid;page-break-inside:avoid;break-after:page;page-break-after:always;}
-  .pdf-pages img:last-child{break-after:auto;page-break-after:auto;}
+  .box,.att,.att-media,object,embed,img,tr{break-inside:avoid;page-break-inside:avoid;}
   .sheet{padding:0;}
   .sheet + .sheet{break-before:page;page-break-before:always;margin-top:0;}
   .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.5mm 10mm;font-size:9px;color:var(--muted);background:#fff;}
@@ -1008,99 +1050,62 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 }
   `;
 
-
-  const rowsFinanceiro = itens.length ? itens.map(it=>{
-    const sub = (Number(it.qtd||0)*Number(it.vu||0));
+  const rowsFinanceiro = itens.length ? itens.map(it => {
+    const sub = (Number(it.qtd || 0) * Number(it.vu || 0));
     return `<tr>
-      <td>${esc(it.tipo||"")}</td>
-      <td>${esc(it.desc||"")}</td>
-      <td class="right">${esc(String(it.qtd||0))}</td>
-      <td class="right">${esc(fmtBRL(it.vu||0))}</td>
+      <td>${esc(it.tipo || "")}</td>
+      <td>${esc(it.desc || "")}</td>
+      <td class="right">${esc(String(it.qtd || 0))}</td>
+      <td class="right">${esc(fmtBRL(it.vu || 0))}</td>
       <td class="right">${esc(fmtBRL(sub))}</td>
     </tr>`;
   }).join("") : `<tr><td colspan="5" class="muted">Nenhum item lançado.</td></tr>`;
 
-  const rowsClinico = itens.length ? itens.map(it=>{
-    return `<tr>
-      <td>${esc(it.tipo||"")}</td>
-      <td>${esc(it.desc||"")}</td>
-      <td class="right">${esc(String(it.qtd||0))}</td>
-    </tr>`;
-  }).join("") : `<tr><td colspan="3" class="muted">Nenhum item registrado.</td></tr>`;
+  const rowsClinico = itens.length ? itens.map(it => `<tr>
+      <td>${esc(it.tipo || "")}</td>
+      <td>${esc(it.desc || "")}</td>
+      <td class="right">${esc(String(it.qtd || 0))}</td>
+    </tr>`).join("") : `<tr><td colspan="3" class="muted">Nenhum item registrado.</td></tr>`;
 
-  const prescProdutos = itens.filter(it => String(it.tipo||"") === "PRODUTO");
+  const prescProdutos = itens.filter(it => String(it.tipo || "") === "PRODUTO");
   const prescRowsSrc = prescProdutos.length ? prescProdutos : [{desc:"",qtd:""},{desc:"",qtd:""},{desc:"",qtd:""}];
-  const rowsPrescricao = prescRowsSrc.map(it=>{
-    return `<tr>
-      <td>${esc(it.desc||"")}</td>
-      <td class="right">${esc(String(it.qtd||""))}</td>
+  const rowsPrescricao = prescRowsSrc.map(it => `<tr>
+      <td>${esc(it.desc || "")}</td>
+      <td class="right">${esc(String(it.qtd || ""))}</td>
       <td></td><td></td><td></td>
-    </tr>`;
-  }).join("");
+    </tr>`).join("");
 
   const attHtml = ((docType === "clinico") || (docType === "clinico_financeiro")) ? (
-    atts.length ? atts.map((a, idx)=>{
+    atts.length ? atts.map((a, idx) => {
       const mime = String(a.mime || a.mime_type || "").toLowerCase();
-      const isPdf = mime === "application/pdf" || /\.pdf$/i.test(String(a.name||""));
-      const name = esc(a.name || ("Anexo " + (idx+1)));
-      const mediaSrc = a.dataUrl || a.inlineUrl || a.downloadUrl || "";
-      const hasData = !!mediaSrc;
-      const sizeKb = a.size ? Math.round(a.size/1024) + " KB" : "";
+      const fileName = String(a.name || a.filename || ("Anexo " + (idx + 1)));
+      const name = esc(fileName);
       const desc = esc(a.descricao || a.description || a.desc || "—");
-      if(!hasData){
-        return `
-          <section class="att ${isPdf ? 'att--pdf' : 'att--image'}">
-            <div class="att-head">
-              <div class="att-title">${name}</div>
-              <div class="att-kind">${isPdf ? "PDF" : "Imagem"}${sizeKb ? ` • ${sizeKb}` : ""}</div>
-            </div>
-            <div class="att-nodata">⚠ O arquivo não pôde ser carregado para a impressão.</div>
-            <div class="att-desc-wrap">
-              <div class="att-desc-label">Descrição clínica do anexo</div>
-              <div class="att-desc">${desc}</div>
-            </div>
-          </section>
-        `;
+      const src = a.dataUrl || a.printUrl || buildAttachmentInlineUrl(a, atendimentoId);
+      const sizeLabel = a.size ? bytesToHuman(a.size) : "";
+      const isPdf = mime === "application/pdf" || /\.pdf$/i.test(fileName);
+      const isImg = /^image\//.test(mime) || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(fileName);
+      let mediaHtml = `<div class="att-nodata">⚠ O arquivo não pôde ser carregado para a impressão.</div>`;
+      if(src && isPdf){
+        mediaHtml = `<object data="${src}" type="application/pdf" class="att-pdf-object"><embed src="${src}" type="application/pdf" class="att-pdf-object" /><div class="att-nodata">PDF indisponível para incorporação neste navegador.</div></object>`;
+      }else if(src && isImg){
+        mediaHtml = `<img class="att-inline-image" src="${src}" alt="${name}" />`;
       }
-      if(isPdf){
-        return `
-          <section class="att att--pdf">
-            <div class="att-head">
-              <div class="att-title">${name}</div>
-              <div class="att-kind">PDF${sizeKb ? ` • ${sizeKb}` : ""}</div>
-            </div>
-            <div class="att-media att-media--pdf">
-              <object data="${esc(mediaSrc)}#toolbar=0&navpanes=0&scrollbar=0&view=FitH" type="application/pdf" class="att-pdf-object">
-                <embed src="${esc(mediaSrc)}#toolbar=0&navpanes=0&scrollbar=0&view=FitH" type="application/pdf" class="att-pdf-object" />
-              </object>
-            </div>
-            <div class="att-desc-wrap">
-              <div class="att-desc-label">Descrição clínica do anexo</div>
-              <div class="att-desc">${desc}</div>
-            </div>
-          </section>
-        `;
-      }
-      return `
-        <section class="att att--image">
-          <div class="att-head">
-            <div class="att-title">${name}</div>
-            <div class="att-kind">Imagem${sizeKb ? ` • ${sizeKb}` : ""}</div>
-          </div>
-          <div class="att-media att-media--image">
-            <img class="att-image" src="${esc(mediaSrc)}" alt="${name}" loading="eager" decoding="sync" />
-          </div>
-          <div class="att-desc-wrap">
-            <div class="att-desc-label">Descrição clínica do anexo</div>
-            <div class="att-desc">${desc}</div>
-          </div>
-        </section>
-      `;
-    }).join("")
-    : `<div class="small muted">Nenhum anexo clínico registrado.</div>`
+      return `<section class="att">
+        <div class="att-head">
+          <div class="att-title">${name}</div>
+          <div class="att-kind">${isPdf ? "PDF" : (isImg ? "Imagem" : "Arquivo")}${sizeLabel ? ` • ${sizeLabel}` : ""}</div>
+        </div>
+        <div class="att-media">${mediaHtml}</div>
+        <div class="att-desc-wrap">
+          <div class="att-desc-label">Descrição clínica do anexo</div>
+          <div class="att-desc">${desc}</div>
+        </div>
+      </section>`;
+    }).join("") : `<div class="small muted">Nenhum anexo clínico registrado.</div>`
   ) : "";
 
-  const vitalsHtml = (animais.length ? animais : (Array.isArray(atd.animal_ids) ? atd.animal_ids.map(id=>({id, nome:id})) : [])).map(a=>{
+  const vitalsHtml = (animais.length ? animais : (Array.isArray(atd.animal_ids) ? atd.animal_ids.map(id => ({id, nome:id})) : [])).map(a => {
     const id = String(a.id || "");
     const nm = String(a.nome || id || "Paciente");
     const v = vitalsByAnimal[id] || null;
@@ -1112,23 +1117,23 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
   const headerHtml = (window.VSCPrintTemplate && typeof window.VSCPrintTemplate.renderInstitutionalHeader === "function")
     ? window.VSCPrintTemplate.renderInstitutionalHeader({
-        systemLogoSrc: new URL('assets/brand/vsc-logo-horizontal.png', location.origin).href,
+        systemLogoSrc: `${location.origin}/assets/brand/vsc-logo-horizontal.png`,
         systemLogoFallback: '<div class="kado-fallback-system">Vet System Control</div>',
         companyLogoHtml: logoA
           ? `<img class="kado-company-logo" src="${logoA}" alt="Logo da empresa"/>`
           : `<div class="kado-company-logo-fallback">${SYSTEM_LOGO_SVG}</div>`,
-        companyName: esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa"),
+        companyName: esc(empresa.nome || empresa.nome_fantasia || empresa.razao_social || "Empresa"),
         companyMetaHtml: [
           empresa.cnpj ? `<div>CNPJ: ${esc(empresa.cnpj)}</div>` : "",
           empresa.email ? `<div>${esc(empresa.email)}</div>` : "",
-          pixKey ? `<div>PIX</div>` : ""
+          pixLine ? `<div>PIX: ${esc(pixLine)}</div>` : ""
         ].filter(Boolean).join(""),
         documentTitle: esc(DOC_LABEL),
         documentMetaHtml: [
-          `<div><b>Nº:</b> ${esc(atd.numero||"—")}</div>`,
-          `<div><b>Status:</b> ${esc(atd.status||"—")}</div>`,
+          `<div><b>Nº:</b> ${esc(atd.numero || "—")}</div>`,
+          `<div><b>Status:</b> ${esc(atd.status || "—")}</div>`,
           `<div><b>Data de emissão:</b> ${esc(fmtDate(R.gerado_em))}</div>`,
-          `<div><b>Paciente(s):</b> ${esc(animaisTxt||"—")}</div>`
+          `<div><b>Paciente(s):</b> ${esc(animaisTxt || "—")}</div>`
         ].join("")
       })
     : '';
@@ -1139,11 +1144,11 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         originLine1: 'Vet System Control • ERP Equine',
         originLine2: 'Documento operacional para atendimento, balcão e auditoria clínica.',
         clientLabel: 'Cliente / Proprietário',
-        clientValue: esc(cli.nome||cli.razao_social||atd.cliente_label||"—"),
+        clientValue: esc(cli.nome || cli.razao_social || atd.cliente_label || "—"),
         patientLabel: 'Paciente(s)',
-        patientValue: esc(animaisTxt||"—"),
+        patientValue: esc(animaisTxt || "—"),
         vetLabel: 'Veterinário / Responsável',
-        vetValue: esc(vetLine||"—"),
+        vetValue: esc(vetLine || "—"),
         attachmentsLabel: 'Anexos clínicos',
         attachmentsValue: esc(String(atts.length || 0)),
         dateLabel: 'Data',
@@ -1173,29 +1178,10 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   `
     : ``;
 
-
   const bodyClinicoAttachments = `
     <div class="section-title">Anexos</div>
     <div class="attachments">${attHtml || `<div class="small muted">Nenhum anexo.</div>`}</div>
   `;
-
-
-  const pixBox = pixKey ? `
-    <div class="section-title">Pagamento via PIX</div>
-    <div class="box">
-      <div class="grid" style="grid-template-columns:1fr 180px; align-items:start;">
-        <div>
-          <div class="lbl">Chave PIX (copia e cola)</div>
-          <div class="val" style="word-break:break-all;">${esc(pixKey)}</div>
-          <div class="small muted">Aponte a câmera do app do banco para o QR ao lado ou copie a chave acima.</div>
-        </div>
-        <div>
-          <div class="lbl" style="text-align:center;">QR PIX</div>
-          <div id="pixQr" data-pix="${esc(pixKey)}" style="display:flex;justify-content:center;"></div>
-        </div>
-      </div>
-    </div>
-  ` : ``;
 
   const bodyFinanceiro = `
     <div class="section-title">Lançamentos</div>
@@ -1212,10 +1198,10 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     <div class="tot">
       <div class="box">
         <div class="grid">
-          <div><div class="lbl">Itens</div><div class="val">${esc(fmtBRL(totals.total_itens||0))}</div></div>
-          <div><div class="lbl">Desconto</div><div class="val">${esc(fmtBRL(totals.desconto_calc||0))}</div></div>
-          <div><div class="lbl">Deslocamento</div><div class="val">${esc(fmtBRL(totals.deslocamento||0))}</div></div>
-          <div><div class="lbl">Total Geral</div><div class="val">${esc(fmtBRL(totals.total_geral||0))}</div></div>
+          <div><div class="lbl">Itens</div><div class="val">${esc(fmtBRL(totals.total_itens || 0))}</div></div>
+          <div><div class="lbl">Desconto</div><div class="val">${esc(fmtBRL(totals.desconto_calc || 0))}</div></div>
+          <div><div class="lbl">Deslocamento</div><div class="val">${esc(fmtBRL(totals.deslocamento || 0))}</div></div>
+          <div><div class="lbl">Total Geral</div><div class="val">${esc(fmtBRL(totals.total_geral || 0))}</div></div>
         </div>
       </div>
     </div>
@@ -1230,14 +1216,14 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       <div class="grid">
         <div>
           <div class="lbl">Cliente / Proprietário</div>
-          <div class="val">${esc(cli.nome||cli.razao_social||atd.cliente_label||"—")}</div>
-          <div class="small">${esc([cli.doc||cli.cnpj||cli.cpf||"", cli.telefone||cli.fone||""].filter(Boolean).join(" • "))}</div>
+          <div class="val">${esc(cli.nome || cli.razao_social || atd.cliente_label || "—")}</div>
+          <div class="small">${esc([cli.doc || cli.cnpj || cli.cpf || "", cli.telefone || cli.fone || ""].filter(Boolean).join(" • "))}</div>
         </div>
         <div>
           <div class="lbl">Paciente(s)</div>
-          <div class="val">${esc(animaisTxt||"—")}</div>
+          <div class="val">${esc(animaisTxt || "—")}</div>
           <div class="small"><strong>Data:</strong> ${esc(fmtDate(atd.created_at))}</div>
-          <div class="small"><strong>Veterinário:</strong> ${esc(vetLine||"—")}</div>
+          <div class="small"><strong>Veterinário:</strong> ${esc(vetLine || "—")}</div>
         </div>
       </div>
     </div>
@@ -1258,8 +1244,11 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     <div class="small muted">Complete posologia conforme avaliação clínica. Para antimicrobianos e itens controlados, seguir exigências vigentes.</div>
   `;
 
+  const bodyClinicoFinanceiro = bodyClinicoMain + `
 
-  const bodyClinicoFinanceiro = bodyClinicoMain + `\n\n<div class="page-break"></div>\n\n` + bodyFinanceiro;
+<div class="page-break"></div>
+
+` + bodyFinanceiro;
   const html = `<!doctype html><html lang="pt-BR"><head>
     <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>Impressão — ${esc(DOC_LABEL)}</title>
@@ -1267,112 +1256,80 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   </head><body>
     <div class="page">
       <div class="no-print" style="padding:10px 0 16px;color:var(--muted);font-size:12px;">
-        Padrão hospitalar: documentos separados. O diálogo de impressão abrirá automaticamente.
+        Pré-visualização pronta. Use o botão Imprimir no modal para abrir o diálogo do navegador.
       </div>
 
       <div class="sheet sheet--main">
         ${(docType === "clinico" && logoB) ? `<div class="wmLocal"><img src="${logoB}" alt="Marca d'água"/></div>` : ``}
         <div class="sheetContent">
           ${headerHtml}
-
           ${(docType === "financeiro") ? bodyFinanceiro : (docType === "prescricao") ? bodyPrescricao : (docType === "clinico_financeiro") ? bodyClinicoFinanceiro : bodyClinicoMain}
         </div>
       </div>
 
       ${(((docType === "clinico") || (docType === "clinico_financeiro")) && atts.length) ? `
         <div class="sheet sheet--attachments">
-          <div class="sheetContent">
-            ${bodyClinicoAttachments}
-          </div>
+          <div class="sheetContent">${bodyClinicoAttachments}</div>
         </div>
       ` : ``}
     </div>
 
     <div class="footer">
       <div class="row">
-        <div>
-          <div><b>${esc(DOC_SPEC)}</b> • ${esc(DOC_LABEL)} • Emitido em ${esc(new Date(R.gerado_em||Date.now()).toLocaleString("pt-BR"))}</div>
-          <div>Hash: <span id="docHash">calculando…</span></div>
-        </div>
+        <div><b>${esc(DOC_SPEC)}</b> • ${esc(DOC_LABEL)} • Emitido em ${esc(new Date(R.gerado_em || Date.now()).toLocaleString("pt-BR"))}</div>
         <div class="pnum"></div>
       </div>
     </div>
 
     <script>
       (function(){
-        function renderPixQr(){
-          try{
-            var el = document.getElementById('pixQr');
-            if(!el) return;
-            var k = el.getAttribute('data-pix') || '';
-            if(!k) return;
-            el.innerHTML = '<div class="small muted">QR PIX disponível no módulo financeiro.</div>';
-          }catch(_e){}
-        }
-
-        function sha256Hex(text){
-          try{
-            if(!window.crypto || !crypto.subtle) return Promise.resolve(null);
-            var enc = new TextEncoder();
-            var buf = enc.encode(String(text||''));
-            return crypto.subtle.digest('SHA-256', buf).then(function(digest){
-              var arr = Array.from(new Uint8Array(digest));
-              return arr.map(function(b){return b.toString(16).padStart(2,'0');}).join('');
-            }).catch(function(){ return null; });
-          }catch(_e){ return Promise.resolve(null); }
-        }
-
         function fillPageNumbers(){
           try{
             var body = document.body;
             var pageH = 1122;
             var total = Math.max(1, Math.ceil(body.scrollHeight / pageH));
             document.querySelectorAll('.pnum').forEach(function(el, i){
-              el.textContent = 'Página ' + (i+1) + ' de ' + total;
+              el.textContent = 'Página ' + (i + 1) + ' de ' + total;
             });
-          }catch(_e){}
+          }catch(_){ }
+        }
+
+        async function waitForImages(timeoutMs){
+          timeoutMs = timeoutMs || 12000;
+          var imgs = Array.from(document.images || []);
+          if(!imgs.length) return true;
+          function one(img){
+            return new Promise(function(resolve){
+              if(img.complete && img.naturalWidth > 0) return resolve(true);
+              var done = false;
+              var to = setTimeout(function(){ if(done) return; done = true; resolve(false); }, timeoutMs);
+              function ok(){ if(done) return; done = true; clearTimeout(to); resolve(true); }
+              function bad(){ if(done) return; done = true; clearTimeout(to); resolve(false); }
+              img.addEventListener('load', ok, { once:true });
+              img.addEventListener('error', bad, { once:true });
+              try{ if(typeof img.decode === 'function') img.decode().then(ok).catch(function(){}); }catch(_){ }
+            });
+          }
+          try{ await Promise.all(imgs.map(one)); }catch(_){ }
+          return true;
         }
 
         window.addEventListener('load', async function(){
-          try{ renderPixQr(); }catch(_e){}
-          try{
-            var audit = ${JSON.stringify({
-              spec: DOC_SPEC,
-              label: DOC_LABEL,
-              docType: docType,
-              numero: atd.numero || "",
-              status: atd.status || "",
-              gerado_em: R.gerado_em || "",
-              atendimento_id: atd.id || atd.atendimento_id || ""
-            })};
-            var h = await sha256Hex(JSON.stringify(audit));
-            var el = document.getElementById('docHash');
-            if(el) el.textContent = h ? h : '(indisponível neste navegador)';
-          }catch(_e){}
-          try{ if(document.fonts && document.fonts.ready) await document.fonts.ready; }catch(_e){}
-          try{ fillPageNumbers(); }catch(_e){}
+          try{ if(document.fonts && document.fonts.ready) await document.fonts.ready; }catch(_){ }
+          try{ await waitForImages(12000); }catch(_){ }
+          try{ fillPageNumbers(); }catch(_){ }
         });
       })();
     </script>
   </body></html>`;
 
   if(opts.returnHtml) return html;
-
-  if(opts.openPreview){
-    const ui = ensurePrintPreviewModal();
-    ui.setState("loading", "Preparando pré-visualização local…");
-    ui.setHtml(html, `impressao-${String((atd.numero || atd.id || atd.atendimento_id || 'atendimento')).replace(/[^a-z0-9_-]+/gi,'-')}.html`);
-    ui.setState("ready", "Pré-visualização local pronta.");
-    return;
-  }
-
-  const w = window.open("", "_blank");
-  if(!w){ snack("Pop-up bloqueado. Libere pop-ups para imprimir.", "warn"); return; }
-
-  w.document.open();
-  w.document.write(html);
-  w.document.close();
+  const ui = ensurePrintPreviewModal();
+  ui.setHtml(html, `print-preview-${String(atd.numero || "atendimento")}.html`);
+  ui.setState("ready", "Pré-visualização pronta.");
+  return html;
 }
+
 
   async function imprimirAtendimento(db, docType){
     try{
