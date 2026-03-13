@@ -4,8 +4,6 @@ import {
   getTenant,
   ensureSchema,
   loadCanonicalSnapshot,
-  isSyncAuthorized,
-  buildUnauthorizedResponse,
 } from '../_lib/sync-store.js';
 
 function jsonResponse(body, status = 200, request = null, extraHeaders = {}) {
@@ -54,9 +52,6 @@ export async function onRequestOptions(context) {
 
 export async function onRequestGet(context) {
   const { request, env } = context;
-  const auth = isSyncAuthorized(request, env);
-  if (!auth.ok) return buildUnauthorizedResponse(request);
-
   try {
     const db = getDB(env);
     if (!db) {

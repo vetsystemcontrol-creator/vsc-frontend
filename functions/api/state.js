@@ -295,8 +295,6 @@ export async function onRequestGet(context) {
 
     if (action === 'capabilities') return buildCapabilities(request, env);
     if (action === 'pull') {
-      const auth = await isSyncAuthorized(request, env);
-      if (!auth.ok) return buildUnauthorizedResponse(request);
       return handlePull(request, env, tenant);
     }
 

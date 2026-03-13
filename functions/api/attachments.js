@@ -111,15 +111,11 @@ async function handleDownload(request, env, url) {
   if (!obj) return json({ ok: false, error: 'not_found' }, 404, request);
 
   const meta = obj.customMetadata || {};
-  const safeFilename = String(meta.filename || attachment_id || 'arquivo').replace(/[\r\n"]/g, '_');
-  const disposition = String(url.searchParams.get('disposition') || 'attachment').toLowerCase() === 'inline'
-    ? 'inline'
-    : 'attachment';
   const headers = new Headers({
     ...corsHeaders(request),
     'content-type': meta.mime_type || 'application/octet-stream',
-    'content-disposition': `${disposition}; filename="${safeFilename}"`,
-    'cache-control': disposition === 'inline' ? 'private, no-store' : 'private, max-age=3600',
+    'content-disposition': `attachment; filename="${meta.filename || attachment_id}"`,
+    'cache-control': 'private, max-age=3600',
   });
 
   return new Response(obj.body, { status: 200, headers });

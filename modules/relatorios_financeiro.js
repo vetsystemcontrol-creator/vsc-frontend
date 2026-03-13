@@ -94,44 +94,40 @@
     var ph = document.getElementById("vscPrintHeader");
     if(!ph) return;
 
-    var empresaRaw = readEmpresa();
+    var empresa = fmtEmpresa(readEmpresa());
     var issuer = await pickIssuer();
+
+    var docId = uuidv4();
     var nowIso = new Date().toISOString();
     var nowBr = "";
-    try{ nowBr = new Date(nowIso).toLocaleString("pt-BR"); }catch(_ ){ nowBr = nowIso; }
+    try{ nowBr = new Date(nowIso).toLocaleString("pt-BR"); }catch(_){ nowBr = nowIso; }
 
-    var companyLogo = empresaRaw.logoA || empresaRaw.logo_a || empresaRaw.logo_a_dataurl || empresaRaw.logoDataUrl || empresaRaw.logo_data_url || empresaRaw.logo_cliente || "";
-    var pixParts = [empresaRaw.pix_tipo || "", empresaRaw.pix_chave || empresaRaw.chave_pix || "", empresaRaw.pix_nome || ""].map(function(v){ return String(v||"").trim(); }).filter(Boolean);
-    var companyMetaHtml = [
-      empresaRaw.cnpj ? `<div>CNPJ: ${String(empresaRaw.cnpj)}</div>` : "",
-      empresaRaw.email ? `<div>${String(empresaRaw.email)}</div>` : "",
-      pixParts.length ? `<div>PIX: ${pixParts.join(" • ")}</div>` : ""
-    ].filter(Boolean).join("");
+    var tRel = "Relatório Financeiro (" + (STATE.store || "—") + ")";
+    var meta = tRel + " • DOC " + docId;
 
-    var crmv = (issuer && issuer.crmv_uf && issuer.crmv_num) ? ("CRMV-" + issuer.crmv_uf + " Nº " + issuer.crmv_num) : "";
-    var documentMetaHtml = [
-      `<div><b>Emitido em:</b> ${nowBr}</div>`,
-      issuer ? `<div><b>Responsável:</b> ${String((issuer.full_name || issuer.username || "—") + (crmv ? (" — " + crmv) : ""))}</div>` : ""
-    ].filter(Boolean).join("");
+    (document.getElementById("phEmpresa")||{}).textContent = empresa.line1 || "—";
+    (document.getElementById("phEmpresa2")||{}).textContent = empresa.line2 || "—";
+    (document.getElementById("phDocMeta")||{}).textContent = meta;
+    (document.getElementById("phIssuedAt")||{}).textContent = "Emitido em " + nowBr;
 
-    if(window.VSCPrintTemplate && typeof window.VSCPrintTemplate.renderInstitutionalHeader === "function"){
-      if(!document.getElementById("vscPrintTemplateStyle")){
-        var st = document.createElement("style");
-        st.id = "vscPrintTemplateStyle";
-        st.textContent = window.VSCPrintTemplate.getInstitutionalCss ? window.VSCPrintTemplate.getInstitutionalCss() : "";
-        document.head.appendChild(st);
+    if(issuer){
+      var crmv = (issuer.crmv_uf && issuer.crmv_num) ? ("CRMV-" + issuer.crmv_uf + " Nº " + issuer.crmv_num) : "";
+      (document.getElementById("phIssuer")||{}).textContent = (issuer.full_name || issuer.username || "—") + (crmv ? (" — " + crmv) : "");
+      var c2 = [issuer.phone ? ("Tel " + issuer.phone) : "", issuer.email ? ("Email " + issuer.email) : ""].filter(Boolean).join(" • ");
+      (document.getElementById("phIssuer2")||{}).textContent = c2 || "";
+      var sigBox = document.getElementById("phSig");
+      if(sigBox){
+        if(issuer.signature_image_dataurl){
+          sigBox.innerHTML = "<img alt='Assinatura' src='" + String(issuer.signature_image_dataurl).replace(/'/g,"%27") + "' />";
+        } else {
+          sigBox.innerHTML = "";
+        }
       }
-      ph.innerHTML = window.VSCPrintTemplate.renderInstitutionalHeader({
-        systemLogoHtml: (window.VSCPrintTemplate.getSystemLogoHtml ? window.VSCPrintTemplate.getSystemLogoHtml() : ''),
-        systemLogoFallback: '<div class="kado-fallback-system">Vet System Control</div>',
-        companyLogoHtml: companyLogo ? `<img class="kado-company-logo" src="${String(companyLogo)}" alt="Logo da empresa"/>` : '',
-        companyName: String(empresaRaw.nome || empresaRaw.nome_fantasia || empresaRaw.razao_social || 'Empresa'),
-        companyMetaHtml: companyMetaHtml,
-        documentTitle: 'Relatório Financeiro',
-        documentMetaHtml: documentMetaHtml
-      });
-      ph.style.display = 'block';
-      return;
+    }else{
+      (document.getElementById("phIssuer")||{}).textContent = "Emissor: —";
+      (document.getElementById("phIssuer2")||{}).textContent = "";
+      var sigBox2 = document.getElementById("phSig");
+      if(sigBox2) sigBox2.innerHTML = "";
     }
   }
 

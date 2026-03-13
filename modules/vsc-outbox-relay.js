@@ -111,33 +111,45 @@
     }
   }
 
-
-function _getSyncToken() {
-  try {
-    return String(
-      localStorage.getItem('vsc_local_token') ||
-      sessionStorage.getItem('vsc_local_token') ||
-      localStorage.getItem('vsc_token') ||
-      sessionStorage.getItem('vsc_token') ||
-      ''
-    ).trim();
-  } catch (_) {
-    return '';
+  function _getSyncToken() {
+    try {
+      return String(
+        localStorage.getItem('vsc_local_token') ||
+        sessionStorage.getItem('vsc_local_token') ||
+        localStorage.getItem('vsc_token') ||
+        sessionStorage.getItem('vsc_token') ||
+        ''
+      ).trim();
+    } catch (_) {
+      return '';
+    }
   }
-}
 
-function _getSyncTargetMode() {
-  try {
-    return String(localStorage.getItem(SYNC_TARGET_MODE_KEY) || '').trim().toLowerCase();
-  } catch (_) {
-    return '';
+  function _getSyncTargetMode() {
+    try {
+      return String(localStorage.getItem(SYNC_TARGET_MODE_KEY) || '').trim().toLowerCase();
+    } catch (_) {
+      return '';
+    }
   }
-}
 
-function _isPendingStatus(status) {
-  const normalized = String(status || '').trim().toUpperCase();
-  return normalized === '' || normalized === 'PENDING' || normalized === 'PENDENTE' || normalized === 'SENDING' || normalized === 'RETRY';
-}
+  function _isPendingStatus(status) {
+    const normalized = String(status || '').trim().toUpperCase();
+    return normalized === '' || normalized === 'PENDING' || normalized === 'PENDENTE' || normalized === 'SENDING' || normalized === 'RETRY';
+  }
+
+  async function _fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => { try { controller.abort(); } catch (_) {} }, Math.max(1, Number(timeoutMs) || 1));
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } catch (err) {
+      if (err && err.name === 'AbortError') throw new Error(`network_timeout_${timeoutMs}ms`);
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   function _emitProgress(extra = {}) {
     const detail = {
@@ -184,28 +196,14 @@ function _isPendingStatus(status) {
   function _apiBase() {
     if (_isLocalStaticMode()) return REMOTE_BASE;
     if (_isWranglerDev()) {
-      return _getSyncTargetMode() === 'local' ? '' : REMOTE_BASE;
+      const mode = _getSyncTargetMode();
+      return mode === 'local' ? '' : REMOTE_BASE;
     }
     return '';
   }
 
   function _apiUrl(path) {
     return `${_apiBase()}${path}`;
-  }
-
-  async function _fetchWithTimeout(url, options = {}, timeoutMs = NETWORK_TIMEOUT_MS) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      try { controller.abort(); } catch (_) {}
-    }, Math.max(1, Number(timeoutMs) || 1));
-    try {
-      return await fetch(url, { ...options, signal: controller.signal });
-    } catch (err) {
-      if (err && err.name === 'AbortError') throw new Error(`network_timeout_${timeoutMs}ms`);
-      throw err;
-    } finally {
-      clearTimeout(timer);
-    }
   }
 
   async function _readCapabilities() {
@@ -217,7 +215,7 @@ function _isPendingStatus(status) {
         method: 'GET',
         headers: { 'Accept': 'application/json' },
         cache: 'no-store',
-      }, NETWORK_TIMEOUT_MS);
+      }, 12000);
       if (!res.ok) {
         _capabilities = {
           ok: false,
@@ -413,7 +411,7 @@ function _isPendingStatus(status) {
       method: 'POST',
       headers,
       body: JSON.stringify({ operations: batch }),
-    }, NETWORK_TIMEOUT_MS);
+    }, 30000);
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
@@ -447,7 +445,7 @@ function _isPendingStatus(status) {
           'X-VSC-Client-Session': clientSession,
         }; if (syncToken) h['X-VSC-Token'] = syncToken; return h; })(),
         body: JSON.stringify(body),
-      }, NETWORK_TIMEOUT_MS);
+      }, 30000);
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         throw new Error(`outbox failed ${res.status} ${text}`);
@@ -651,6 +649,7 @@ function _isPendingStatus(status) {
         last_duration_ms: Number(_stats.lastDurationMs || 0) || 0,
         local_static_mode: !!(_capabilities && _capabilities.local_static_mode),
         remote_sync_allowed: !!(_capabilities && _capabilities.remote_sync_allowed),
+        api_base: _apiBase(),
         capabilities: _capabilities ? { ..._capabilities } : null,
         stats: { ..._stats },
       };
