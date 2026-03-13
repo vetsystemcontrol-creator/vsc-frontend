@@ -764,6 +764,7 @@ function ensurePrintPreviewModal(){
       <div style="padding:10px 12px; border-bottom:1px solid #eee; display:flex; gap:10px; align-items:center;">
         <div style="font-weight:700;">Impressão premium</div>
         <div id="vscPPStatus" style="font-size:12px; color:#555; flex:1;">—</div>
+        <button id="vscPPPrint" class="btn" style="padding:6px 10px; display:none;">Imprimir</button>
         <button id="vscPPDownload" class="btn" style="padding:6px 10px;">Baixar PDF</button>
         <button id="vscPPClose" class="btn" style="padding:6px 10px;">Fechar</button>
       </div>
@@ -782,9 +783,11 @@ function ensurePrintPreviewModal(){
   const errEl = m.querySelector("#vscPPError");
   const btnClose = m.querySelector("#vscPPClose");
   const btnDl = m.querySelector("#vscPPDownload");
+  const btnPrint = m.querySelector("#vscPPPrint");
 
   let currentUrl = "";
   let currentName = "print-pack.pdf";
+  let currentMode = "pdf";
 
   function open(){ m.style.display = "flex"; }
   function close(){
@@ -792,6 +795,8 @@ function ensurePrintPreviewModal(){
     // revoga URL anterior para não vazar memória
     try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
     currentUrl = "";
+    currentMode = "pdf";
+    frame.removeAttribute("srcdoc");
     frame.src = "about:blank";
     frame.style.display = "none";
     loaderEl.style.display = "block";
@@ -803,17 +808,32 @@ function ensurePrintPreviewModal(){
 
   btnDl.addEventListener("click", async (e)=>{
     e.preventDefault();
-    if(!currentUrl){
-      snack("PDF ainda não está pronto.", "warn");
+    if(currentMode !== "pdf" || !currentUrl){
+      snack("Download em PDF indisponível na impressão local.", "warn");
       return;
     }
-    // download via <a download>
     const a = document.createElement("a");
     a.href = currentUrl;
     a.download = currentName || "print-pack.pdf";
     document.body.appendChild(a);
     a.click();
     a.remove();
+  });
+
+  btnPrint.addEventListener("click", (e)=>{
+    e.preventDefault();
+    try{
+      const fw = frame.contentWindow;
+      if(!fw){
+        snack("Pré-visualização ainda não está pronta.", "warn");
+        return;
+      }
+      fw.focus();
+      fw.print();
+    }catch(err){
+      console.error("[SGQT-PRINT][LOCAL_PRINT] falha ao imprimir preview local:", err);
+      snack("Falha ao abrir a impressão local.", "err");
+    }
   });
 
   const api = {
@@ -824,9 +844,13 @@ function ensurePrintPreviewModal(){
         loaderEl.style.display = "block";
         frame.style.display = "none";
         errEl.style.display = "none";
+        btnDl.style.display = currentMode === "pdf" ? "inline-flex" : "none";
+        btnPrint.style.display = currentMode === "html" ? "inline-flex" : "none";
       }else if(kind === "ready"){
         loaderEl.style.display = "none";
         errEl.style.display = "none";
+        btnDl.style.display = currentMode === "pdf" ? "inline-flex" : "none";
+        btnPrint.style.display = currentMode === "html" ? "inline-flex" : "none";
       }else if(kind === "error"){
         loaderEl.style.display = "none";
         frame.style.display = "none";
@@ -835,14 +859,29 @@ function ensurePrintPreviewModal(){
       }
     },
     setPdf(url, filename){
-      // troca URL anterior
       try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
+      currentMode = "pdf";
       currentUrl = url;
       currentName = filename || "print-pack.pdf";
+      frame.removeAttribute("srcdoc");
       frame.src = url;
       frame.style.display = "block";
       loaderEl.style.display = "none";
       errEl.style.display = "none";
+      btnDl.style.display = "inline-flex";
+      btnPrint.style.display = "none";
+    },
+    setHtml(html, filename){
+      currentMode = "html";
+      currentUrl = "";
+      currentName = filename || "print-pack.html";
+      frame.removeAttribute("src");
+      frame.srcdoc = String(html || "");
+      frame.style.display = "block";
+      loaderEl.style.display = "none";
+      errEl.style.display = "none";
+      btnDl.style.display = "none";
+      btnPrint.style.display = "inline-flex";
     }
   };
 
@@ -1064,7 +1103,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 .sheetContent{position:relative; z-index:1;}
 .footer{display:none;}
 @media print{
-  @page{ size:A4; margin:10mm 10mm 18mm 10mm; }
+  @page{ size:A4; margin:10mm 10mm 22mm 10mm; }
   .no-print{display:none !important;}
   body{margin:0;}
   .page{max-width:none;padding:0;}
@@ -1073,8 +1112,8 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   .pdf-pages img:last-child{break-after:auto;page-break-after:auto;}
   .sheet{padding:0;}
   .sheet + .sheet{break-before:page;page-break-before:always;margin-top:0;}
-  .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.4mm 10mm 1.8mm;font-size:9px;color:var(--muted);background:#fff;}
-  .footer .row{display:flex;justify-content:flex-end;gap:10px;align-items:center;min-height:10px;}
+  .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.5mm 10mm;font-size:9px;color:var(--muted);background:#fff;}
+  .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:center;}
 }
   `;
 
@@ -1358,8 +1397,9 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       ` : ``}
     </div>
 
-    <div class="footer" aria-hidden="true">
+    <div class="footer">
       <div class="row">
+        <div></div>
         <div class="pnum"></div>
       </div>
     </div>
@@ -1538,21 +1578,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
             }
           }
 
-          // 3) Gerar hash de auditoria (integridade)
-          try{
-            var audit = ${JSON.stringify({
-              spec: DOC_SPEC,
-              label: DOC_LABEL,
-              docType: docType,
-              numero: atd.numero || "",
-              status: atd.status || "",
-              gerado_em: R.gerado_em || "",
-              atendimento_id: atd.id || atd.atendimento_id || ""
-            })};
-            await sha256Hex(JSON.stringify(audit));
-          }catch(_e){}
-
-          // 4) Esperar fontes (evita glitches de render) e dar 2 frames para layout estabilizar
+          // 3) Esperar fontes (evita glitches de render) e dar 2 frames para layout estabilizar (evita glitches de render) e dar 2 frames para layout estabilizar
           try{
             if(document.fonts && document.fonts.ready) { await document.fonts.ready; }
           }catch(_){}
@@ -1573,6 +1599,14 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
   if(opts.returnHtml) return html;
 
+  if(opts.openPreview){
+    const ui = ensurePrintPreviewModal();
+    const localFileName = `print-preview-${String((atd && (atd.numero || atd.id || atd.atendimento_id)) || "atendimento")}.html`;
+    ui.setHtml(html, localFileName);
+    ui.setState("ready", "Pré-visualização local pronta.");
+    return;
+  }
+
   const w = window.open("", "_blank");
   if(!w){ snack("Pop-up bloqueado. Libere pop-ups para imprimir.", "warn"); return; }
 
@@ -1580,7 +1614,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   w.document.write(html);
   w.document.close();
 
-  // Auto-abre diálogo de impressão após carregar (inclui opção "Salvar como PDF")
   w.addEventListener("load", () => {
     setTimeout(() => { try{ w.print(); }catch(_){} }, 800);
   });
