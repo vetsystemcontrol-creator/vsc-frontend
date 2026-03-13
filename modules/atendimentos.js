@@ -607,6 +607,37 @@ async function loadEmpresaSnapshot(db){
     });
   }
 
+  let __VSC_PRINT_SYSTEM_LOGO_DATAURL = null;
+  async function getSystemLogoForPrint(){
+    if(__VSC_PRINT_SYSTEM_LOGO_DATAURL) return __VSC_PRINT_SYSTEM_LOGO_DATAURL;
+    const fallbackSvgMarkup = [
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 72" aria-label="Vet System Control">',
+      '<rect width="320" height="72" rx="14" fill="#ffffff"/>',
+      '<g transform="translate(8 8)">',
+      '<rect x="0" y="0" width="56" height="56" rx="14" fill="#16a34a"/>',
+      '<path d="M12 35c8-11 18-17 31-19-4 5-8 8-13 10 3 1 6 4 7 7-7-3-14-4-21-1-1 2-3 3-4 3z" fill="#fff" opacity=".96"/>',
+      '<path d="M18 46c9-6 19-8 31-7" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".92"/>',
+      '</g>',
+      '<text x="76" y="30" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#0f172a">Vet</text>',
+      '<text x="76" y="53" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#0f172a">System Control</text>',
+      '</svg>'
+    ].join('');
+    const fallbackSvg = 'data:image/svg+xml;utf8,' + encodeURIComponent(fallbackSvgMarkup);
+    try{
+      const url = new URL('../assets/brand/vsc-logo-horizontal.png', location.href);
+      const res = await fetch(url.toString(), { credentials: 'same-origin' });
+      if(!res.ok) throw new Error('logo_fetch_' + res.status);
+      const blob = await res.blob();
+      const dataUrl = await blobToDataUrl(blob);
+      if(dataUrl){
+        __VSC_PRINT_SYSTEM_LOGO_DATAURL = dataUrl;
+        return dataUrl;
+      }
+    }catch(_e){}
+    __VSC_PRINT_SYSTEM_LOGO_DATAURL = fallbackSvg;
+    return __VSC_PRINT_SYSTEM_LOGO_DATAURL;
+  }
+
   async function hydrateAttachmentsForPrint(atendimento){
     if(!atendimento || !Array.isArray(atendimento.attachments) || !atendimento.attachments.length) return atendimento;
     const tenant = localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "tenant-default";
@@ -745,7 +776,6 @@ function ensurePrintPreviewModal(){
   let m = document.getElementById("vscPrintPreviewModal");
   if(m && m.__api) return m.__api;
 
-  // Modal shell (injetado para não depender de HTML pré-existente)
   m = document.createElement("div");
   m.id = "vscPrintPreviewModal";
   m.style.position = "fixed";
@@ -764,7 +794,7 @@ function ensurePrintPreviewModal(){
       <div style="padding:10px 12px; border-bottom:1px solid #eee; display:flex; gap:10px; align-items:center;">
         <div style="font-weight:700;">Impressão premium</div>
         <div id="vscPPStatus" style="font-size:12px; color:#555; flex:1;">—</div>
-        <button id="vscPPPrint" class="btn" style="padding:6px 10px; display:none;">Imprimir</button>
+        <button id="vscPPPrint" class="btn" style="padding:6px 10px;">Imprimir</button>
         <button id="vscPPDownload" class="btn" style="padding:6px 10px;">Baixar PDF</button>
         <button id="vscPPClose" class="btn" style="padding:6px 10px;">Fechar</button>
       </div>
@@ -787,29 +817,44 @@ function ensurePrintPreviewModal(){
 
   let currentUrl = "";
   let currentName = "print-pack.pdf";
-  let currentMode = "pdf";
+  let currentMode = "idle";
 
   function open(){ m.style.display = "flex"; }
   function close(){
     m.style.display = "none";
-    // revoga URL anterior para não vazar memória
     try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
     currentUrl = "";
-    currentMode = "pdf";
+    currentMode = "idle";
+    currentName = "print-pack.pdf";
     frame.removeAttribute("srcdoc");
     frame.src = "about:blank";
     frame.style.display = "none";
     loaderEl.style.display = "block";
     errEl.style.display = "none";
+    btnDl.style.display = "inline-flex";
+    btnDl.disabled = true;
+    btnPrint.disabled = true;
+  }
+
+  function printFrame(){
+    try{
+      const w = frame.contentWindow;
+      if(!w){ snack("Pré-visualização ainda não está pronta.", "warn"); return; }
+      w.focus();
+      w.print();
+    }catch(e){
+      snack("Falha ao abrir o diálogo de impressão.", "err");
+    }
   }
 
   btnClose.addEventListener("click", (e)=>{ e.preventDefault(); close(); });
   m.addEventListener("click", (e)=>{ if(e.target === m) close(); });
+  btnPrint.addEventListener("click", (e)=>{ e.preventDefault(); printFrame(); });
 
   btnDl.addEventListener("click", async (e)=>{
     e.preventDefault();
-    if(currentMode !== "pdf" || !currentUrl){
-      snack("Download em PDF indisponível na impressão local.", "warn");
+    if(!currentUrl){
+      snack("PDF ainda não está pronto.", "warn");
       return;
     }
     const a = document.createElement("a");
@@ -820,42 +865,29 @@ function ensurePrintPreviewModal(){
     a.remove();
   });
 
-  btnPrint.addEventListener("click", (e)=>{
-    e.preventDefault();
-    try{
-      const fw = frame.contentWindow;
-      if(!fw){
-        snack("Pré-visualização ainda não está pronta.", "warn");
-        return;
-      }
-      fw.focus();
-      fw.print();
-    }catch(err){
-      console.error("[SGQT-PRINT][LOCAL_PRINT] falha ao imprimir preview local:", err);
-      snack("Falha ao abrir a impressão local.", "err");
-    }
-  });
-
   const api = {
     setState(kind, msg){
       open();
       statusEl.textContent = msg || "—";
       if(kind === "loading"){
+        currentMode = "loading";
         loaderEl.style.display = "block";
         frame.style.display = "none";
         errEl.style.display = "none";
-        btnDl.style.display = currentMode === "pdf" ? "inline-flex" : "none";
-        btnPrint.style.display = currentMode === "html" ? "inline-flex" : "none";
+        btnDl.disabled = true;
+        btnPrint.disabled = true;
       }else if(kind === "ready"){
         loaderEl.style.display = "none";
         errEl.style.display = "none";
-        btnDl.style.display = currentMode === "pdf" ? "inline-flex" : "none";
-        btnPrint.style.display = currentMode === "html" ? "inline-flex" : "none";
+        btnPrint.disabled = false;
       }else if(kind === "error"){
+        currentMode = "error";
         loaderEl.style.display = "none";
         frame.style.display = "none";
         errEl.style.display = "block";
         errEl.textContent = msg || "Erro ao gerar impressão.";
+        btnDl.disabled = true;
+        btnPrint.disabled = true;
       }
     },
     setPdf(url, filename){
@@ -869,30 +901,53 @@ function ensurePrintPreviewModal(){
       loaderEl.style.display = "none";
       errEl.style.display = "none";
       btnDl.style.display = "inline-flex";
-      btnPrint.style.display = "none";
+      btnDl.disabled = false;
+      btnPrint.disabled = false;
     },
-    setHtml(html, filename){
+    setHtml(html, title){
       currentMode = "html";
+      try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
       currentUrl = "";
-      currentName = filename || "print-pack.html";
-      frame.removeAttribute("src");
+      currentName = title || "atendimento";
+      frame.src = "about:blank";
       frame.srcdoc = String(html || "");
       frame.style.display = "block";
       loaderEl.style.display = "none";
       errEl.style.display = "none";
       btnDl.style.display = "none";
-      btnPrint.style.display = "inline-flex";
+      btnDl.disabled = true;
+      btnPrint.disabled = false;
     }
   };
+
+  frame.addEventListener("load", ()=>{
+    if(currentMode === "html"){
+      loaderEl.style.display = "none";
+      frame.style.display = "block";
+      errEl.style.display = "none";
+      btnPrint.disabled = false;
+    }
+  });
 
   m.__api = api;
   open();
   return api;
 }
 
+function shouldUseServerPrint(){
+  try{
+    if(window.__VSC_PRINT_BACKEND__ === true || window.VSC_PRINT_BACKEND === true) return true;
+    const meta = document.querySelector('meta[name="vsc-print-backend"]');
+    const content = String(meta && meta.content || "").trim().toLowerCase();
+    if(content === "1" || content === "true" || content === "enabled") return true;
+    const ls = String(localStorage.getItem("vsc_print_backend") || "").trim().toLowerCase();
+    if(ls === "1" || ls === "true" || ls === "enabled") return true;
+  }catch(_e){}
+  return false;
+}
+
+
 async function openPrintWindow(payload, docType){
-  // SGQT-PRINT-ENTERPRISE (Premium): gerar PDF server-side e exibir em MODAL (sem navegar / sem abrir 2 abas)
-  // Regra: NÃO usar window.location fallback. Se popup for bloqueado, usamos preview/download via Blob.
   const doc = payload || {};
   let html = openPrintWindowClient(payload, docType, { returnHtml: true });
   // SGQT-PRINT: normalizar HTML (evita MISSING_HTML quando retornar Promise/objeto)
@@ -911,6 +966,12 @@ async function openPrintWindow(payload, docType){
     throw new Error("PRINT_PACK_MISSING_HTML_LOCAL");
   }
 
+
+  if(!shouldUseServerPrint()){
+    const ui = ensurePrintPreviewModal();
+    ui.setState("loading", "Backend de impressão ausente. Gerando pré-visualização local...");
+    return openPrintWindowClient(doc, docType, { openPreview:true, html });
+  }
 
   // Snapshot canônico da Empresa (offline-first)
   // - inclui pix_chave, __logoA e __logoB quando existirem
@@ -1005,7 +1066,7 @@ async function openPrintWindow(payload, docType){
 
 
 // Fallback (modo offline / compatibilidade legada): impressão client-side (PDF.js + window.print())
-function openPrintWindowClient(payload, docType, opts){
+async function openPrintWindowClient(payload, docType, opts){
   opts = opts || {};
 
   const R = payload || {};
@@ -1217,10 +1278,12 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     </div>`;
   }).join("");
 
+  const systemLogoSrc = await getSystemLogoForPrint();
+
   const headerHtml = (window.VSCPrintTemplate && typeof window.VSCPrintTemplate.renderInstitutionalHeader === "function")
     ? window.VSCPrintTemplate.renderInstitutionalHeader({
-        systemLogoSrc: 'assets/brand/vsc-logo-horizontal.png',
-        systemLogoFallback: '<div class="kado-fallback-system">Vet System Control</div>',
+        systemLogoSrc,
+        systemLogoFallback: 'Vet System Control',
         companyLogoHtml: logoA
           ? `<img class="kado-company-logo" src="${logoA}" alt="Logo da empresa"/>`
           : `<div class="kado-company-logo-fallback">${SYSTEM_LOGO_SVG}</div>`,
@@ -1376,7 +1439,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   </head><body>
     <div class="page">
       <div class="no-print" style="padding:10px 0 16px;color:var(--muted);font-size:12px;">
-        Padrão hospitalar: documentos separados. O diálogo de impressão abrirá automaticamente.
+        Padrão hospitalar: documentos separados. Use o botão Imprimir do modal para abrir o diálogo de impressão.
       </div>
 
       <div class="sheet sheet--main">
@@ -1467,18 +1530,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
             }
           }
         }
-
-        async function sha256Hex(text){
-          try{
-            if(!window.crypto || !crypto.subtle) return null;
-            var enc = new TextEncoder();
-            var buf = enc.encode(String(text||""));
-            var digest = await crypto.subtle.digest('SHA-256', buf);
-            var arr = Array.from(new Uint8Array(digest));
-            return arr.map(function(b){return b.toString(16).padStart(2,'0');}).join('');
-          }catch(e){ return null; }
-        }
-
 
         function renderPixQr(){
           try{
@@ -1578,7 +1629,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
             }
           }
 
-          // 3) Esperar fontes (evita glitches de render) e dar 2 frames para layout estabilizar (evita glitches de render) e dar 2 frames para layout estabilizar
+          // 4) Esperar fontes (evita glitches de render) e dar 2 frames para layout estabilizar
           try{
             if(document.fonts && document.fonts.ready) { await document.fonts.ready; }
           }catch(_){}
@@ -1601,22 +1652,14 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
   if(opts.openPreview){
     const ui = ensurePrintPreviewModal();
-    const localFileName = `print-preview-${String((atd && (atd.numero || atd.id || atd.atendimento_id)) || "atendimento")}.html`;
-    ui.setHtml(html, localFileName);
+    ui.setHtml(html, `atendimento-${String(atd.numero || atd.id || "documento")}`);
     ui.setState("ready", "Pré-visualização local pronta.");
     return;
   }
 
-  const w = window.open("", "_blank");
-  if(!w){ snack("Pop-up bloqueado. Libere pop-ups para imprimir.", "warn"); return; }
-
-  w.document.open();
-  w.document.write(html);
-  w.document.close();
-
-  w.addEventListener("load", () => {
-    setTimeout(() => { try{ w.print(); }catch(_){} }, 800);
-  });
+  const ui = ensurePrintPreviewModal();
+  ui.setHtml(html, `atendimento-${String(atd.numero || atd.id || "documento")}`);
+  ui.setState("ready", "Pré-visualização local pronta.");
 }
 
   async function imprimirAtendimento(db, docType){
