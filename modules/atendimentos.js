@@ -1022,17 +1022,72 @@ function openPrintWindowClient(payload, docType, opts){
     (vet.crmv_uf && vet.crmv_num) ? ("CRMV-"+vet.crmv_uf+" Nº "+vet.crmv_num) : ""
   ].filter(Boolean).join(" — ");
 
-  const css = `/* KADO PRINT LAYOUT OVERRIDE */
-.hdr{border:1px solid #cbd5e1;border-radius:20px;padding:12px 16px 10px;background:#fff;margin-bottom:12px;}
-.hdr::after{content:"";display:block;height:8px;border-radius:999px;margin:10px -16px -10px;background:linear-gradient(90deg,#16a34a 0%, #14b8a6 44%, #0ea5e9 100%);} 
-.hdr-top{display:grid;grid-template-columns:minmax(470px,1fr) 170px;gap:24px;align-items:start;} 
-.system-logo{width:370px;height:auto;border:none!important;border-radius:0!important;} 
-.company-logo{width:152px;height:152px;object-fit:contain;border:none!important;border-radius:0!important;} 
-.hdr-bottom{display:grid;grid-template-columns:minmax(470px,1fr) minmax(280px,.9fr);gap:24px;margin-top:6px;} 
-.emp-nome{font-size:24px;font-weight:900;letter-spacing:-.03em;text-transform:uppercase;} 
-.doc-title{font-size:15px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;} 
-.page-break{height:0;break-before:page;page-break-before:always;} 
-`;
+  const printTpl = (window.VSC_PRINT_TEMPLATE && typeof window.VSC_PRINT_TEMPLATE.create === "function")
+    ? window.VSC_PRINT_TEMPLATE.create({ esc })
+    : null;
+  const companyLogoHtml = logoA
+    ? `<img class="company-logo" src="${logoA}" alt="Logo da empresa"/>`
+    : `<div style="width:152px;height:152px;margin-left:auto;display:flex;align-items:center;justify-content:center;background:#fff;">${SYSTEM_LOGO_SVG}</div>`;
+  const headerHtml = printTpl ? printTpl.renderHeader({
+    systemLogoSrc: "assets/brand/vsc-logo-horizontal.png",
+    systemLogoFallback: '<div class=&quot;kado-text&quot; style=&quot;font-size:22px;font-weight:900;&quot;>Vet System Control</div>',
+    companyName: empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa",
+    companyLines: [
+      empresa.cnpj ? "CNPJ: "+empresa.cnpj : "",
+      empresa.email||"",
+      empresa.pix_chave ? "PIX" : ""
+    ],
+    reportTitle: DOC_LABEL,
+    reportLines: [
+      `<b>Nº:</b> ${esc(atd.numero||"—")}`,
+      `<b>Status:</b> ${esc(atd.status||"—")}`,
+      `<b>Data de emissão:</b> ${esc(fmtDate(R.gerado_em))}`,
+      `<b>Paciente(s):</b> ${esc(animaisTxt||"—")}`
+    ],
+    companyLogoHtml
+  }) : "";
+
+  const css = `${printTpl ? printTpl.baseCss() : ""}
+.box{border:1px solid var(--bd);border-radius:14px;padding:12px 14px;margin:10px 0;background:#fff;}
+.box.slim{padding:10px 14px;min-height:56px;}
+.box.stack-title{padding:12px 14px 10px;}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:800;}
+.val{font-size:13px;font-weight:800;margin-top:3px;}
+.pre{white-space:pre-wrap;font-weight:600;line-height:1.55;}
+.table-tight{margin-top:8px;}
+table{width:100%;border-collapse:collapse;margin-top:8px;border-top:1px solid var(--bd);}
+th,td{border-bottom:1px solid var(--bd);padding:8px 12px;font-size:12.5px;vertical-align:top;}
+th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;text-align:left;}
+.right{text-align:right;}
+.tot{display:flex;justify-content:flex-end;margin-top:10px;}
+.tot .box{min-width:320px;}
+.section-title{margin:16px 0 8px;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.16em;color:var(--brand);}
+img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid var(--bd);border-radius:10px;}
+.hdr img,.wmLocal img{border:none !important;border-radius:0 !important;}
+.pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
+.muted{color:var(--muted);}
+.att{margin:12px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:12px;break-inside:avoid;page-break-inside:avoid;}
+.att-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:8px;}
+.att-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:#334155;}
+.att-kind{font-size:11px;color:var(--muted);font-weight:800;white-space:nowrap;}
+.att-desc-wrap{margin-top:10px;padding-top:10px;border-top:1px dashed #cbd5e1;}
+.att-desc-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.09em;font-weight:800;margin-bottom:5px;}
+.att-desc{font-size:12px;color:#0f172a;white-space:pre-wrap;line-height:1.45;}
+.att-nodata{font-size:12px;color:#92400e;background:#fff7ed;padding:8px 10px;border-radius:8px;margin-top:6px;border:1px solid #fed7aa;}
+.wmLocal{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; user-select:none; z-index:0;}
+.wmLocal img{width:62%;max-width:560px;margin:0 !important;opacity:.06;filter:grayscale(1);object-fit:contain;}
+.sheetContent{position:relative; z-index:1;}
+.footer{display:none;}
+@media print{
+  .no-print{display:none !important;}
+  .box,.att,.pdf-block,.att-media,tr,img,canvas{break-inside:avoid;page-break-inside:avoid;}
+  .pdf-pages img{break-inside:avoid;page-break-inside:avoid;break-after:page;page-break-after:always;}
+  .pdf-pages img:last-child{break-after:auto;page-break-after:auto;}
+  .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.5mm 10mm;font-size:9px;color:var(--muted);background:#fff;}
+  .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:center;}
+}
+  `;
 
   const rowsFinanceiro = itens.length ? itens.map(it=>{
     const sub = (Number(it.qtd||0)*Number(it.vu||0));
@@ -1133,60 +1188,39 @@ function openPrintWindowClient(payload, docType, opts){
     </div>`;
   }).join("");
 
-  const bodyClinicoMain = `
-    <div class="plain-meta">
-      <div class="k">Especificação</div>
-      <div class="v">${esc(DOC_SPEC)}</div>
-    </div>
+  const bodyClinicoMain = `${printTpl ? printTpl.renderInstitutionalCover({
+    spec: DOC_SPEC,
+    origin: "Vet System Control • ERP Equine",
+    purpose: "Registro operacional para atendimento, balcão e auditoria clínica.",
+    summaryTitle: "Resumo institucional",
+    fields: [
+      { label: "Cliente / Proprietário", value: cli.nome||cli.razao_social||atd.cliente_label||"—", extra: cli.telefone||cli.fone||"" },
+      { label: "Paciente(s)", value: animaisTxt||"—" },
+      { label: "Veterinário / Responsável", value: vetLine||"—" },
+      { label: "Anexos clínicos", value: String(atts.length || 0) }
+    ],
+    rightTitle: "Data",
+    rightValue: fmtDate(atd.created_at)
+  }) : ""}
 
-    <div class="plain-text">Vet System Control • ERP Equine</div>
-    <div class="plain-text">Documento operacional para atendimento, balcão e auditoria clínica.</div>
-
-    <div class="section-label">Controle do documento</div>
-    <div class="section-label" style="margin-top:18px; color:#0f766e;">Resumo institucional</div>
-    <div class="grid-summary">
-      <div>
-        <div class="plain-meta">
-          <div class="k">Cliente / Proprietário</div>
-          <div class="v">${esc(cli.nome||cli.razao_social||atd.cliente_label||"—")}</div>
-        </div>
-        <div class="plain-meta">
-          <div class="k">Paciente(s)</div>
-          <div class="v">${esc(animaisTxt||"—")}</div>
-        </div>
-        <div class="plain-meta">
-          <div class="k">Veterinário / Responsável</div>
-          <div class="v">${esc(vetLine||"—")}</div>
-        </div>
-        <div class="plain-meta">
-          <div class="k">Anexos clínicos</div>
-          <div class="v">${esc(String(atts.length || 0))}</div>
-        </div>
-      </div>
-      <div class="summary-date">
-        <div class="plain-meta">
-          <div class="k">Data</div>
-          <div class="v">${esc(fmtDate(atd.created_at))}</div>
-        </div>
-      </div>
-    </div>
+    <div class="page-break"></div>
 
     <div class="section-title">Sinais vitais</div>
     ${vitalsHtml || `<div class="small muted">Nenhum sinal vital registrado.</div>`}
 
     <div class="section-title">Anamnese / Queixa / Observações</div>
-    <div class="box"><div class="pre">${esc(atd.observacoes || "—")}</div></div>
+    <div class="box slim"><div class="pre">${esc(atd.observacoes || "—")}</div></div>
 
     <div class="section-title">Diagnóstico</div>
-    <div class="box"><div class="pre">${esc(atd.cli_diagnostico || "—")}</div></div>
+    <div class="box slim"><div class="pre">${esc(atd.cli_diagnostico || "—")}</div></div>
 
     <div class="section-title">Conduta / Evolução</div>
-    <div class="box"><div class="pre">${esc(atd.cli_evolucao || "—")}</div></div>
+    <div class="box stack-title"><div class="pre">${esc(atd.cli_evolucao || "—")}</div></div>
 
     <div class="section-title">Procedimentos / Materiais / Itens utilizados (sem valores)</div>
     <table class="table-tight">
       <thead><tr>
-        <th style="width:110px;">Tipo</th><th>Descrição</th>
+        <th style="width:140px;">Tipo</th><th>Descrição</th>
         <th style="width:70px;" class="right">Qtd</th>
       </tr></thead>
       <tbody>${rowsClinico}</tbody>
@@ -1294,38 +1328,7 @@ function openPrintWindowClient(payload, docType, opts){
       <div class="sheet sheet--main">
         ${(docType === "clinico" && logoB) ? `<div class="wmLocal"><img src="${logoB}" alt="Marca d'água"/></div>` : ``}
         <div class="sheetContent">
-          <div class="hdr">
-            <div class="hdr-grid">
-              <div class="brand-row">
-                <div>
-                  <img class="system-logo" src="assets/brand/vsc-logo-horizontal.png" alt="Vet System Control" onerror="this.outerHTML='<div class=&quot;plain-text&quot;>Vet System Control</div>';" />
-                </div>
-                <div class="company-box">
-                  <div class="emp-nome">${esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa")}</div>
-                  <div class="emp-dados">${[
-                    empresa.cnpj ? "CNPJ: "+empresa.cnpj : "",
-                    empresa.endereco||"",
-                    empresa.email||""
-                  ].filter(Boolean).join("<br/>")}</div>
-                </div>
-              </div>
-              <div>
-                ${logoA ? `<img class="company-logo" src="${logoA}" alt="Logo da empresa"/>` : `<div style="width:152px;height:152px;border:1px solid #cbd5e1;border-radius:16px;margin-left:auto;display:flex;align-items:center;justify-content:center;background:#fff;">${SYSTEM_LOGO_SVG}</div>`}
-              </div>
-            </div>
-            <div class="hdr-grid" style="margin-top:10px;grid-template-columns:minmax(360px,1.45fr) minmax(180px,.7fr);">
-              <div></div>
-              <div>
-                <div class="doc-title">${esc(DOC_LABEL)}</div>
-                <div class="doc-meta">
-                  <div><b>Nº:</b> ${esc(atd.numero||"—")}</div>
-                  <div><b>Status:</b> ${esc(atd.status||"—")}</div>
-                  <div><b>Data de emissão:</b> ${esc(fmtDate(R.gerado_em))}</div>
-                  <div><b>Paciente(s):</b> ${esc(animaisTxt||"—")}</div>
-                </div>
-              </div>
-            </div>
-          </div>
+${headerHtml}
 
           ${(docType === "financeiro") ? bodyFinanceiro : (docType === "prescricao") ? bodyPrescricao : (docType === "clinico_financeiro") ? bodyClinicoFinanceiro : bodyClinicoMain}
         </div>
