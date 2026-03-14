@@ -1584,6 +1584,48 @@
   }
   VSC_XML.abrirRevisaoImportacao = abrirRevisaoImportacao;
 
+  async function readXmlFileToText(file) {
+    if (!file) return "";
+    if (typeof file.text === "function") return await file.text();
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error("Falha ao ler arquivo XML"));
+      reader.readAsText(file);
+    });
+  }
+
+  async function carregarArquivoXmlSelecionado() {
+    const fileInput = $("xmlFile");
+    const target = $("inputXml");
+    const file = fileInput && fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+    if (!file) return false;
+    try {
+      const text = await readXmlFileToText(file);
+      if (target) target.value = text || "";
+      toast(`Arquivo carregado: ${file.name || "XML"}.`, 3500);
+      return true;
+    } catch (err) {
+      console.error("ERRO_CARREGAR_XML:", err);
+      toast("Falha ao ler o arquivo XML selecionado.");
+      return false;
+    }
+  }
+
+  function limparTelaImportacao(opts) {
+    const resetInput = !opts || opts.resetInput !== false;
+    const inpXml = $("inputXml"); if (inpXml && resetInput) inpXml.value = "";
+    const fInp = $("xmlFile"); if (fInp) fInp.value = "";
+    const rN = $("resumoNfe"); if (rN) { rN.style.display = "none"; rN.innerHTML = ""; }
+    const iW = $("itensWrap"); if (iW) { iW.style.display = "none"; iW.innerHTML = ""; }
+    const cR = $("cardResultados"); if (cR) cR.style.display = "none";
+    const bF = $("btnFinalizar"); if (bF) { bF.style.display = "none"; bF.disabled = false; bF.textContent = "✓ FINALIZAR IMPORTAÇÃO"; }
+    const mv = $("modalVinculo"); if (mv) mv.style.display = "none";
+    const mr = $("modalRevisaoPreco"); if (mr) mr.style.display = "none";
+    State.nfe = null; State.items = []; State.fornecedorId = null; State.reviewMode = false; State.reviewRecord = null; State.reviewOriginalNfe = null; State.reviewContaStrategy = null;
+    State._editingItemIdx = null; State._priceQueue = []; State._priceQueueIdx = null;
+  }
+
   // ============================================================
   // ANALISAR
   // ============================================================
@@ -1722,14 +1764,7 @@
           });
         }
       } catch (_) {}
-      // Reset
-      State.nfe = null; State.items = []; State.fornecedorId = null; State.reviewMode = false; State.reviewRecord = null; State.reviewOriginalNfe = null; State.reviewContaStrategy = null;
-      const inpXml = $("inputXml"); if (inpXml) inpXml.value = "";
-      const fInp = $("xmlFile"); if (fInp) fInp.value = "";
-      const rN = $("resumoNfe"); if (rN) { rN.style.display="none"; rN.innerHTML=""; }
-      const iW = $("itensWrap"); if (iW) { iW.style.display="none"; iW.innerHTML=""; }
-      const cR = $("cardResultados"); if (cR) cR.style.display = "none";
-      const bF = $("btnFinalizar"); if (bF) bF.style.display = "none";
+      limparTelaImportacao({ resetInput: true });
       if (alterados.length > 0) {
         abrirModalPrecos(alterados);
         showEnterpriseAlert("success", wasReview ? "Revisão concluída" : "Importacao concluida", (wasReview ? "Revisão concluída." : "Importacao concluida.") + " Ha "+alterados.length+" produto(s) com custo alterado para revisao.",[{label:"OK",kind:"primary",onClick:()=>{const ov=document.getElementById("vscEnterpriseAlertOverlay"); if(ov) ov.__blocking=false;}}],{blocking:false,autoHideMs:5000});
@@ -1753,6 +1788,8 @@
   function init() {
     const btnA = $("btnAnalisar"); if (btnA) btnA.addEventListener("click", () => VSC_XML.analisar());
     const btnF = $("btnFinalizar"); if (btnF) btnF.addEventListener("click", () => VSC_XML.finalizar());
+    const btnL = document.getElementById("btnLimparTela"); if (btnL) btnL.addEventListener("click", () => { limparTelaImportacao({ resetInput: true }); toast("Tela de importacao limpa.", 2500); });
+    const xmlFile = $("xmlFile"); if (xmlFile) xmlFile.addEventListener("change", async () => { await carregarArquivoXmlSelecionado(); });
 
     // Delegação de ações inline na tabela
     document.addEventListener("click", e => {

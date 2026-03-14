@@ -496,15 +496,7 @@ function wireAttachListInteractions(db){
 
   function resolveEmpresaNome(src){
     if(!src || typeof src !== "object") return "";
-    return String(
-      src.nome_fantasia ||
-      src.fantasia ||
-      src.razao_social ||
-      src.nome ||
-      src.empresa_nome ||
-      src.company_name ||
-      ""
-    ).trim();
+    return String(src.nome || src.razao_social || src.nome_fantasia || src.fantasia || src.empresa_nome || "").trim();
   }
 
   function resolveEmpresaLogoA(src){
@@ -513,13 +505,11 @@ function wireAttachListInteractions(db){
       src.__logoA ||
       src.logoA ||
       src.logo_a ||
-      src.logoADataUrl ||
-      src.logoADataURL ||
       src.logo_a_dataurl ||
       src.logo_a_dataUrl ||
       src.logo_a_dataURL ||
-      src.logoUrl ||
-      src.logo_url ||
+      src.logoAUrl ||
+      src.logo_url_a ||
       src.empresa_logo_a ||
       src.logo ||
       ""
@@ -532,76 +522,34 @@ function wireAttachListInteractions(db){
       src.__logoB ||
       src.logoB ||
       src.logo_b ||
-      src.logoBDataUrl ||
-      src.logoBDataURL ||
       src.logo_b_dataurl ||
       src.logo_b_dataUrl ||
       src.logo_b_dataURL ||
       src.logoBUrl ||
       src.logo_url_b ||
+      src.empresa_logo_b ||
       ""
     ).trim();
   }
 
-  function tryParseJsonLoose(value){
-    if(typeof value !== "string") return null;
-    const text = value.trim();
-    if(!text || !/^[\[{]/.test(text)) return null;
-    try{ return JSON.parse(text); }catch(_){ return null; }
+  function getAttachmentId(att){
+    if(!att || typeof att !== "object") return "";
+    return String(att.id || att.attachment_id || att.uuid || att.key || att.file_id || "").trim();
   }
 
-  function isLikelyDataUrl(value){
-    return typeof value === "string" && /^data:/i.test(value.trim());
+  function getAttachmentName(att, fallback){
+    if(!att || typeof att !== "object") return String(fallback || "");
+    return String(att.name || att.nome || att.filename || att.file_name || att.originalname || att.titulo || fallback || "").trim();
   }
 
-  function deepFindEmpresaCandidate(input, depth){
-    depth = Number(depth || 0);
-    if(depth > 6 || !input) return null;
-    if(Array.isArray(input)){
-      for(const item of input){
-        const found = deepFindEmpresaCandidate(item, depth + 1);
-        if(found) return found;
-      }
-      return null;
-    }
-    if(typeof input !== "object") return null;
+  function getAttachmentMime(att){
+    if(!att || typeof att !== "object") return "";
+    return String(att.mime || att.mime_type || att.contentType || att.type || att.content_type || "").trim();
+  }
 
-    const nome = resolveEmpresaNome(input);
-    const logoA = resolveEmpresaLogoA(input);
-    const logoB = resolveEmpresaLogoB(input);
-    const cnpj = String(input.cnpj || input.doc || "").trim();
-    const email = String(input.email || input.email_comercial || "").trim();
-    const telefone = String(input.telefone || input.celular || input.whatsapp || "").trim();
-    const pix = String(input.pix_chave || input.chave_pix || input.pixKey || input.pix || "").trim();
-    if(nome || logoA || logoB || cnpj || email || telefone || pix){
-      return input;
-    }
-
-    const preferredKeys = [
-      'empresa','company','dados_empresa','empresa_snapshot','snapshot',
-      'payload','value','valor','data','content','json','meta','branding'
-    ];
-    for(const key of preferredKeys){
-      if(Object.prototype.hasOwnProperty.call(input, key)){
-        const found = deepFindEmpresaCandidate(input[key], depth + 1);
-        if(found) return found;
-      }
-    }
-
-    for(const key of Object.keys(input)){
-      const value = input[key];
-      if(typeof value === 'string'){
-        const parsed = tryParseJsonLoose(value);
-        if(parsed){
-          const found = deepFindEmpresaCandidate(parsed, depth + 1);
-          if(found) return found;
-        }
-      }else if(value && typeof value === 'object'){
-        const found = deepFindEmpresaCandidate(value, depth + 1);
-        if(found) return found;
-      }
-    }
-    return null;
+  function getAttachmentSize(att){
+    if(!att || typeof att !== "object") return 0;
+    return Number(att.size || att.tamanho || att.size_bytes || 0) || 0;
   }
 
   function normalizeInlineAttachmentData(att){
@@ -631,93 +579,165 @@ function wireAttachListInteractions(db){
     }
   }
 
+  async function getEmpresaLogoBFromLocalStorage(){
+    try{
+      const j = localStorage.getItem("vsc_empresa_v1") || localStorage.getItem("VSC_EMPRESA_V1") || "";
+      if(j){
+        const o = JSON.parse(j);
+        const b = resolveEmpresaLogoB(o);
+        if(b) return b;
+      }
+      const direct = localStorage.getItem("vsc_empresa_logoB") || localStorage.getItem("vsc_empresa_logo_b") || localStorage.getItem("VSC_EMPRESA_LOGO_B") || "";
+      if(direct) return String(direct);
+      return "";
+    }catch(_){
+      return "";
+    }
+  }
+
 async function loadEmpresaSnapshot(db){
-    function normalizeEmpresaSnapshot(raw){
-      const base = deepFindEmpresaCandidate(raw, 0) || raw || {};
-      return Object.assign({}, (base && typeof base === 'object') ? base : {}, {
-        nome: resolveEmpresaNome(base),
-        razao_social: String(base?.razao_social || base?.nome || ""),
-        nome_fantasia: String(base?.nome_fantasia || base?.fantasia || base?.nome || ""),
-        cnpj: base?.cnpj || base?.doc || "",
-        endereco: base?.endereco || base?.endereco_completo || [base?.logradouro, base?.numero, base?.bairro, base?.cidade, base?.uf].filter(Boolean).join(' • '),
-        cidade: base?.cidade || "",
-        uf: base?.uf || "",
-        cep: base?.cep || "",
-        telefone: base?.telefone || base?.fone || base?.celular || base?.whatsapp || "",
-        email: base?.email || base?.email_comercial || "",
-        site: base?.site || "",
-        crmv: base?.crmv || "",
-        __logoA: resolveEmpresaLogoA(base),
-        __logoB: resolveEmpresaLogoB(base),
-        pix_tipo: base?.pix_tipo || base?.pixTipo || "",
-        pix_nome: base?.pix_nome || base?.pixNome || base?.favorecido_pix || "",
-        pix_chave: base?.pix_chave || base?.chave_pix || base?.pixKey || base?.pix || base?.pix_chave_copia_cola || "",
-        pix_chave_norm: base?.pix_chave_norm || ""
+    function asObject(v){
+      if(!v) return null;
+      if(typeof v === 'object') return v;
+      if(typeof v === 'string'){
+        try{
+          const parsed = JSON.parse(v);
+          if(parsed && typeof parsed === 'object') return parsed;
+        }catch(_){ }
+      }
+      return null;
+    }
+
+    function scoreEmpresaCandidate(src){
+      if(!src || typeof src !== 'object') return 0;
+      let score = 0;
+      if(resolveEmpresaNome(src)) score += 4;
+      if(resolveEmpresaLogoA(src) || resolveEmpresaLogoB(src)) score += 3;
+      if(src.cnpj || src.doc) score += 2;
+      if(src.email) score += 1;
+      if(src.telefone || src.celular || src.fone) score += 1;
+      if(src.pix_chave || src.chave_pix || src.pix || src.pixKey) score += 1;
+      return score;
+    }
+
+    function normalizeEmpresaRecord(src){
+      const data = src && typeof src === 'object' ? src : {};
+      return Object.assign({}, data, {
+        nome: resolveEmpresaNome(data),
+        razao_social: String(data.razao_social || data.nome || ''),
+        nome_fantasia: String(data.nome_fantasia || data.fantasia || data.nome || ''),
+        cnpj: data.cnpj || data.doc || '',
+        endereco: data.endereco || data.endereco_completo || [data.logradouro, data.numero, data.bairro, data.cidade, data.uf].filter(Boolean).join(' • '),
+        cidade: data.cidade || '',
+        uf: data.uf || '',
+        cep: data.cep || '',
+        telefone: data.telefone || data.fone || data.celular || data.whatsapp || '',
+        email: data.email || data.email_comercial || '',
+        site: data.site || '',
+        crmv: data.crmv || '',
+        __logoA: resolveEmpresaLogoA(data),
+        __logoB: resolveEmpresaLogoB(data),
+        pix_tipo: data.pix_tipo || data.pixTipo || '',
+        pix_nome: data.pix_nome || data.pixNome || data.favorecido_pix || '',
+        pix_chave: data.pix_chave || data.chave_pix || data.pixKey || data.pix || data.pix_chave_copia_cola || '',
+        pix_chave_norm: data.pix_chave_norm || ''
       });
     }
 
-    function hasEmpresaSignal(snap){
-      return !!(
-        snap && (
-          snap.nome || snap.razao_social || snap.nome_fantasia || snap.cnpj || snap.email ||
-          snap.telefone || snap.__logoA || snap.__logoB || snap.pix_chave
-        )
-      );
-    }
-
-    async function finishSnapshot(raw){
-      const snap = normalizeEmpresaSnapshot(raw);
-      if(!snap.__logoA) snap.__logoA = await getEmpresaLogoAFromLocalStorage();
-      if(!snap.pix_chave) snap.pix_chave = await getEmpresaPixFromLocalStorage();
-      return snap;
-    }
-
-    const candidates = ["empresa_master","empresa","empresa_config","config_empresa","sys_meta","config_params"];
-    for(const st of candidates){
+    const picks = [];
+    const candidateStores = ["empresa_master","empresa","empresa_config","config_empresa","sys_meta"];
+    for(const st of candidateStores){
       if(!hasStore(db, st)) continue;
       try{
-        const all = await idbGetAll(db, st);
-        if(!Array.isArray(all) || !all.length) continue;
-        for(const row of all){
-          const snap = await finishSnapshot(row);
-          if(hasEmpresaSignal(snap)) return snap;
-          const parsedValue = tryParseJsonLoose(String(row?.value || row?.valor || row?.data || row?.payload || row?.json || row?.meta || ""));
-          if(parsedValue){
-            const parsedSnap = await finishSnapshot(parsedValue);
-            if(hasEmpresaSignal(parsedSnap)) return parsedSnap;
+        const rows = await idbGetAll(db, st);
+        for(const row of (Array.isArray(rows) ? rows : [])){
+          const rawCandidates = [row];
+          for(const key of ['value','valor','data','payload','content','json','meta']){
+            const parsed = asObject(row && row[key]);
+            if(parsed) rawCandidates.push(parsed);
+          }
+          for(const raw of rawCandidates){
+            const normalized = normalizeEmpresaRecord(raw);
+            if(scoreEmpresaCandidate(normalized) > 0) picks.push(normalized);
           }
         }
       }catch(_){ }
     }
 
-    const localStoragePriorityKeys = [
-      "vsc_empresa_v1","VSC_EMPRESA_V1","erp_empresa","empresa","empresa_snapshot",
-      "empresa_dados","empresa_configurada_dados"
-    ];
-    for(const key of localStoragePriorityKeys){
+    if(hasStore(db,"config_params")){
       try{
-        const raw = localStorage.getItem(key) || "";
-        if(!raw) continue;
-        const parsed = tryParseJsonLoose(raw);
-        if(!parsed) continue;
-        const snap = await finishSnapshot(parsed);
-        if(hasEmpresaSignal(snap)) return snap;
+        const rows = await idbGetAll(db,"config_params");
+        function getKey(k){
+          const r = (rows || []).find(x => String(x && (x.key || x.nome || x.name || x.id || '')) === k);
+          return r ? String(r.value || r.valor || r.data || '') : '';
+        }
+        const keysToParse = [
+          'vsc_empresa_v1','VSC_EMPRESA_V1','empresa','empresa_snapshot','empresa_dados','empresa_configurada_dados'
+        ];
+        for(const key of keysToParse){
+          const parsed = asObject(getKey(key));
+          if(parsed){
+            const normalized = normalizeEmpresaRecord(parsed);
+            if(scoreEmpresaCandidate(normalized) > 0) picks.push(normalized);
+          }
+        }
+        const flat = normalizeEmpresaRecord({
+          nome: getKey('empresa_nome') || getKey('razao_social') || getKey('nome_fantasia') || '',
+          razao_social: getKey('razao_social') || '',
+          nome_fantasia: getKey('nome_fantasia') || '',
+          cnpj: getKey('empresa_cnpj') || getKey('cnpj') || '',
+          endereco: getKey('empresa_endereco') || getKey('endereco') || '',
+          telefone: getKey('empresa_telefone') || getKey('telefone') || '',
+          email: getKey('empresa_email') || getKey('email') || '',
+          __logoA: getKey('empresa_logo_a') || getKey('logo_a') || getKey('vsc_empresa_logo_a') || '',
+          __logoB: getKey('empresa_logo_b') || getKey('logo_b') || getKey('vsc_empresa_logo_b') || '',
+          pix_tipo: getKey('pix_tipo') || '',
+          pix_nome: getKey('pix_nome') || '',
+          pix_chave: getKey('pix_chave') || getKey('chave_pix') || getKey('pix') || ''
+        });
+        if(scoreEmpresaCandidate(flat) > 0) picks.push(flat);
       }catch(_){ }
     }
 
     try{
-      for(let i=0; i<localStorage.length; i++){
-        const key = localStorage.key(i);
-        if(!key) continue;
-        const raw = localStorage.getItem(key) || "";
-        const parsed = tryParseJsonLoose(raw);
-        if(!parsed) continue;
-        const snap = await finishSnapshot(parsed);
-        if(hasEmpresaSignal(snap)) return snap;
+      const lsVariants = [
+        localStorage.getItem("vsc_empresa_v1"),
+        localStorage.getItem("VSC_EMPRESA_V1"),
+        localStorage.getItem("empresa"),
+        localStorage.getItem("empresa_snapshot"),
+        localStorage.getItem("empresa_dados"),
+        localStorage.getItem("empresa_configurada_dados")
+      ].filter(Boolean);
+      for(const raw of lsVariants){
+        const parsed = asObject(raw);
+        if(parsed){
+          const normalized = normalizeEmpresaRecord(parsed);
+          if(scoreEmpresaCandidate(normalized) > 0) picks.push(normalized);
+        }
       }
+      const flatLs = normalizeEmpresaRecord({
+        nome: localStorage.getItem('empresa_nome') || localStorage.getItem('razao_social') || localStorage.getItem('nome_fantasia') || '',
+        cnpj: localStorage.getItem('empresa_cnpj') || localStorage.getItem('cnpj') || '',
+        endereco: localStorage.getItem('empresa_endereco') || localStorage.getItem('endereco') || '',
+        telefone: localStorage.getItem('empresa_telefone') || localStorage.getItem('telefone') || '',
+        email: localStorage.getItem('empresa_email') || localStorage.getItem('email') || '',
+        __logoA: localStorage.getItem('vsc_empresa_logoA') || localStorage.getItem('vsc_empresa_logo_a') || localStorage.getItem('VSC_EMPRESA_LOGO_A') || '',
+        __logoB: localStorage.getItem('vsc_empresa_logoB') || localStorage.getItem('vsc_empresa_logo_b') || localStorage.getItem('VSC_EMPRESA_LOGO_B') || '',
+        pix_tipo: localStorage.getItem('pix_tipo') || '',
+        pix_nome: localStorage.getItem('pix_nome') || '',
+        pix_chave: localStorage.getItem('pix_chave') || localStorage.getItem('chave_pix') || localStorage.getItem('vsc_pix_chave') || ''
+      });
+      if(scoreEmpresaCandidate(flatLs) > 0) picks.push(flatLs);
     }catch(_){ }
 
-    return await finishSnapshot({ nome:"", razao_social:"", nome_fantasia:"", cnpj:"", endereco:"", telefone:"", email:"", __logoA:"", __logoB:"", pix_chave:"" });
+    const best = picks.sort((a,b) => scoreEmpresaCandidate(b) - scoreEmpresaCandidate(a))[0] || {};
+    return Object.assign({
+      nome:'', razao_social:'', nome_fantasia:'', cnpj:'', endereco:'', telefone:'', email:'', __logoA:'', __logoB:'', pix_chave:''
+    }, best, {
+      __logoA: best.__logoA || (await getEmpresaLogoAFromLocalStorage()),
+      __logoB: best.__logoB || (await getEmpresaLogoBFromLocalStorage()),
+      pix_chave: best.pix_chave || (await getEmpresaPixFromLocalStorage())
+    });
   }
 
 
@@ -759,18 +779,26 @@ async function loadEmpresaSnapshot(db){
     const inline = normalizeInlineAttachmentData(att);
     if(inline) return inline;
 
+    const attId = getAttachmentId(att);
+    const attName = getAttachmentName(att);
     const currentList = Array.isArray(ATD.attachments) ? ATD.attachments : [];
-    const attId = String(att.id || att.attachment_id || att.uuid || att.key || '');
-    const byCurrent = currentList.find(x => x && String(x.id || x.attachment_id || x.uuid || x.key || '') === attId)
-      || currentList.find(x => x && String(x.name || '') === String(att.name || ''));
+    const byCurrent = currentList.find(x => x && getAttachmentId(x) === attId)
+      || currentList.find(x => x && getAttachmentName(x) === attName);
     const currentInline = normalizeInlineAttachmentData(byCurrent);
     if(currentInline) return currentInline;
+
+    if(att && typeof Blob !== 'undefined'){
+      const blobLike = att.file_blob || att.blob || att.fileBlob || null;
+      if(blobLike instanceof Blob){
+        try{ return await blobToDataUrl(blobLike); }catch(_){ }
+      }
+    }
 
     if(db && hasStore(db, 'attachments_queue')){
       try{
         const rows = await idbGetAll(db, 'attachments_queue');
-        const row = (rows || []).find(x => x && String(x.attachment_id || '') === attId)
-          || (rows || []).find(x => x && String(x.filename || '') === String(att.name || ''));
+        const row = (rows || []).find(x => x && String(x.attachment_id || x.id || '') === attId)
+          || (rows || []).find(x => x && String(x.filename || x.name || '') === attName);
         const rowInline = normalizeInlineAttachmentData(row);
         if(rowInline) return rowInline;
       }catch(_){ }
@@ -780,10 +808,30 @@ async function loadEmpresaSnapshot(db){
       try{
         const rec = await idbGet(db, 'atendimentos_master', atendimentoId);
         const rows = Array.isArray(rec && rec.attachments) ? rec.attachments : [];
-        const row = rows.find(x => x && String(x.id || x.attachment_id || x.uuid || x.key || '') === attId)
-          || rows.find(x => x && String(x.name || '') === String(att.name || ''));
+        const row = rows.find(x => x && getAttachmentId(x) === attId)
+          || rows.find(x => x && getAttachmentName(x) === attName);
         const rowInline = normalizeInlineAttachmentData(row);
         if(rowInline) return rowInline;
+      }catch(_){ }
+    }
+
+    if(db && hasStore(db, 'documents_store')){
+      try{
+        const rows = await idbGetAll(db, 'documents_store');
+        const match = (rows || []).find(x => x && String(x.entity_id || '') === String(atendimentoId) && String(x.entity_type || '').toLowerCase().includes('atendimento') && (
+          String(x.id || '') === attId ||
+          String(x.file_name || x.filename || '') === attName
+        ));
+        if(match){
+          const docInline = normalizeInlineAttachmentData(match);
+          if(docInline) return docInline;
+          if(typeof Blob !== 'undefined'){
+            const blobLike = match.file_blob || match.blob || null;
+            if(blobLike instanceof Blob){
+              try{ return await blobToDataUrl(blobLike); }catch(_){ }
+            }
+          }
+        }
       }catch(_){ }
     }
 
@@ -815,7 +863,9 @@ async function loadEmpresaSnapshot(db){
         att.downloadUrl,
         att.r2_url,
         att.file_url,
-        att.src
+        att.src,
+        att.preview_url,
+        att.public_url
       ].filter(Boolean);
 
       let done = false;
@@ -834,7 +884,7 @@ async function loadEmpresaSnapshot(db){
         }catch(_err){}
       }
 
-      const attId = att.id || att.attachment_id || att.uuid || att.key || "";
+      const attId = getAttachmentId(att);
       if(!done && attId){
         const candidates = [];
         for(const currentBase of bases){
@@ -860,10 +910,39 @@ async function loadEmpresaSnapshot(db){
             break;
           }catch(_err){}
         }
+
+        if(!done){
+          for(const currentBase of bases){
+            try{
+              const listUrl = `${currentBase}/api/attachments?action=list&atendimento_id=${encodeURIComponent(atendimentoId)}`;
+              const listRes = await fetch(listUrl, {
+                headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
+                credentials: currentBase ? "omit" : "include"
+              });
+              if(!listRes.ok) continue;
+              const listBody = await listRes.json().catch(() => ({}));
+              const items = Array.isArray(listBody && listBody.items) ? listBody.items : [];
+              const matched = items.find(item => String(item && item.meta && item.meta.attachment_id || '').trim() === attId)
+                || items.find(item => String(item && item.meta && item.meta.filename || '').trim() === getAttachmentName(att));
+              if(!matched) continue;
+              const dl = `${currentBase}/api/attachments?action=download&disposition=inline&attachment_id=${encodeURIComponent(attId)}`;
+              const res = await fetch(dl, {
+                headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
+                credentials: currentBase ? "omit" : "include"
+              });
+              if(!res.ok) continue;
+              const blob = await res.blob();
+              att.dataUrl = await blobToDataUrl(blob);
+              att.mime = att.mime || blob.type || "";
+              done = true;
+              break;
+            }catch(_listErr){}
+          }
+        }
       }
 
       if(!done){
-        console.warn("[PRINT][ATTACH] anexo não hidratado para impressão:", att.name || att.id || att);
+        console.warn("[PRINT][ATTACH] anexo não hidratado para impressão:", getAttachmentName(att) || getAttachmentId(att) || att);
       }
       hydrated.push(att);
     }
@@ -1125,6 +1204,7 @@ function openPrintWindowClient(payload, docType, opts){
   const R = payload || {};
   const empresa = R.empresa || {};
   const logoA = resolveEmpresaLogoA(empresa) || "";
+  const logoB = resolveEmpresaLogoB(empresa) || "";
   const empresaNome = resolveEmpresaNome(empresa) || "Empresa";
   const pixKey = empresa.pix_chave || empresa.chave_pix || empresa.pixKey || empresa.pix || empresa.pix_chave_copia_cola || "";
   const atd = R.atendimento || {};
@@ -1263,12 +1343,13 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
   const attHtml = ((docType === "clinico") || (docType === "clinico_financeiro")) ? (
     atts.length ? atts.map((a, idx)=>{
-      const mime = String(a.mime || a.mime_type || a.contentType || a.type || "").toLowerCase();
-      const rawName = a.name || a.nome || a.filename || a.file_name || a.originalname || a.original_name || ("Anexo " + (idx+1));
-      const isPdf = mime === "application/pdf" || /\.pdf(?:$|\?)/i.test(String(rawName||""));
-      const name = esc(rawName);
-      const hasData = !!a.dataUrl;
-      const sizeKb = a.size ? Math.round(a.size/1024) + " KB" : "";
+      const mime = String(getAttachmentMime(a) || "").toLowerCase();
+      const attNameRaw = getAttachmentName(a, "Anexo " + (idx+1));
+      const isPdf = mime === "application/pdf" || /\.pdf$/i.test(String(attNameRaw||""));
+      const name = esc(attNameRaw);
+      const hasData = !!normalizeInlineAttachmentData(a);
+      const sizeNum = getAttachmentSize(a);
+      const sizeKb = sizeNum ? Math.round(sizeNum/1024) + " KB" : "";
       const desc = esc(a.descricao || a.description || a.desc || "—");
       if(!hasData){
         return `
@@ -1294,7 +1375,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
             </div>
             <div class="pdf-block att-media" data-idx="${idx}">
               <div class="pdf-loading">Renderizando PDF para impressão…</div>
-              <div class="pdf-pages" data-name="${name}" data-dataurl="${a.dataUrl}"></div>
+              <div class="pdf-pages" data-name="${name}" data-dataurl="${normalizeInlineAttachmentData(a)}"></div>
             </div>
             <div class="att-desc-wrap">
               <div class="att-desc-label">Descrição clínica do anexo</div>
@@ -1310,7 +1391,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
             <div class="att-kind">Imagem${sizeKb ? ` • ${sizeKb}` : ""}</div>
           </div>
           <div class="att-media">
-            <img class="att-inline-image" data-anexo="1" src="${a.dataUrl}" alt="${name}" style="max-width:100%;display:block;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;" />
+            <img class="att-inline-image" data-anexo="1" src="${normalizeInlineAttachmentData(a)}" alt="${name}" style="max-width:100%;display:block;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;" />
           </div>
           <div class="att-desc-wrap">
             <div class="att-desc-label">Descrição clínica do anexo</div>
@@ -1336,8 +1417,8 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     ? window.VSCPrintTemplate.renderInstitutionalHeader({
         systemLogoSrc: location.origin + '/assets/brand/vsc-logo-horizontal.png',
         systemLogoFallback: '<div class="kado-fallback-system">Vet System Control</div>',
-        companyLogoHtml: logoA
-          ? `<img class="kado-company-logo" src="${logoA}" alt="Logo A da empresa"/>`
+        companyLogoHtml: (logoB || logoA)
+          ? `<img class="kado-company-logo" src="${logoB || logoA}" alt="Logo institucional da empresa"/>`
           : `<div class="kado-company-logo-fallback"></div>`,
         companyName: esc(empresaNome),
         companyMetaHtml: [
