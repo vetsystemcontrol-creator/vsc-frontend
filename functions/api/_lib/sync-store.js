@@ -54,11 +54,6 @@ const STORE_NAME_MAP = Object.freeze({
   empresa: 'empresa',
 });
 
-const TRUSTED_BROWSER_ORIGIN_PATTERNS = Object.freeze([
-  /^https:\/\/app\.vetsystemcontrol\.com\.br$/i,
-  /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i,
-]);
-
 const SNAPSHOT_IMPORT_EXCLUDED_STORES = new Set([
   'auth_users',
   'auth_roles',
@@ -74,14 +69,9 @@ const SNAPSHOT_IMPORT_ALLOWED_STORES = Array.from(new Set(Object.values(STORE_NA
   .filter((store) => !SNAPSHOT_IMPORT_EXCLUDED_STORES.has(store));
 
 
-function isTrustedBrowserOrigin(origin) {
-  const raw = String(origin || '').trim();
-  return !!(raw && TRUSTED_BROWSER_ORIGIN_PATTERNS.some((pattern) => pattern.test(raw)));
-}
-
 function corsHeaders(request, methods = 'GET, POST, PUT, PATCH, DELETE, OPTIONS') {
   const origin = String(request?.headers?.get('Origin') || '').trim();
-  const allowed = isTrustedBrowserOrigin(origin);
+  const allowed = /^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin) || /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin);
   const headers = {
     'Access-Control-Allow-Origin': allowed && origin ? origin : 'https://app.vetsystemcontrol.com.br',
     'Access-Control-Allow-Methods': methods,
@@ -138,32 +128,45 @@ function resolveStoreName(rawStore, rawEntity) {
   return STORE_NAME_MAP[raw] || raw || 'UNKNOWN';
 }
 
-function parseRequestedStoreNames(rawValue) {
-  const parts = Array.isArray(rawValue)
-    ? rawValue
-    : String(rawValue || '').split(',');
-  const allowed = new Set(Object.values(STORE_NAME_MAP));
-  const normalized = [];
-  for (const part of parts) {
-    const storeName = resolveStoreName(part, part);
-    if (!storeName || !allowed.has(storeName)) continue;
-    if (!normalized.includes(storeName)) normalized.push(storeName);
-  }
-  return normalized;
+function extractEntityId(op, payload, storeName) {
+  const direct = normStr(op.entity_id || op.record_id || op.target_id || op.ref_id || op.id || '', 160);
+  if (direct) return direct;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return '';
+  const payloadId = normStr(
+    payload.id ||
+    payload.record_id ||
+    payload.entity_id ||
+    payload.uuid ||
+    payload.key ||
+    payload.produto_id ||
+    payload.lote_id ||
+    '',
+    160
+  );
+  if (payloadId) return payloadId;
+  if (storeName === 'produtos_lotes') return normStr(payload.lote_id || '', 160);
+  return '';
+}
+
+function normalizeAction(rawAction) {
+  const action = normStr(rawAction || 'upsert', 40).toLowerCase() || 'upsert';
+  if (['delete', 'remove', 'destroy'].includes(action)) return 'delete';
+  if (['create', 'insert', 'update', 'upsert', 'put', 'patch'].includes(action)) return 'upsert';
+  return action;
 }
 
 function normalizeOperation(op = {}) {
-  const action = normStr(op.action || op.op || 'upsert', 40).toLowerCase() || 'upsert';
+  const payload = op.payload ?? null;
   const entity = normStr(op.entity || op.store || op.store_name || 'UNKNOWN', 120) || 'UNKNOWN';
   const storeName = resolveStoreName(op.store || op.store_name, entity);
-  const entityId = normStr(op.entity_id || op.record_id || op.target_id || op.ref_id || op.id || '', 160);
+  const action = normalizeAction(op.action || op.op || 'upsert');
+  const entityId = extractEntityId(op, payload, storeName);
   const opId = normStr(op.op_id || op.id || '', 160);
   const deviceId = normStr(op.device_id || '', 160);
-  const baseRevision = normNum(op.base_revision, 0);
+  const baseRevision = Math.max(0, normNum(op.base_revision, 0));
   const entityRevision = Math.max(1, normNum(op.entity_revision, baseRevision + 1));
   const dedupeKey = normStr(op.dedupe_key || [storeName, entityId, action, String(baseRevision), String(entityRevision)].join(':'), 300);
-  const payload = op.payload ?? null;
-  const createdAt = normStr(op.created_at || op.updated_at || nowIso(), 40) || nowIso();
+  const createdAt = normStr(op.created_at || op.updated_at || (payload && (payload.updated_at || payload.created_at)) || nowIso(), 40) || nowIso();
   const status = normStr(op.status || 'PENDING', 40) || 'PENDING';
   return {
     op_id: opId,
@@ -309,6 +312,32 @@ async function applyOperationToCanonical(db, tenant, op) {
   };
 }
 
+async function verifyCanonicalPersistence(db, tenant, op) {
+  const row = await db.prepare(`
+    SELECT record_id, deleted, payload_json, entity_revision
+    FROM canonical_records
+    WHERE tenant = ?1 AND store_name = ?2 AND record_id = ?3
+    LIMIT 1
+  `).bind(tenant, op.store_name, op.entity_id).first();
+
+  if (normalizeAction(op.action) === 'delete') {
+    return !!(row && Number(row.deleted || 0) === 1);
+  }
+
+  if (!row || Number(row.deleted || 0) === 1) return false;
+
+  let payload = null;
+  try {
+    payload = row.payload_json ? JSON.parse(row.payload_json) : null;
+  } catch (_) {
+    payload = null;
+  }
+
+  const persistedId = extractEntityId({ entity_id: row.record_id }, payload, op.store_name);
+  const persistedRevision = Math.max(1, normNum(row.entity_revision || payload?.entity_revision || payload?.sync_rev || 1, 1));
+  return persistedId === op.entity_id && persistedRevision >= Math.max(1, normNum(op.entity_revision, 1));
+}
+
 async function ingestOperation(db, tenant, userLabel, rawOp) {
   const op = normalizeOperation(rawOp);
   if (!op.op_id) {
@@ -360,6 +389,10 @@ async function ingestOperation(db, tenant, userLabel, rawOp) {
   ).run();
 
   const apply = await applyOperationToCanonical(db, tenant, op);
+  const persisted = await verifyCanonicalPersistence(db, tenant, op);
+  if (!persisted) {
+    throw new Error(`canonical_persistence_verification_failed:${op.store_name}:${op.entity_id}`);
+  }
 
   return {
     ok: true,
@@ -372,28 +405,14 @@ async function ingestOperation(db, tenant, userLabel, rawOp) {
   };
 }
 
-async function loadCanonicalSnapshot(db, tenant, options = {}) {
+async function loadCanonicalSnapshot(db, tenant) {
   await ensureSchema(db);
-  const requestedStoreNames = parseRequestedStoreNames(options.storeNames || []);
-  const filterRequested = requestedStoreNames.length > 0;
-
-  let rows = null;
-  if (filterRequested) {
-    const placeholders = requestedStoreNames.map((_, idx) => `?${idx + 2}`).join(', ');
-    rows = await db.prepare(`
-      SELECT store_name, record_id, payload_json, deleted, updated_at, entity_revision
-      FROM canonical_records
-      WHERE tenant = ?1 AND deleted = 0 AND store_name IN (${placeholders})
-      ORDER BY store_name, updated_at, record_id
-    `).bind(tenant, ...requestedStoreNames).all();
-  } else {
-    rows = await db.prepare(`
-      SELECT store_name, record_id, payload_json, deleted, updated_at, entity_revision
-      FROM canonical_records
-      WHERE tenant = ?1 AND deleted = 0
-      ORDER BY store_name, updated_at, record_id
-    `).bind(tenant).all();
-  }
+  const rows = await db.prepare(`
+    SELECT store_name, record_id, payload_json, deleted, updated_at, entity_revision
+    FROM canonical_records
+    WHERE tenant = ?1 AND deleted = 0
+    ORDER BY store_name, updated_at, record_id
+  `).bind(tenant).all();
 
   const metaRow = await db.prepare(`
     SELECT tenant, state_revision, updated_at, last_op_id, last_store_name, last_record_id
@@ -402,10 +421,8 @@ async function loadCanonicalSnapshot(db, tenant, options = {}) {
     LIMIT 1
   `).bind(tenant).first();
 
-  const allStoreNames = Array.from(new Set(Object.values(STORE_NAME_MAP)));
   const data = {};
-  const seedStoreNames = filterRequested ? requestedStoreNames : allStoreNames;
-  for (const storeName of seedStoreNames) {
+  for (const storeName of Array.from(new Set(Object.values(STORE_NAME_MAP)))) {
     data[storeName] = [];
   }
   for (const row of (rows?.results || rows || [])) {
@@ -451,7 +468,6 @@ async function loadCanonicalSnapshot(db, tenant, options = {}) {
       },
       data,
     },
-    requested_stores: filterRequested ? requestedStoreNames : [],
   };
 }
 
@@ -657,18 +673,6 @@ async function findActiveSessionAuth(db, sessionId) {
   }
 }
 
-function hasTrustedBrowserSyncHeaders(request) {
-  const tenant = normStr(request?.headers?.get('X-VSC-Tenant') || request?.headers?.get('x-vsc-tenant') || '', 120);
-  const userLabel = normStr(request?.headers?.get('X-VSC-User') || request?.headers?.get('x-vsc-user') || '', 120);
-  const sessionId = getClientSessionId(request);
-  return !!(tenant && (userLabel || sessionId));
-}
-
-function getTrustedOrigin(request) {
-  const origin = normStr(request?.headers?.get('Origin') || '', 240);
-  return isTrustedBrowserOrigin(origin) ? origin : '';
-}
-
 async function isSyncAuthorized(request, env) {
   const secret = getSyncSecret(env);
   const token = getRequestToken(request);
@@ -683,17 +687,6 @@ async function isSyncAuthorized(request, env) {
     if (session) {
       return { ok: true, enforced: true, mode: 'session', session_id: clientSessionId, user_id: session.user_id || null };
     }
-  }
-
-  const trustedOrigin = getTrustedOrigin(request);
-  if (trustedOrigin && hasTrustedBrowserSyncHeaders(request)) {
-    return {
-      ok: true,
-      enforced: !!secret,
-      mode: 'trusted_origin',
-      origin: trustedOrigin,
-      degraded_auth: !!secret,
-    };
   }
 
   if (!secret) {
@@ -720,8 +713,6 @@ export {
   ingestOperation,
   loadCanonicalSnapshot,
   importCanonicalSnapshot,
-  parseRequestedStoreNames,
-  resolveStoreName,
   getSyncSecret,
   getRequestToken,
   getClientSessionId,

@@ -11,6 +11,7 @@
   const MANUAL_PUSH_BUDGET_MS = 45_000;
 
   let isSyncing = false;
+  let resolvedApiBase = null;
 
   function nowIso() {
     return new Date().toISOString();
@@ -51,39 +52,24 @@
     }
   }
 
-
-  function candidateBases() {
-    const mode = getSyncTargetMode();
-    const bases = [];
-    const add = (value) => {
-      const normalized = String(value || '').trim();
-      if (!bases.includes(normalized)) bases.push(normalized);
-    };
-
+  function candidateApiBases() {
     try {
       const proto = String(location.protocol || '').toLowerCase();
-      if (proto === 'file:') {
-        add(REMOTE_BASE);
-        return bases;
-      }
+      const mode = getSyncTargetMode();
+      if (proto === 'file:') return [REMOTE_BASE];
       if (proto === 'http:' && isLocalDev()) {
-        if (mode === 'remote') {
-          add(REMOTE_BASE);
-          add(location.origin);
-        } else {
-          add(location.origin);
-          add(REMOTE_BASE);
-        }
-        return bases;
+        if (mode === 'local') return [location.origin];
+        if (mode === 'remote') return [REMOTE_BASE];
+        return [REMOTE_BASE];
       }
     } catch (_) {}
-
-    add(location.origin);
-    return bases;
+    return [location.origin];
   }
 
   function resolveRemoteBase() {
-    return candidateBases()[0] || location.origin;
+    if (resolvedApiBase != null) return resolvedApiBase;
+    const bases = candidateApiBases();
+    return bases.length ? bases[0] : location.origin;
   }
 
   function status() {
@@ -92,6 +78,7 @@
       syncing: !!isSyncing,
       last_sync: localStorage.getItem(SYNC_KEY) || null,
       api_base: resolveRemoteBase(),
+      sync_target_mode: getSyncTargetMode() || (isLocalDev() ? 'remote' : 'auto'),
     };
   }
 
@@ -134,22 +121,11 @@
   }
 
   function apiCandidates() {
-    const base = resolveRemoteBase();
     const urls = [];
-
-    if (base) {
+    for (const base of Array.from(new Set(candidateApiBases()))) {
       urls.push(`${base}/api/sync/pull`);
       urls.push(`${base}/api/state?action=pull`);
     }
-
-    if (location.origin && base !== location.origin) {
-      urls.push(`${location.origin}/api/sync/pull`);
-      urls.push(`${location.origin}/api/state?action=pull`);
-    }
-
-    urls.push('/api/sync/pull');
-    urls.push('/api/state?action=pull');
-
     return Array.from(new Set(urls));
   }
 
@@ -284,6 +260,7 @@
 
   async function fetchSnapshot() {
     const urls = apiCandidates();
+    resolvedApiBase = null;
     let lastErr = null;
     let best = null;
     let saw304 = false;
@@ -316,7 +293,13 @@
         if (!best || candidate.metrics.score > best.metrics.score) best = candidate;
 
         if (!isLocalDev()) {
-          return { ok: true, payload: candidate.body, source: candidate.url, not_modified: false };
+          try {
+            const parsed = new URL(candidate.url, location.origin);
+            resolvedApiBase = parsed.origin === location.origin ? '' : parsed.origin;
+          } catch (_) {
+            resolvedApiBase = candidate.url.startsWith('http') ? candidate.url.split('/').slice(0, 3).join('/') : '';
+          }
+          return { ok: true, payload: candidate.body, source: candidate.url, not_modified: false, api_base: resolvedApiBase };
         }
       } catch (err) {
         lastErr = err;
@@ -335,11 +318,24 @@
           revision: best.metrics.revision,
         });
       } catch (_) {}
-      return { ok: true, payload: best.body, source: best.url, not_modified: false };
+      try {
+        const parsed = new URL(best.url, location.origin);
+        resolvedApiBase = parsed.origin === location.origin ? '' : parsed.origin;
+      } catch (_) {
+        resolvedApiBase = best.url.startsWith('http') ? best.url.split('/').slice(0, 3).join('/') : '';
+      }
+      return { ok: true, payload: best.body, source: best.url, not_modified: false, api_base: resolvedApiBase };
     }
 
     if ((best && best.not_modified) || saw304) {
-      return { ok: true, payload: null, source: best && best.url || null, not_modified: true };
+      try {
+        const sourceUrl = best && best.url ? best.url : '';
+        const parsed = sourceUrl ? new URL(sourceUrl, location.origin) : null;
+        resolvedApiBase = parsed && parsed.origin === location.origin ? '' : (parsed ? parsed.origin : '');
+      } catch (_) {
+        resolvedApiBase = '';
+      }
+      return { ok: true, payload: null, source: best && best.url || null, not_modified: true, api_base: resolvedApiBase };
     }
 
     throw lastErr || new Error('pull_failed');
@@ -413,14 +409,14 @@
       const result = await fetchSnapshot();
       if (result.not_modified) {
         localStorage.setItem(SYNC_KEY, nowIso());
-        notifyUI('success', '', { phase: 'pull', not_modified: true });
-        return { ok: true, pulled: false, not_modified: true };
+        notifyUI('success', '', { phase: 'pull', not_modified: true, api_base: result.api_base || resolveRemoteBase() });
+        return { ok: true, pulled: false, not_modified: true, api_base: result.api_base || resolveRemoteBase() };
       }
 
       const applied = await applySnapshot(result.payload.snapshot);
       localStorage.setItem(SYNC_KEY, nowIso());
-      notifyUI('success', '', { phase: 'pull', applied, source: result.source });
-      return { ok: true, pulled: true, applied, source: result.source };
+      notifyUI('success', '', { phase: 'pull', applied, source: result.source, api_base: result.api_base || resolveRemoteBase() });
+      return { ok: true, pulled: true, applied, source: result.source, api_base: result.api_base || resolveRemoteBase() };
     } catch (err) {
       notifyUI('error', String(err && (err.message || err) || 'pull_failed'));
       throw err;

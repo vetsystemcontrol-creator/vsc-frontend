@@ -62,6 +62,7 @@
   let _inFlight = null; // promise
   let _capabilities = null;
   let _capabilitiesCheckedAt = 0;
+  let _resolvedApiBase = null;
   let _stats = {
     pending: 0,
     sent: 0,
@@ -176,48 +177,6 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-
-  function _normalizeQueueStatus(value) {
-    const raw = String(value == null ? '' : value).trim().toUpperCase();
-    if (!raw) return 'PENDING';
-    if (raw === 'PENDENTE' || raw === 'QUEUED' || raw === 'OPEN') return 'PENDING';
-    if (raw === 'IN_FLIGHT' || raw === 'PROCESSING') return 'SENDING';
-    return raw;
-  }
-
-  function _isPendingStatus(value) {
-    const status = _normalizeQueueStatus(value);
-    return status === 'PENDING' || status === 'SENDING';
-  }
-
-  function _apiBases() {
-    const mode = _getSyncTargetMode();
-    const bases = [];
-    const add = (value) => {
-      const normalized = String(value || '').trim();
-      if (!bases.includes(normalized)) bases.push(normalized);
-    };
-
-    if (_isLocalStaticMode()) {
-      add(REMOTE_BASE);
-      return bases;
-    }
-
-    if (_isWranglerDev()) {
-      if (mode === 'remote') {
-        add(REMOTE_BASE);
-        add('');
-      } else {
-        add('');
-        add(REMOTE_BASE);
-      }
-      return bases;
-    }
-
-    add('');
-    return bases;
-  }
-
   function _isLocalStaticMode() {
     try {
       const proto = String(location.protocol || '').toLowerCase();
@@ -236,52 +195,80 @@
     return false;
   }
 
-  function _apiBase() {
-    return _apiBases()[0] || '';
+  function _dedupeBases(list) {
+    return Array.from(new Set((Array.isArray(list) ? list : []).filter((v) => typeof v === 'string')));
   }
 
-  function _apiUrl(path, base = null) {
-    const root = base == null ? _apiBase() : String(base || '');
-    return `${root}${path}`;
+  function _candidateApiBases() {
+    const mode = _getSyncTargetMode();
+    if (_isLocalStaticMode()) return [REMOTE_BASE];
+    if (_isWranglerDev()) {
+      if (mode === 'local') return [''];
+      if (mode === 'remote') return [REMOTE_BASE];
+      return [REMOTE_BASE];
+    }
+    return [''];
+  }
+
+  function _apiBase() {
+    if (_resolvedApiBase != null) return _resolvedApiBase;
+    const candidates = _candidateApiBases();
+    return candidates.length ? candidates[0] : '';
+  }
+
+  function _apiUrl(path, base = _apiBase()) {
+    return `${base}${path}`;
+  }
+
+  async function _probeCapabilities(base) {
+    const res = await _fetchWithTimeout(_apiUrl(API_CAPABILITIES_URL, base), {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' },
+      cache: 'no-store',
+    }, NETWORK_TIMEOUT_MS);
+
+    if (!res.ok) {
+      return {
+        ok: false,
+        available: false,
+        remote_sync_allowed: false,
+        local_static_mode: false,
+        reason: 'capabilities-http-' + res.status,
+        status: res.status,
+        api_base: base,
+      };
+    }
+
+    const body = await res.json().catch(() => ({}));
+    return {
+      ok: body.ok !== false,
+      available: body.available !== false,
+      remote_sync_allowed: body.remote_sync_allowed !== false,
+      local_static_mode: !!body.local_static_mode,
+      reason: body.reason || '',
+      status: res.status,
+      body,
+      api_base: base,
+    };
   }
 
   async function _readCapabilities() {
     const now = _now();
     if (_capabilities && (now - _capabilitiesCheckedAt) < 15000) return _capabilities;
 
+    const candidates = _dedupeBases(_candidateApiBases());
     let lastFailure = null;
-    for (const base of _apiBases()) {
+
+    for (const base of candidates) {
       try {
-        const res = await _fetchWithTimeout(_apiUrl(API_CAPABILITIES_URL, base), {
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          cache: 'no-store',
-        }, NETWORK_TIMEOUT_MS);
-        if (!res.ok) {
-          lastFailure = {
-            ok: false,
-            available: false,
-            remote_sync_allowed: false,
-            local_static_mode: false,
-            reason: 'capabilities-http-' + res.status,
-            status: res.status,
-            api_base: base,
-          };
-          continue;
+        const probed = await _probeCapabilities(base);
+        if (probed.ok && probed.available !== false && probed.remote_sync_allowed !== false) {
+          _capabilities = probed;
+          _resolvedApiBase = base;
+          _capabilitiesCheckedAt = now;
+          return _capabilities;
         }
-        const body = await res.json().catch(() => ({}));
-        _capabilities = {
-          ok: body.ok !== false,
-          available: body.available !== false,
-          remote_sync_allowed: body.remote_sync_allowed !== false,
-          local_static_mode: !!body.local_static_mode,
-          reason: body.reason || '',
-          status: res.status,
-          api_base: base,
-          body,
-        };
-        _capabilitiesCheckedAt = now;
-        return _capabilities;
+        lastFailure = probed;
       } catch (err) {
         lastFailure = {
           ok: false,
@@ -293,14 +280,16 @@
         };
       }
     }
+
     _capabilities = lastFailure || {
       ok: false,
       available: false,
       remote_sync_allowed: false,
       local_static_mode: false,
       reason: 'capabilities-fetch-failed',
-      api_base: _apiBase(),
+      api_base: candidates[0] || '',
     };
+    _resolvedApiBase = _capabilities.api_base || (candidates[0] || '');
     _capabilitiesCheckedAt = now;
     return _capabilities;
   }
@@ -333,23 +322,15 @@
 
   async function _countPending(db) {
     const store = _tx(db, 'readonly');
-    const scanAllStatuses = async () => {
-      const all = await _reqToPromise(store.getAll());
-      return (all || []).filter((e) => e && _isPendingStatus(e.status)).length;
-    };
-
+    // Prefer index if exists
     if (store.indexNames && store.indexNames.contains('status')) {
-      try {
-        const idx = store.index('status');
-        let total = 0;
-        for (const status of ['PENDING', 'PENDENTE', 'SENDING', 'OPEN', 'QUEUED', 'IN_FLIGHT', 'PROCESSING']) {
-          total += Number(await _reqToPromise(idx.count(status))) || 0;
-        }
-        if (total > 0) return total;
-      } catch (_) {}
+      const idx = store.index('status');
+      const countReq = idx.count('PENDING');
+      return await _reqToPromise(countReq);
     }
-
-    return scanAllStatuses();
+    // Fallback: scan (slower but safe)
+    const all = await _reqToPromise(store.getAll());
+    return (all || []).filter(e => e && e.status === 'PENDING').length;
   }
 
   async function _refreshPendingStats(db = null) {
@@ -377,30 +358,16 @@
     if (store.indexNames && store.indexNames.contains('status')) {
       const idx = store.index('status');
       const out = [];
-      const appendStatus = async (status) => {
-        if (out.length >= limit) return;
-        await new Promise((resolve, reject) => {
-          const req = idx.openCursor(status);
-          req.onerror = () => reject(req.error || new Error('cursor failed'));
-          req.onsuccess = (ev) => {
-            const cursor = ev.target.result;
-            if (!cursor || out.length >= limit) return resolve();
-            out.push(cursor.value);
-            cursor.continue();
-          };
-        });
-      };
-
-      try {
-        for (const status of ['PENDING', 'PENDENTE', 'OPEN', 'QUEUED', 'SENDING', 'IN_FLIGHT', 'PROCESSING']) {
-          await appendStatus(status);
-          if (out.length >= limit) break;
-        }
-        if (out.length) {
-          out.sort((a, b) => String(a && a.created_at || '').localeCompare(String(b && b.created_at || '')) || String(a && a.id || '').localeCompare(String(b && b.id || '')));
-          return out.slice(0, limit);
-        }
-      } catch (_) {}
+      return await new Promise((resolve, reject) => {
+        const req = idx.openCursor('PENDING');
+        req.onerror = () => reject(req.error || new Error('cursor failed'));
+        req.onsuccess = (ev) => {
+          const cursor = ev.target.result;
+          if (!cursor || out.length >= limit) return resolve(out);
+          out.push(cursor.value);
+          cursor.continue();
+        };
+      });
     }
 
     // Fallback: getAll + filter
@@ -509,33 +476,19 @@
     };
     if (syncToken) headers['X-VSC-Token'] = syncToken;
 
-    let lastErr = null;
-    for (const base of _apiBases()) {
-      try {
-        const res = await _fetchWithTimeout(_apiUrl('/api/sync/push', base), {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ operations: batch }),
-        }, NETWORK_TIMEOUT_MS);
+    const apiBase = (_capabilities && _capabilities.api_base) || _apiBase();
+    const res = await _fetchWithTimeout(_apiUrl('/api/sync/push', apiBase), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ operations: batch }),
+    }, NETWORK_TIMEOUT_MS);
 
-        if (!res.ok) {
-          const text = await res.text().catch(() => '');
-          const err = new Error(`sync/push failed ${res.status} ${text}`);
-          err.api_base = base;
-          throw err;
-        }
-
-        const json = await res.json().catch(() => ({ ok: true }));
-        if (_capabilities) _capabilities.api_base = base;
-        return json;
-      } catch (err) {
-        lastErr = err;
-        const msg = String(err && (err.message || err) || err);
-        const shouldTryNext = msg.includes('network_timeout_') || msg.includes('Failed to fetch') || msg.includes('fetch');
-        if (!shouldTryNext) break;
-      }
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`sync/push failed ${res.status} ${text}`);
     }
-    throw lastErr || new Error('sync/push failed');
+
+    return await res.json().catch(() => ({ ok: true }));
   }
 
   async function _pushBatchLegacyOutbox(batch) {
@@ -552,37 +505,22 @@
         payload: ev.payload,
         op_id: ev.op_id,
       };
-
-      let delivered = false;
-      let lastErr = null;
-      for (const base of _apiBases()) {
-        try {
-          const res = await _fetchWithTimeout(_apiUrl('/api/outbox', base), {
-            method: 'POST',
-            headers: (() => { const h = {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-              'X-VSC-Tenant': tenant,
-              'X-VSC-User': userLabel,
-              'X-VSC-Client-Session': clientSession,
-            }; if (syncToken) h['X-VSC-Token'] = syncToken; return h; })(),
-            body: JSON.stringify(body),
-          }, NETWORK_TIMEOUT_MS);
-          if (!res.ok) {
-            const text = await res.text().catch(() => '');
-            throw new Error(`outbox failed ${res.status} ${text}`);
-          }
-          delivered = true;
-          if (_capabilities) _capabilities.api_base = base;
-          break;
-        } catch (err) {
-          lastErr = err;
-          const msg = String(err && (err.message || err) || err);
-          const shouldTryNext = msg.includes('network_timeout_') || msg.includes('Failed to fetch') || msg.includes('fetch');
-          if (!shouldTryNext) break;
-        }
+      const apiBase = (_capabilities && _capabilities.api_base) || _apiBase();
+      const res = await _fetchWithTimeout(_apiUrl('/api/outbox', apiBase), {
+        method: 'POST',
+        headers: (() => { const h = {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'X-VSC-Tenant': tenant,
+          'X-VSC-User': userLabel,
+          'X-VSC-Client-Session': clientSession,
+        }; if (syncToken) h['X-VSC-Token'] = syncToken; return h; })(),
+        body: JSON.stringify(body),
+      }, NETWORK_TIMEOUT_MS);
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`outbox failed ${res.status} ${text}`);
       }
-      if (!delivered) throw lastErr || new Error('outbox failed');
     }
     return { ok: true };
   }
@@ -792,6 +730,7 @@
         pending: Number(_stats.pending || 0) || 0,
         total_open: Number(_stats.pending || 0) || 0,
         api_base: _apiBase(),
+        sync_target_mode: _getSyncTargetMode() || (_isWranglerDev() ? 'remote' : 'auto'),
         sent: Number(_stats.sent || 0) || 0,
         acked: Number(_stats.acked || 0) || 0,
         last_batch: Number(_stats.lastBatchSize || 0) || 0,
