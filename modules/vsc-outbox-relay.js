@@ -746,6 +746,52 @@
 
   window.VSC_RELAY = VSC_RELAY;
 
-  // Auto-start desabilitado: sincronização somente por clique manual.
+  function _safeStart(reason = 'boot') {
+    try {
+      if (!_enabled || _running) return false;
+      VSC_RELAY.start();
+      try { console.info('[VSC_RELAY] iniciado', { reason }); } catch (_) {}
+      return true;
+    } catch (err) {
+      _lastError = err;
+      try { console.warn('[VSC_RELAY] falha ao iniciar', { reason, error: String(err && err.message || err || 'relay_start_failed') }); } catch (_) {}
+      return false;
+    }
+  }
+
+  function _installAutoStart() {
+    const boot = () => {
+      _refreshPendingStats().catch(() => {});
+      _safeStart('boot');
+    };
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', boot, { once: true });
+    } else {
+      boot();
+    }
+
+    window.addEventListener('online', () => {
+      _capabilities = null;
+      _capabilitiesCheckedAt = 0;
+      _safeStart('online');
+    });
+
+    window.addEventListener('focus', () => {
+      _safeStart('focus');
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) _safeStart('visibility');
+    });
+
+    setInterval(() => {
+      if (!_enabled) return;
+      if (_running) return;
+      _safeStart('watchdog');
+    }, Math.max(IDLE_TICK_MS, 30000));
+  }
+
+  _installAutoStart();
 
 })();

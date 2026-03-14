@@ -10,7 +10,7 @@ function corsHeaders(request) {
   const origin = request?.headers?.get('Origin') || '';
   if (/^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin)) return { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
   if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) return { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
-  return { 'Access-Control-Allow-Origin': '*' };
+  return { 'Access-Control-Allow-Origin': 'https://app.vetsystemcontrol.com.br', 'Access-Control-Allow-Credentials': 'false', Vary: 'Origin' };
 }
 
 function json(data, status = 200, request = null) {
@@ -21,7 +21,7 @@ function json(data, status = 200, request = null) {
 }
 
 function getBucket(env) {
-  return env?.BACKUPS_BUCKET || null;
+  return env?.R2 || env?.BACKUPS_BUCKET || null;
 }
 
 function getTenantCandidates(request) {
@@ -178,7 +178,7 @@ export async function onRequest(context) {
       headers: {
         ...corsHeaders(request),
         'access-control-allow-methods': 'GET, POST, OPTIONS',
-        'access-control-allow-headers': 'Content-Type, X-VSC-Tenant, X-VSC-User, X-VSC-Token, X-Tenant',
+        'access-control-allow-headers': 'Content-Type, Accept, Authorization, Origin, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token, X-VSC-Client-Session, X-Tenant',
         'access-control-max-age': '86400',
         'cache-control': 'no-store',
       },

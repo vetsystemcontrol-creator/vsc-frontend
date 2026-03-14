@@ -58,6 +58,37 @@
     );
   }
 
+  function _getUserLabel() {
+    try {
+      const raw = localStorage.getItem('vsc_user') || sessionStorage.getItem('vsc_user') || '';
+      if (!raw) return '';
+      try {
+        const parsed = JSON.parse(raw);
+        return String((parsed && (parsed.username || parsed.nome || parsed.name || parsed.id || parsed.email)) || '').trim().slice(0, 120);
+      } catch (_) {
+        return String(raw || '').trim().slice(0, 120);
+      }
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function _getClientSession() {
+    try {
+      return String(localStorage.getItem('vsc_session_id') || sessionStorage.getItem('vsc_session_id') || '').trim().slice(0, 120);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function _getSyncToken() {
+    try {
+      return String(localStorage.getItem('vsc_local_token') || sessionStorage.getItem('vsc_local_token') || localStorage.getItem('vsc_token') || sessionStorage.getItem('vsc_token') || '').trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
   function _openDB() {
     return new Promise((resolve, reject) => {
       try {
@@ -151,10 +182,19 @@
 
     const res = await fetch(_apiUrl('/api/attachments?action=upload'), {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-VSC-Tenant': _getTenant(),
-      },
+      headers: (() => {
+        const headers = {
+          'Content-Type': 'application/json',
+          'X-VSC-Tenant': _getTenant(),
+        };
+        const userLabel = _getUserLabel();
+        const sessionId = _getClientSession();
+        const syncToken = _getSyncToken();
+        if (userLabel) headers['X-VSC-User'] = userLabel;
+        if (sessionId) headers['X-VSC-Client-Session'] = sessionId;
+        if (syncToken) headers['X-VSC-Token'] = syncToken;
+        return headers;
+      })(),
       body: JSON.stringify({
         atendimento_id: item.atendimento_id,
         attachment_id:  item.attachment_id,

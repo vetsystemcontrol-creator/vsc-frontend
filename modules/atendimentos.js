@@ -743,11 +743,34 @@ async function loadEmpresaSnapshot(db){
 
 
   function getAttachmentPrintBaseUrls(){
+    const bases = [];
     const isLocalHost = location.hostname === "127.0.0.1" || location.hostname === "localhost";
-    if(isLocalHost){
-      return ["https://app.vetsystemcontrol.com.br"];
-    }
-    return [""];
+    if(!isLocalHost) bases.push("");
+    bases.push("https://app.vetsystemcontrol.com.br");
+    bases.push("https://api.vetsystemcontrol.com.br");
+    return Array.from(new Set(bases.filter(v => typeof v === 'string')));
+  }
+
+  function getAttachmentRequestHeaders(tenant){
+    const headers = { "X-VSC-Tenant": String(tenant || "tenant-default") };
+    try{
+      const rawUser = localStorage.getItem('vsc_user') || sessionStorage.getItem('vsc_user') || '';
+      let userLabel = '';
+      if(rawUser){
+        try{
+          const parsed = JSON.parse(rawUser);
+          userLabel = String((parsed && (parsed.username || parsed.nome || parsed.name || parsed.id || parsed.email)) || '').trim();
+        }catch(_){
+          userLabel = String(rawUser || '').trim();
+        }
+      }
+      const sessionId = String(localStorage.getItem('vsc_session_id') || sessionStorage.getItem('vsc_session_id') || '').trim();
+      const syncToken = String(localStorage.getItem('vsc_local_token') || sessionStorage.getItem('vsc_local_token') || localStorage.getItem('vsc_token') || sessionStorage.getItem('vsc_token') || '').trim();
+      if(userLabel) headers["X-VSC-User"] = userLabel;
+      if(sessionId) headers["X-VSC-Client-Session"] = sessionId;
+      if(syncToken) headers["X-VSC-Token"] = syncToken;
+    }catch(_){ }
+    return headers;
   }
 
   async function blobToDataUrl(blob){
@@ -899,7 +922,7 @@ async function loadEmpresaSnapshot(db){
           try{
             const currentBase = url.startsWith('https://') ? new URL(url).origin : '';
             const res = await fetch(url, {
-              headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
+              headers: getAttachmentRequestHeaders(tenant),
               credentials: currentBase ? "omit" : "include"
             });
             if(!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -916,7 +939,7 @@ async function loadEmpresaSnapshot(db){
             try{
               const listUrl = `${currentBase}/api/attachments?action=list&atendimento_id=${encodeURIComponent(atendimentoId)}`;
               const listRes = await fetch(listUrl, {
-                headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
+                headers: getAttachmentRequestHeaders(tenant),
                 credentials: currentBase ? "omit" : "include"
               });
               if(!listRes.ok) continue;
@@ -927,7 +950,7 @@ async function loadEmpresaSnapshot(db){
               if(!matched) continue;
               const dl = `${currentBase}/api/attachments?action=download&disposition=inline&attachment_id=${encodeURIComponent(attId)}`;
               const res = await fetch(dl, {
-                headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
+                headers: getAttachmentRequestHeaders(tenant),
                 credentials: currentBase ? "omit" : "include"
               });
               if(!res.ok) continue;
