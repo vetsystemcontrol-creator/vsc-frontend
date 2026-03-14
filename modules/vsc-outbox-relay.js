@@ -234,9 +234,21 @@
     try {
       const capabilitiesUrl = _withTenantParam(_apiUrl(API_CAPABILITIES_URL));
       const crossOrigin = _isCrossOriginUrl(capabilitiesUrl);
+      const tenant = _getTenant();
+      const userLabel = _getUserLabel();
+      const clientSession = _getClientSession();
+      const syncToken = _getSyncToken();
+      const headers = {
+        'Accept': 'application/json',
+        'X-VSC-Tenant': tenant,
+        'X-VSC-User': userLabel,
+        'X-VSC-Client-Session': clientSession,
+      };
+      if (syncToken) headers['X-VSC-Token'] = syncToken;
+
       const res = await _fetchWithTimeout(capabilitiesUrl, {
         method: 'GET',
-        headers: { 'Accept': 'application/json' },
+        headers,
         cache: 'no-store',
         credentials: crossOrigin ? 'omit' : 'include',
       }, NETWORK_TIMEOUT_MS);
@@ -251,13 +263,18 @@
         };
       } else {
         const body = await res.json().catch(() => ({}));
+        const authorized = body.authorized !== false;
         _capabilities = {
-          ok: body.ok !== false,
+          ok: body.ok !== false && authorized,
           available: body.available !== false,
-          remote_sync_allowed: body.remote_sync_allowed !== false,
+          remote_sync_allowed: body.remote_sync_allowed !== false && authorized,
           local_static_mode: !!body.local_static_mode,
-          reason: body.reason || '',
+          reason: body.reason || body.auth_error || '',
           status: res.status,
+          authorized,
+          auth_required: !!body.auth_required,
+          auth_mode: body.auth_mode || null,
+          degraded_auth: !!body.degraded_auth,
           body,
         };
       }

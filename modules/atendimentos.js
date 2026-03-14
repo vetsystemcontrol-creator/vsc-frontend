@@ -357,7 +357,6 @@
         mime,
         size: f.size || 0,
         dataUrl,
-        data_base64: dataUrl,
         descricao: "", // SGQT: descrição clínica (somente fotos)
         created_at: isoNow()
       });
@@ -495,16 +494,135 @@ function wireAttachListInteractions(db){
     return u8;
   }
 
+  function resolveEmpresaNome(src){
+    if(!src || typeof src !== "object") return "";
+    return String(
+      src.nome_fantasia ||
+      src.fantasia ||
+      src.razao_social ||
+      src.nome ||
+      src.empresa_nome ||
+      src.company_name ||
+      ""
+    ).trim();
+  }
+
+  function resolveEmpresaLogoA(src){
+    if(!src || typeof src !== "object") return "";
+    return String(
+      src.__logoA ||
+      src.logoA ||
+      src.logo_a ||
+      src.logoADataUrl ||
+      src.logoADataURL ||
+      src.logo_a_dataurl ||
+      src.logo_a_dataUrl ||
+      src.logo_a_dataURL ||
+      src.logoUrl ||
+      src.logo_url ||
+      src.empresa_logo_a ||
+      src.logo ||
+      ""
+    ).trim();
+  }
+
+  function resolveEmpresaLogoB(src){
+    if(!src || typeof src !== "object") return "";
+    return String(
+      src.__logoB ||
+      src.logoB ||
+      src.logo_b ||
+      src.logoBDataUrl ||
+      src.logoBDataURL ||
+      src.logo_b_dataurl ||
+      src.logo_b_dataUrl ||
+      src.logo_b_dataURL ||
+      src.logoBUrl ||
+      src.logo_url_b ||
+      ""
+    ).trim();
+  }
+
+  function tryParseJsonLoose(value){
+    if(typeof value !== "string") return null;
+    const text = value.trim();
+    if(!text || !/^[\[{]/.test(text)) return null;
+    try{ return JSON.parse(text); }catch(_){ return null; }
+  }
+
+  function isLikelyDataUrl(value){
+    return typeof value === "string" && /^data:/i.test(value.trim());
+  }
+
+  function deepFindEmpresaCandidate(input, depth){
+    depth = Number(depth || 0);
+    if(depth > 6 || !input) return null;
+    if(Array.isArray(input)){
+      for(const item of input){
+        const found = deepFindEmpresaCandidate(item, depth + 1);
+        if(found) return found;
+      }
+      return null;
+    }
+    if(typeof input !== "object") return null;
+
+    const nome = resolveEmpresaNome(input);
+    const logoA = resolveEmpresaLogoA(input);
+    const logoB = resolveEmpresaLogoB(input);
+    const cnpj = String(input.cnpj || input.doc || "").trim();
+    const email = String(input.email || input.email_comercial || "").trim();
+    const telefone = String(input.telefone || input.celular || input.whatsapp || "").trim();
+    const pix = String(input.pix_chave || input.chave_pix || input.pixKey || input.pix || "").trim();
+    if(nome || logoA || logoB || cnpj || email || telefone || pix){
+      return input;
+    }
+
+    const preferredKeys = [
+      'empresa','company','dados_empresa','empresa_snapshot','snapshot',
+      'payload','value','valor','data','content','json','meta','branding'
+    ];
+    for(const key of preferredKeys){
+      if(Object.prototype.hasOwnProperty.call(input, key)){
+        const found = deepFindEmpresaCandidate(input[key], depth + 1);
+        if(found) return found;
+      }
+    }
+
+    for(const key of Object.keys(input)){
+      const value = input[key];
+      if(typeof value === 'string'){
+        const parsed = tryParseJsonLoose(value);
+        if(parsed){
+          const found = deepFindEmpresaCandidate(parsed, depth + 1);
+          if(found) return found;
+        }
+      }else if(value && typeof value === 'object'){
+        const found = deepFindEmpresaCandidate(value, depth + 1);
+        if(found) return found;
+      }
+    }
+    return null;
+  }
+
+  function normalizeInlineAttachmentData(att){
+    if(!att || typeof att !== "object") return "";
+    const direct = att.dataUrl || att.dataURL || att.data_base64 || att.base64 || att.file_base64 || att.blob_base64 || "";
+    if(!direct) return "";
+    const text = String(direct).trim();
+    if(!text) return "";
+    if(/^data:/i.test(text)) return text;
+    const mime = String(att.mime || att.mime_type || 'application/octet-stream').trim() || 'application/octet-stream';
+    return `data:${mime};base64,${text.replace(/^base64,/i,'')}`;
+  }
+
   async function getEmpresaLogoAFromLocalStorage(){
     try{
-      // Prioridade: snapshot JSON da empresa (quando existe)
       const j = localStorage.getItem("vsc_empresa_v1") || localStorage.getItem("VSC_EMPRESA_V1") || "";
       if(j){
         const o = JSON.parse(j);
-        const a = o.__logoA || o.logoA || o.logo_a || o.logo_a_dataurl || o.logo_a_dataUrl || o.logo_a_dataURL || o.logo_data_url || o.logoDataUrl || o.logoCliente || o.logo_cliente;
-        if(a) return String(a);
+        const a = resolveEmpresaLogoA(o);
+        if(a) return a;
       }
-      // Alternativos
       const direct = localStorage.getItem("vsc_empresa_logoA") || localStorage.getItem("vsc_empresa_logo_a") || localStorage.getItem("VSC_EMPRESA_LOGO_A") || "";
       if(direct) return String(direct);
       return "";
@@ -513,125 +631,103 @@ function wireAttachListInteractions(db){
     }
   }
 
-function extractAttachmentDataUrl(att){
-    if(!att || typeof att !== "object") return "";
-    const candidates = [
-      att.dataUrl,
-      att.dataURL,
-      att.data_base64,
-      att.base64,
-      att.base64_data,
-      att.content_base64,
-      att.file_base64,
-      att.inline_data,
-      att.payload,
-      att.blob_data,
-      att.file_data
-    ];
-    for(const value of candidates){
-      if(typeof value !== "string") continue;
-      const trimmed = value.trim();
-      if(!trimmed) continue;
-      if(/^data:[^;]+;base64,/i.test(trimmed)) return trimmed;
-      const mime = String(att.mime || att.mime_type || att.contentType || "application/octet-stream").trim() || "application/octet-stream";
-      if(/^[A-Za-z0-9+/=\s]+$/.test(trimmed) && trimmed.length > 64){
-        return `data:${mime};base64,${trimmed.replace(/\s+/g,"")}`;
-      }
-    }
-    return "";
-  }
-
-  function normalizeEmpresaLogoA(raw){
-    if(!raw || typeof raw !== "string") return "";
-    const s = raw.trim();
-    if(!/^data:image\//i.test(s)) return "";
-    return s;
-  }
-
 async function loadEmpresaSnapshot(db){
-    // tenta achar dados da empresa em stores comuns; fallback para vazio
-    const candidates = ["empresa_master","empresa","empresa_config","config_empresa"];
+    function normalizeEmpresaSnapshot(raw){
+      const base = deepFindEmpresaCandidate(raw, 0) || raw || {};
+      return Object.assign({}, (base && typeof base === 'object') ? base : {}, {
+        nome: resolveEmpresaNome(base),
+        razao_social: String(base?.razao_social || base?.nome || ""),
+        nome_fantasia: String(base?.nome_fantasia || base?.fantasia || base?.nome || ""),
+        cnpj: base?.cnpj || base?.doc || "",
+        endereco: base?.endereco || base?.endereco_completo || [base?.logradouro, base?.numero, base?.bairro, base?.cidade, base?.uf].filter(Boolean).join(' • '),
+        cidade: base?.cidade || "",
+        uf: base?.uf || "",
+        cep: base?.cep || "",
+        telefone: base?.telefone || base?.fone || base?.celular || base?.whatsapp || "",
+        email: base?.email || base?.email_comercial || "",
+        site: base?.site || "",
+        crmv: base?.crmv || "",
+        __logoA: resolveEmpresaLogoA(base),
+        __logoB: resolveEmpresaLogoB(base),
+        pix_tipo: base?.pix_tipo || base?.pixTipo || "",
+        pix_nome: base?.pix_nome || base?.pixNome || base?.favorecido_pix || "",
+        pix_chave: base?.pix_chave || base?.chave_pix || base?.pixKey || base?.pix || base?.pix_chave_copia_cola || "",
+        pix_chave_norm: base?.pix_chave_norm || ""
+      });
+    }
+
+    function hasEmpresaSignal(snap){
+      return !!(
+        snap && (
+          snap.nome || snap.razao_social || snap.nome_fantasia || snap.cnpj || snap.email ||
+          snap.telefone || snap.__logoA || snap.__logoB || snap.pix_chave
+        )
+      );
+    }
+
+    async function finishSnapshot(raw){
+      const snap = normalizeEmpresaSnapshot(raw);
+      if(!snap.__logoA) snap.__logoA = await getEmpresaLogoAFromLocalStorage();
+      if(!snap.pix_chave) snap.pix_chave = await getEmpresaPixFromLocalStorage();
+      return snap;
+    }
+
+    const candidates = ["empresa_master","empresa","empresa_config","config_empresa","sys_meta","config_params"];
     for(const st of candidates){
-      if(hasStore(db, st)){
-        const all = await idbGetAll(db, st);
-        const r = (Array.isArray(all) ? all : [])[0];
-        if(r) return {
-          nome: r.nome || r.razao_social || r.fantasia || "",
-          cnpj: r.cnpj || r.doc || "",
-          endereco: r.endereco || r.endereco_completo || "",
-          telefone: r.telefone || r.fone || "",
-          email: r.email || "",
-          // Logos (enterprise): tenta vários campos + localStorage (fonte canônica offline-first)
-          __logoA: normalizeEmpresaLogoA((r.__logoA || r.logoA || r.logo_a || r.logo_a_dataurl || r.logo_a_dataUrl || r.logo_a_dataURL || r.logo_data_url || r.logoDataUrl || r.logoCliente || r.logo_cliente || "")) || normalizeEmpresaLogoA(await getEmpresaLogoAFromLocalStorage()),
-          pix_chave: (r.pix_chave || r.chave_pix || r.pixKey || r.pix || r.pix_chave_copia_cola || "") || (await getEmpresaPixFromLocalStorage()),
-        };
-      }
-    }
-    // Fallback canônico: config_params (empresa.js persiste aqui via IDB)
-    if(hasStore(db,"config_params")){
-      const rows = await idbGetAll(db,"config_params");
-      function getKey(k){ const r = rows.find(x=>String(x.key||x.nome||x.id||"")===k); return r ? String(r.value||"") : ""; }
-
-      // Tenta ler o snapshot completo (salvo pelo empresa.js como JSON)
-      const snapRaw = getKey("vsc_empresa_v1");
-      if(snapRaw){
-        try{
-          const snap = JSON.parse(snapRaw);
-          if(snap && snap.nome){
-            const logoAKey = getKey("vsc_empresa_logo_a") || snap.__logoA || "";
-            const logoBKey = getKey("vsc_empresa_logo_b") || snap.__logoB || "";
-            return {
-              nome:     snap.nome || snap.razao_social || snap.fantasia || "",
-              cnpj:     snap.cnpj || "",
-              endereco: snap.endereco || "",
-              cidade:   snap.cidade || "",
-              uf:       snap.uf || "",
-              cep:      snap.cep || "",
-              telefone: snap.telefone || snap.celular || "",
-              email:    snap.email || "",
-              site:     snap.site || "",
-              crmv:     snap.crmv || "",
-              __logoA:  normalizeEmpresaLogoA(logoAKey) || normalizeEmpresaLogoA(await getEmpresaLogoAFromLocalStorage()),
-              __logoB:  logoBKey || "",
-              pix_tipo:       snap.pix_tipo || "",
-              pix_chave:      snap.pix_chave || (await getEmpresaPixFromLocalStorage()),
-              pix_chave_norm: snap.pix_chave_norm || "",
-              pix_nome:       snap.pix_nome || "",
-            };
-          }
-        }catch(_){}
-      }
-
-      // Fallback por chaves individuais legacy
-      return {
-        nome:     getKey("empresa_nome") || getKey("razao_social") || "",
-        cnpj:     getKey("empresa_cnpj") || getKey("cnpj") || "",
-        endereco: getKey("empresa_endereco") || getKey("endereco") || "",
-        telefone: getKey("empresa_telefone") || getKey("telefone") || "",
-        email:    getKey("empresa_email") || getKey("email") || "",
-        __logoA:  normalizeEmpresaLogoA(getKey("empresa_logo_a") || getKey("logo_a")) || normalizeEmpresaLogoA(await getEmpresaLogoAFromLocalStorage()),
-        pix_chave: getKey("pix_chave") || getKey("chave_pix") || getKey("pix") || (await getEmpresaPixFromLocalStorage()),
-      };
-    }
-    // Último recurso: só localStorage
-    const lsRaw = localStorage.getItem("vsc_empresa_v1");
-    if(lsRaw){
+      if(!hasStore(db, st)) continue;
       try{
-        const ls = JSON.parse(lsRaw);
-        if(ls && typeof ls === "object") return Object.assign({ __logoA:"", pix_chave:"" }, ls, { __logoA: normalizeEmpresaLogoA(ls.__logoA || ls.logoA || ls.logo_a || "") || normalizeEmpresaLogoA(await getEmpresaLogoAFromLocalStorage()) });
-      }catch(_){}
+        const all = await idbGetAll(db, st);
+        if(!Array.isArray(all) || !all.length) continue;
+        for(const row of all){
+          const snap = await finishSnapshot(row);
+          if(hasEmpresaSignal(snap)) return snap;
+          const parsedValue = tryParseJsonLoose(String(row?.value || row?.valor || row?.data || row?.payload || row?.json || row?.meta || ""));
+          if(parsedValue){
+            const parsedSnap = await finishSnapshot(parsedValue);
+            if(hasEmpresaSignal(parsedSnap)) return parsedSnap;
+          }
+        }
+      }catch(_){ }
     }
-    return { nome:"", cnpj:"", endereco:"", telefone:"", email:"" };
+
+    const localStoragePriorityKeys = [
+      "vsc_empresa_v1","VSC_EMPRESA_V1","erp_empresa","empresa","empresa_snapshot",
+      "empresa_dados","empresa_configurada_dados"
+    ];
+    for(const key of localStoragePriorityKeys){
+      try{
+        const raw = localStorage.getItem(key) || "";
+        if(!raw) continue;
+        const parsed = tryParseJsonLoose(raw);
+        if(!parsed) continue;
+        const snap = await finishSnapshot(parsed);
+        if(hasEmpresaSignal(snap)) return snap;
+      }catch(_){ }
+    }
+
+    try{
+      for(let i=0; i<localStorage.length; i++){
+        const key = localStorage.key(i);
+        if(!key) continue;
+        const raw = localStorage.getItem(key) || "";
+        const parsed = tryParseJsonLoose(raw);
+        if(!parsed) continue;
+        const snap = await finishSnapshot(parsed);
+        if(hasEmpresaSignal(snap)) return snap;
+      }
+    }catch(_){ }
+
+    return await finishSnapshot({ nome:"", razao_social:"", nome_fantasia:"", cnpj:"", endereco:"", telefone:"", email:"", __logoA:"", __logoB:"", pix_chave:"" });
   }
+
 
 
   function getAttachmentPrintBaseUrls(){
-    const bases = [];
-    if(location.hostname === "127.0.0.1" || location.hostname === "localhost"){
-      bases.push("https://app.vetsystemcontrol.com.br");
+    const isLocalHost = location.hostname === "127.0.0.1" || location.hostname === "localhost";
+    if(isLocalHost){
+      return ["https://app.vetsystemcontrol.com.br"];
     }
-    bases.push("");
-    return Array.from(new Set(bases));
+    return [""];
   }
 
   async function blobToDataUrl(blob){
@@ -643,74 +739,126 @@ async function loadEmpresaSnapshot(db){
     });
   }
 
-  async function hydrateAttachmentsForPrint(atendimento){
-    const src = Array.isArray(atendimento?.attachments) ? atendimento.attachments : [];
-    const hydrated = [];
-    const atendimentoId = atendimento?.id || atendimento?.atendimento_id || ATD.atendimento_id || "";
-    const tenant = (localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "tenant-default").trim() || "tenant-default";
-    const bases = getAttachmentPrintBaseUrls();
+  function mergeAttachmentLists(primary, secondary){
+    const out = [];
+    const seen = new Set();
+    const all = [Array.isArray(primary) ? primary : [], Array.isArray(secondary) ? secondary : []];
+    for(const list of all){
+      for(const item of list){
+        if(!item) continue;
+        const key = String(item.id || item.attachment_id || item.uuid || item.key || item.name || '').trim();
+        if(key && seen.has(key)) continue;
+        if(key) seen.add(key);
+        out.push(Object.assign({}, item));
+      }
+    }
+    return out;
+  }
 
-    for(const original of src){
-      const att = original ? Object.assign({}, original) : {};
-      att.dataUrl = extractAttachmentDataUrl(att);
-      if(att.dataUrl){ hydrated.push(att); continue; }
+  async function hydrateAttachmentFromLocalStores(db, atendimentoId, att){
+    const inline = normalizeInlineAttachmentData(att);
+    if(inline) return inline;
+
+    const currentList = Array.isArray(ATD.attachments) ? ATD.attachments : [];
+    const attId = String(att.id || att.attachment_id || att.uuid || att.key || '');
+    const byCurrent = currentList.find(x => x && String(x.id || x.attachment_id || x.uuid || x.key || '') === attId)
+      || currentList.find(x => x && String(x.name || '') === String(att.name || ''));
+    const currentInline = normalizeInlineAttachmentData(byCurrent);
+    if(currentInline) return currentInline;
+
+    if(db && hasStore(db, 'attachments_queue')){
+      try{
+        const rows = await idbGetAll(db, 'attachments_queue');
+        const row = (rows || []).find(x => x && String(x.attachment_id || '') === attId)
+          || (rows || []).find(x => x && String(x.filename || '') === String(att.name || ''));
+        const rowInline = normalizeInlineAttachmentData(row);
+        if(rowInline) return rowInline;
+      }catch(_){ }
+    }
+
+    if(db && atendimentoId && hasStore(db, 'atendimentos_master')){
+      try{
+        const rec = await idbGet(db, 'atendimentos_master', atendimentoId);
+        const rows = Array.isArray(rec && rec.attachments) ? rec.attachments : [];
+        const row = rows.find(x => x && String(x.id || x.attachment_id || x.uuid || x.key || '') === attId)
+          || rows.find(x => x && String(x.name || '') === String(att.name || ''));
+        const rowInline = normalizeInlineAttachmentData(row);
+        if(rowInline) return rowInline;
+      }catch(_){ }
+    }
+
+    return '';
+  }
+
+  async function hydrateAttachmentsForPrint(db, atendimento){
+    if(!atendimento || !Array.isArray(atendimento.attachments) || !atendimento.attachments.length) return atendimento;
+    const tenant = localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "tenant-default";
+    const atendimentoId = atendimento.atendimento_id || atendimento.id || "";
+    if(!atendimentoId) return atendimento;
+
+    const bases = getAttachmentPrintBaseUrls();
+    const hydrated = [];
+    for(const src of atendimento.attachments){
+      const att = src ? Object.assign({}, src) : src;
+      if(!att){ hydrated.push(att); continue; }
+
+      const localInline = await hydrateAttachmentFromLocalStores(db, atendimentoId, att);
+      if(localInline){
+        att.dataUrl = localInline;
+        hydrated.push(att);
+        continue;
+      }
+
+      const possibleUrls = [
+        att.url,
+        att.download_url,
+        att.downloadUrl,
+        att.r2_url,
+        att.file_url,
+        att.src
+      ].filter(Boolean);
 
       let done = false;
 
-      if(!done && Array.isArray(ATD?.attachments)){
-        const localMatch = ATD.attachments.find((item)=> item && String(item.id || "") === String(att.id || ""));
-        const localDataUrl = extractAttachmentDataUrl(localMatch);
-        if(localDataUrl){
-          att.dataUrl = localDataUrl;
-          att.mime = att.mime || localMatch.mime || localMatch.mime_type || "";
-          done = true;
-        }
-      }
-
-      if(!done && window.VSC_ATTACHMENTS_RELAY && typeof window.VSC_ATTACHMENTS_RELAY.status === "function"){
+      for(const rawUrl of possibleUrls){
         try{
-          const db = await openDb();
-          if(db.objectStoreNames.contains("attachments_queue")){
-            const tx = db.transaction("attachments_queue", "readonly");
-            const st = tx.objectStore("attachments_queue");
-            const qid = `att_${String(atendimentoId)}_${String(att.id || "")}`;
-            const queued = await new Promise((resolve,reject)=>{ const req = st.get(qid); req.onsuccess=()=>resolve(req.result||null); req.onerror=()=>reject(req.error); });
-            try{ db.close(); }catch(_){ }
-            const queuedDataUrl = extractAttachmentDataUrl(queued || {});
-            if(queuedDataUrl){
-              att.dataUrl = queuedDataUrl;
-              att.mime = att.mime || queued.mime_type || queued.mime || "";
-              done = true;
-            }
-          }
-        }catch(_queueErr){}
+          const url = String(rawUrl);
+          if((location.hostname === '127.0.0.1' || location.hostname === 'localhost') && /^\/api\/attachments/i.test(url)) continue;
+          const res = await fetch(url, { credentials:"include" });
+          if(!res.ok) throw new Error(`HTTP ${res.status}`);
+          const blob = await res.blob();
+          att.dataUrl = await blobToDataUrl(blob);
+          att.mime = att.mime || blob.type || "";
+          done = true;
+          break;
+        }catch(_err){}
       }
 
-      if(!done && att.synced_to_r2 && att.id){
-        for(const base of bases){
-          const candidates = [];
-          candidates.push(`${base}/api/attachments?action=download&disposition=inline&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(att.id)}`);
-          candidates.push(`${base}/api/attachments?action=download&disposition=inline&attachment_id=${encodeURIComponent(att.id)}`);
-          candidates.push(`${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(att.id)}`);
-          candidates.push(`${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&attachment_id=${encodeURIComponent(att.id)}`);
-
-          for(const url of candidates){
-            try{
-              const res = await fetch(url, {
-                method: "GET",
-                headers: { "X-VSC-Tenant": tenant, "Accept": "application/octet-stream,application/pdf,image/*,*/*" },
-                cache: "no-store",
-                credentials: base ? "omit" : "include"
-              });
-              if(!res.ok) throw new Error(`HTTP ${res.status}`);
-              const blob = await res.blob();
-              att.dataUrl = await blobToDataUrl(blob);
-              att.mime = att.mime || blob.type || "";
-              done = true;
-              break;
-            }catch(_err){}
+      const attId = att.id || att.attachment_id || att.uuid || att.key || "";
+      if(!done && attId){
+        const candidates = [];
+        for(const currentBase of bases){
+          candidates.push(`${currentBase}/api/attachments?action=download&disposition=inline&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(attId)}`);
+          candidates.push(`${currentBase}/api/attachments?action=download&disposition=inline&attachment_id=${encodeURIComponent(attId)}`);
+          if(tenant){
+            candidates.push(`${currentBase}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(attId)}`);
+            candidates.push(`${currentBase}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&attachment_id=${encodeURIComponent(attId)}`);
           }
-          if(done) break;
+        }
+        for(const url of candidates){
+          try{
+            const currentBase = url.startsWith('https://') ? new URL(url).origin : '';
+            const res = await fetch(url, {
+              headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
+              credentials: currentBase ? "omit" : "include"
+            });
+            if(!res.ok) throw new Error(`HTTP ${res.status}`);
+            const blob = await res.blob();
+            att.dataUrl = await blobToDataUrl(blob);
+            att.mime = att.mime || blob.type || "";
+            done = true;
+            break;
+          }catch(_err){}
         }
       }
 
@@ -723,6 +871,7 @@ async function loadEmpresaSnapshot(db){
     atendimento.attachments = hydrated;
     return atendimento;
   }
+
 
   async function buildPrintData(db){
     // garantir persistência
@@ -740,8 +889,11 @@ async function loadEmpresaSnapshot(db){
       ? (await Promise.all(rec.animal_ids.map(id => idbGet(db,"animais_master", id)))).filter(Boolean)
       : [];
 
-    const atendimentoPrint = await hydrateAttachmentsForPrint(Object.assign({}, rec, {
-      attachments: Array.isArray(rec.attachments) ? rec.attachments.map(a => a ? Object.assign({}, a) : a) : []
+    const atendimentoPrint = await hydrateAttachmentsForPrint(db, Object.assign({}, rec, {
+      attachments: mergeAttachmentLists(
+        Array.isArray(ATD.attachments) ? ATD.attachments : [],
+        Array.isArray(rec.attachments) ? rec.attachments : []
+      )
     }));
 
     return { empresa, cliente, animais, atendimento: atendimentoPrint, gerado_em: isoNow() };
@@ -972,9 +1124,9 @@ function openPrintWindowClient(payload, docType, opts){
 
   const R = payload || {};
   const empresa = R.empresa || {};
-    const logoA = normalizeEmpresaLogoA(empresa.__logoA || empresa.logoA || empresa.logo_a || empresa.logo_a_dataurl || empresa.logo_a_dataUrl || empresa.logo_a_dataURL || empresa.logo_data_url || empresa.logoDataUrl || empresa.logoCliente || empresa.logo_cliente || "");
+  const logoA = resolveEmpresaLogoA(empresa) || "";
+  const empresaNome = resolveEmpresaNome(empresa) || "Empresa";
   const pixKey = empresa.pix_chave || empresa.chave_pix || empresa.pixKey || empresa.pix || empresa.pix_chave_copia_cola || "";
-  const logoB = empresa.__logoB || empresa.logoB || empresa.logo_b || empresa.logo_b_dataurl || empresa.logo_b_dataUrl || empresa.logo_b_dataURL || "";
   const atd = R.atendimento || {};
   const cli = R.cliente || {};
   const animais = Array.isArray(R.animais) ? R.animais : [];
@@ -1111,9 +1263,10 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 
   const attHtml = ((docType === "clinico") || (docType === "clinico_financeiro")) ? (
     atts.length ? atts.map((a, idx)=>{
-      const mime = String(a.mime || a.mime_type || "").toLowerCase();
-      const isPdf = mime === "application/pdf" || /\.pdf$/i.test(String(a.name||""));
-      const name = esc(a.name || ("Anexo " + (idx+1)));
+      const mime = String(a.mime || a.mime_type || a.contentType || a.type || "").toLowerCase();
+      const rawName = a.name || a.nome || a.filename || a.file_name || a.originalname || a.original_name || ("Anexo " + (idx+1));
+      const isPdf = mime === "application/pdf" || /\.pdf(?:$|\?)/i.test(String(rawName||""));
+      const name = esc(rawName);
       const hasData = !!a.dataUrl;
       const sizeKb = a.size ? Math.round(a.size/1024) + " KB" : "";
       const desc = esc(a.descricao || a.description || a.desc || "—");
@@ -1184,9 +1337,9 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         systemLogoSrc: location.origin + '/assets/brand/vsc-logo-horizontal.png',
         systemLogoFallback: '<div class="kado-fallback-system">Vet System Control</div>',
         companyLogoHtml: logoA
-          ? `<img class="kado-company-logo" src="${logoA}" alt="Logo da empresa"/>`
-          : `<div class="kado-company-logo-fallback">${SYSTEM_LOGO_SVG}</div>`,
-        companyName: esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa"),
+          ? `<img class="kado-company-logo" src="${logoA}" alt="Logo A da empresa"/>`
+          : `<div class="kado-company-logo-fallback"></div>`,
+        companyName: esc(empresaNome),
         companyMetaHtml: [
           empresa.cnpj ? `<div>CNPJ: ${esc(empresa.cnpj)}</div>` : "",
           empresa.email ? `<div>${esc(empresa.email)}</div>` : "",
@@ -4295,7 +4448,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
               size: a.size || 0,
               descricao: a.descricao || "",
               created_at: a.created_at || "",
-              synced_to_r2: true
+              synced_to_r2: !!a.synced_to_r2
               // dataUrl removido intencionalmente
             })),
             __origin: "UI_EDIT"
@@ -4309,23 +4462,19 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           );
         }
 
-        // Envia attachments com dataUrl diretamente para R2 e mantém fila resiliente offline-first
+        // Envia attachments com dataUrl diretamente para R2
         const BASE_R2 = (location.hostname === "127.0.0.1" || location.hostname === "localhost")
           ? "https://app.vetsystemcontrol.com.br" : "";
         const tenant = localStorage.getItem("vsc_tenant") || "tenant-default";
         for (const att of (payload.attachments || [])) {
-          if (!att || !att.id) continue;
-          const localDataUrl = extractAttachmentDataUrl(att);
-          if (!localDataUrl) continue;
-
-          if (window.VSC_ATTACHMENTS_RELAY && typeof window.VSC_ATTACHMENTS_RELAY.enqueue === "function") {
-            try {
-              await window.VSC_ATTACHMENTS_RELAY.enqueue(payload.id, Object.assign({}, att, { dataUrl: localDataUrl }));
-            } catch (relayErr) {
-              console.warn("[ATD] enqueue relay falhou:", att.name, relayErr);
+          if (!att || !att.id || !att.dataUrl) continue;
+          try{
+            if (window.VSC_ATTACHMENTS_RELAY && typeof window.VSC_ATTACHMENTS_RELAY.enqueue === "function") {
+              await window.VSC_ATTACHMENTS_RELAY.enqueue(String(payload.id), att);
             }
+          }catch(_queueErr){
+            console.warn("[ATD] queue attachment warn:", att.name, _queueErr);
           }
-
           fetch(`${BASE_R2}/api/attachments?action=upload`, {
             method: "POST",
             headers: { "Content-Type": "application/json", "X-VSC-Tenant": tenant },
@@ -4334,13 +4483,24 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
               attachment_id: att.id,
               filename: att.name || att.id,
               mime_type: att.mime || "application/octet-stream",
-              data_base64: localDataUrl,
+              data_base64: att.dataUrl,
               descricao: att.descricao || "",
               created_at: att.created_at || isoNow()
             })
-          }).then(r => {
-            if (!r.ok) console.warn("[ATD] R2 upload falhou:", att.name, r.status);
-            else console.log("[ATD] R2 upload ok:", att.name);
+          }).then(async r => {
+            if (!r.ok) {
+              console.warn("[ATD] R2 upload falhou:", att.name, r.status);
+              return;
+            }
+            att.synced_to_r2 = true;
+            console.log("[ATD] R2 upload ok:", att.name);
+            try{
+              const live = await idbGet(db, "atendimentos_master", String(payload.id));
+              if(live && Array.isArray(live.attachments)){
+                live.attachments = live.attachments.map(item => String(item && item.id) === String(att.id) ? Object.assign({}, item, { synced_to_r2: true }) : item);
+                await idbPut(db, "atendimentos_master", live);
+              }
+            }catch(_persistUploadStateErr){ }
           }).catch(e => console.warn("[ATD] R2 upload erro:", att.name, e));
         }
       } catch (_syncErr) {
