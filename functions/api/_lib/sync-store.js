@@ -101,8 +101,12 @@ function getDB(env) {
 }
 
 function getTenant(request) {
-  const raw = request.headers.get('X-VSC-Tenant') || 'tenant-default';
-  return String(raw).trim().slice(0, 120) || 'tenant-default';
+  let raw = '';
+  try { raw = request?.headers?.get('X-VSC-Tenant') || ''; } catch (_) {}
+  if (!raw) {
+    try { raw = new URL(request.url).searchParams.get('tenant') || ''; } catch (_) {}
+  }
+  return String(raw || 'tenant-default').trim().slice(0, 120) || 'tenant-default';
 }
 
 function getUserLabel(request) {
@@ -128,45 +132,20 @@ function resolveStoreName(rawStore, rawEntity) {
   return STORE_NAME_MAP[raw] || raw || 'UNKNOWN';
 }
 
-function extractEntityId(op, payload, storeName) {
-  const direct = normStr(op.entity_id || op.record_id || op.target_id || op.ref_id || op.id || '', 160);
-  if (direct) return direct;
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return '';
-  const payloadId = normStr(
-    payload.id ||
-    payload.record_id ||
-    payload.entity_id ||
-    payload.uuid ||
-    payload.key ||
-    payload.produto_id ||
-    payload.lote_id ||
-    '',
-    160
-  );
-  if (payloadId) return payloadId;
-  if (storeName === 'produtos_lotes') return normStr(payload.lote_id || '', 160);
-  return '';
-}
-
-function normalizeAction(rawAction) {
-  const action = normStr(rawAction || 'upsert', 40).toLowerCase() || 'upsert';
-  if (['delete', 'remove', 'destroy'].includes(action)) return 'delete';
-  if (['create', 'insert', 'update', 'upsert', 'put', 'patch'].includes(action)) return 'upsert';
-  return action;
-}
-
 function normalizeOperation(op = {}) {
-  const payload = op.payload ?? null;
+  const actionRaw = normStr(op.action || op.op || 'upsert', 40).toLowerCase() || 'upsert';
+  const action = ({ create: 'upsert', insert: 'upsert', update: 'upsert', put: 'upsert', upsert: 'upsert', delete: 'delete', remove: 'delete' }[actionRaw] || actionRaw || 'upsert');
   const entity = normStr(op.entity || op.store || op.store_name || 'UNKNOWN', 120) || 'UNKNOWN';
   const storeName = resolveStoreName(op.store || op.store_name, entity);
-  const action = normalizeAction(op.action || op.op || 'upsert');
-  const entityId = extractEntityId(op, payload, storeName);
+  const payloadObj = op.payload && typeof op.payload === 'object' && !Array.isArray(op.payload) ? op.payload : null;
+  const entityId = normStr(op.entity_id || op.record_id || op.target_id || op.ref_id || op.id || payloadObj?.id || payloadObj?.produto_id || payloadObj?.uuid || payloadObj?.key || '', 160);
   const opId = normStr(op.op_id || op.id || '', 160);
   const deviceId = normStr(op.device_id || '', 160);
-  const baseRevision = Math.max(0, normNum(op.base_revision, 0));
+  const baseRevision = normNum(op.base_revision, 0);
   const entityRevision = Math.max(1, normNum(op.entity_revision, baseRevision + 1));
   const dedupeKey = normStr(op.dedupe_key || [storeName, entityId, action, String(baseRevision), String(entityRevision)].join(':'), 300);
-  const createdAt = normStr(op.created_at || op.updated_at || (payload && (payload.updated_at || payload.created_at)) || nowIso(), 40) || nowIso();
+  const payload = op.payload ?? null;
+  const createdAt = normStr(op.created_at || op.updated_at || nowIso(), 40) || nowIso();
   const status = normStr(op.status || 'PENDING', 40) || 'PENDING';
   return {
     op_id: opId,
@@ -312,30 +291,26 @@ async function applyOperationToCanonical(db, tenant, op) {
   };
 }
 
-async function verifyCanonicalPersistence(db, tenant, op) {
+
+async function verifyCanonicalWrite(db, tenant, op) {
   const row = await db.prepare(`
-    SELECT record_id, deleted, payload_json, entity_revision
+    SELECT record_id, deleted, source_op_id, entity_revision
     FROM canonical_records
     WHERE tenant = ?1 AND store_name = ?2 AND record_id = ?3
     LIMIT 1
   `).bind(tenant, op.store_name, op.entity_id).first();
 
-  if (normalizeAction(op.action) === 'delete') {
-    return !!(row && Number(row.deleted || 0) === 1);
+  if (String(op.action).toLowerCase() === 'delete') {
+    if (!row || Number(row.deleted || 0) !== 1) {
+      throw new Error('canonical_delete_verification_failed');
+    }
+    return row;
   }
 
-  if (!row || Number(row.deleted || 0) === 1) return false;
-
-  let payload = null;
-  try {
-    payload = row.payload_json ? JSON.parse(row.payload_json) : null;
-  } catch (_) {
-    payload = null;
+  if (!row || Number(row.deleted || 0) === 1) {
+    throw new Error('canonical_upsert_verification_failed');
   }
-
-  const persistedId = extractEntityId({ entity_id: row.record_id }, payload, op.store_name);
-  const persistedRevision = Math.max(1, normNum(row.entity_revision || payload?.entity_revision || payload?.sync_rev || 1, 1));
-  return persistedId === op.entity_id && persistedRevision >= Math.max(1, normNum(op.entity_revision, 1));
+  return row;
 }
 
 async function ingestOperation(db, tenant, userLabel, rawOp) {
@@ -389,10 +364,7 @@ async function ingestOperation(db, tenant, userLabel, rawOp) {
   ).run();
 
   const apply = await applyOperationToCanonical(db, tenant, op);
-  const persisted = await verifyCanonicalPersistence(db, tenant, op);
-  if (!persisted) {
-    throw new Error(`canonical_persistence_verification_failed:${op.store_name}:${op.entity_id}`);
-  }
+  await verifyCanonicalWrite(db, tenant, op);
 
   return {
     ok: true,

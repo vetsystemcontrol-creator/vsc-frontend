@@ -62,7 +62,6 @@
   let _inFlight = null; // promise
   let _capabilities = null;
   let _capabilitiesCheckedAt = 0;
-  let _resolvedApiBase = null;
   let _stats = {
     pending: 0,
     sent: 0,
@@ -136,13 +135,32 @@
     }
   }
 
+  function _isCrossOriginUrl(url) {
+    try {
+      return new URL(url, location.href).origin !== location.origin;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function _withTenantParam(url) {
+    try {
+      const u = new URL(url, location.href);
+      if (!u.searchParams.get('tenant')) u.searchParams.set('tenant', _getTenant());
+      return u.toString();
+    } catch (_) {
+      return url;
+    }
+  }
+
   async function _fetchWithTimeout(url, options = {}, timeoutMs = NETWORK_TIMEOUT_MS) {
     const controller = new AbortController();
     const timer = setTimeout(() => {
       try { controller.abort(); } catch (_) {}
     }, Math.max(1, Number(timeoutMs) || 1));
     try {
-      return await fetch(url, { ...options, credentials: 'include', signal: controller.signal });
+      const credentials = Object.prototype.hasOwnProperty.call(options, 'credentials') ? options.credentials : 'include';
+      return await fetch(url, { ...options, credentials, signal: controller.signal });
     } catch (err) {
       if (String(err && err.name || '') === 'AbortError') {
         throw new Error(`network_timeout_${timeoutMs}ms`);
@@ -195,101 +213,63 @@
     return false;
   }
 
-  function _dedupeBases(list) {
-    return Array.from(new Set((Array.isArray(list) ? list : []).filter((v) => typeof v === 'string')));
-  }
-
-  function _candidateApiBases() {
-    const mode = _getSyncTargetMode();
-    if (_isLocalStaticMode()) return [REMOTE_BASE];
-    if (_isWranglerDev()) {
-      if (mode === 'local') return [''];
-      if (mode === 'remote') return [REMOTE_BASE];
-      return [REMOTE_BASE];
-    }
-    return [''];
-  }
-
   function _apiBase() {
-    if (_resolvedApiBase != null) return _resolvedApiBase;
-    const candidates = _candidateApiBases();
-    return candidates.length ? candidates[0] : '';
-  }
-
-  function _apiUrl(path, base = _apiBase()) {
-    return `${base}${path}`;
-  }
-
-  async function _probeCapabilities(base) {
-    const res = await _fetchWithTimeout(_apiUrl(API_CAPABILITIES_URL, base), {
-      method: 'GET',
-      headers: { 'Accept': 'application/json' },
-      cache: 'no-store',
-    }, NETWORK_TIMEOUT_MS);
-
-    if (!res.ok) {
-      return {
-        ok: false,
-        available: false,
-        remote_sync_allowed: false,
-        local_static_mode: false,
-        reason: 'capabilities-http-' + res.status,
-        status: res.status,
-        api_base: base,
-      };
+    const mode = _getSyncTargetMode();
+    if (_isLocalStaticMode()) return REMOTE_BASE;
+    if (_isWranglerDev()) {
+      if (mode === 'local') return '';
+      return REMOTE_BASE;
     }
+    return '';
+  }
 
-    const body = await res.json().catch(() => ({}));
-    return {
-      ok: body.ok !== false,
-      available: body.available !== false,
-      remote_sync_allowed: body.remote_sync_allowed !== false,
-      local_static_mode: !!body.local_static_mode,
-      reason: body.reason || '',
-      status: res.status,
-      body,
-      api_base: base,
-    };
+  function _apiUrl(path) {
+    return `${_apiBase()}${path}`;
   }
 
   async function _readCapabilities() {
     const now = _now();
     if (_capabilities && (now - _capabilitiesCheckedAt) < 15000) return _capabilities;
 
-    const candidates = _dedupeBases(_candidateApiBases());
-    let lastFailure = null;
-
-    for (const base of candidates) {
-      try {
-        const probed = await _probeCapabilities(base);
-        if (probed.ok && probed.available !== false && probed.remote_sync_allowed !== false) {
-          _capabilities = probed;
-          _resolvedApiBase = base;
-          _capabilitiesCheckedAt = now;
-          return _capabilities;
-        }
-        lastFailure = probed;
-      } catch (err) {
-        lastFailure = {
+    try {
+      const capabilitiesUrl = _withTenantParam(_apiUrl(API_CAPABILITIES_URL));
+      const crossOrigin = _isCrossOriginUrl(capabilitiesUrl);
+      const res = await _fetchWithTimeout(capabilitiesUrl, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' },
+        cache: 'no-store',
+        credentials: crossOrigin ? 'omit' : 'include',
+      }, NETWORK_TIMEOUT_MS);
+      if (!res.ok) {
+        _capabilities = {
           ok: false,
           available: false,
           remote_sync_allowed: false,
           local_static_mode: false,
-          reason: String(err || 'capabilities-fetch-failed'),
-          api_base: base,
+          reason: 'capabilities-http-' + res.status,
+          status: res.status,
+        };
+      } else {
+        const body = await res.json().catch(() => ({}));
+        _capabilities = {
+          ok: body.ok !== false,
+          available: body.available !== false,
+          remote_sync_allowed: body.remote_sync_allowed !== false,
+          local_static_mode: !!body.local_static_mode,
+          reason: body.reason || '',
+          status: res.status,
+          body,
         };
       }
+    } catch (err) {
+      _capabilities = {
+        ok: false,
+        available: false,
+        remote_sync_allowed: false,
+        local_static_mode: false,
+        reason: String(err || 'capabilities-fetch-failed'),
+      };
     }
-
-    _capabilities = lastFailure || {
-      ok: false,
-      available: false,
-      remote_sync_allowed: false,
-      local_static_mode: false,
-      reason: 'capabilities-fetch-failed',
-      api_base: candidates[0] || '',
-    };
-    _resolvedApiBase = _capabilities.api_base || (candidates[0] || '');
     _capabilitiesCheckedAt = now;
     return _capabilities;
   }
@@ -476,11 +456,13 @@
     };
     if (syncToken) headers['X-VSC-Token'] = syncToken;
 
-    const apiBase = (_capabilities && _capabilities.api_base) || _apiBase();
-    const res = await _fetchWithTimeout(_apiUrl('/api/sync/push', apiBase), {
+    const pushUrl = _withTenantParam(_apiUrl('/api/sync/push'));
+    const crossOrigin = _isCrossOriginUrl(pushUrl);
+    const res = await _fetchWithTimeout(pushUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify({ operations: batch }),
+      credentials: crossOrigin ? 'omit' : 'include',
     }, NETWORK_TIMEOUT_MS);
 
     if (!res.ok) {
@@ -505,8 +487,9 @@
         payload: ev.payload,
         op_id: ev.op_id,
       };
-      const apiBase = (_capabilities && _capabilities.api_base) || _apiBase();
-      const res = await _fetchWithTimeout(_apiUrl('/api/outbox', apiBase), {
+      const legacyUrl = _withTenantParam(_apiUrl('/api/outbox'));
+      const crossOrigin = _isCrossOriginUrl(legacyUrl);
+      const res = await _fetchWithTimeout(legacyUrl, {
         method: 'POST',
         headers: (() => { const h = {
           'Content-Type': 'application/json',
@@ -516,6 +499,7 @@
           'X-VSC-Client-Session': clientSession,
         }; if (syncToken) h['X-VSC-Token'] = syncToken; return h; })(),
         body: JSON.stringify(body),
+        credentials: crossOrigin ? 'omit' : 'include',
       }, NETWORK_TIMEOUT_MS);
       if (!res.ok) {
         const text = await res.text().catch(() => '');
@@ -730,7 +714,6 @@
         pending: Number(_stats.pending || 0) || 0,
         total_open: Number(_stats.pending || 0) || 0,
         api_base: _apiBase(),
-        sync_target_mode: _getSyncTargetMode() || (_isWranglerDev() ? 'remote' : 'auto'),
         sent: Number(_stats.sent || 0) || 0,
         acked: Number(_stats.acked || 0) || 0,
         last_batch: Number(_stats.lastBatchSize || 0) || 0,

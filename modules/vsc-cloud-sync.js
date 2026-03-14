@@ -11,7 +11,6 @@
   const MANUAL_PUSH_BUDGET_MS = 45_000;
 
   let isSyncing = false;
-  let resolvedApiBase = null;
 
   function nowIso() {
     return new Date().toISOString();
@@ -52,24 +51,15 @@
     }
   }
 
-  function candidateApiBases() {
+  function resolveRemoteBase() {
     try {
       const proto = String(location.protocol || '').toLowerCase();
-      const mode = getSyncTargetMode();
-      if (proto === 'file:') return [REMOTE_BASE];
+      if (proto === 'file:') return REMOTE_BASE;
       if (proto === 'http:' && isLocalDev()) {
-        if (mode === 'local') return [location.origin];
-        if (mode === 'remote') return [REMOTE_BASE];
-        return [REMOTE_BASE];
+        return getSyncTargetMode() === 'local' ? location.origin : REMOTE_BASE;
       }
     } catch (_) {}
-    return [location.origin];
-  }
-
-  function resolveRemoteBase() {
-    if (resolvedApiBase != null) return resolvedApiBase;
-    const bases = candidateApiBases();
-    return bases.length ? bases[0] : location.origin;
+    return location.origin;
   }
 
   function status() {
@@ -78,7 +68,7 @@
       syncing: !!isSyncing,
       last_sync: localStorage.getItem(SYNC_KEY) || null,
       api_base: resolveRemoteBase(),
-      sync_target_mode: getSyncTargetMode() || (isLocalDev() ? 'remote' : 'auto'),
+      target_mode: getSyncTargetMode() || (isLocalDev() ? 'remote' : 'same-origin'),
     };
   }
 
@@ -120,12 +110,68 @@
     return headers;
   }
 
-  function apiCandidates() {
-    const urls = [];
-    for (const base of Array.from(new Set(candidateApiBases()))) {
-      urls.push(`${base}/api/sync/pull`);
-      urls.push(`${base}/api/state?action=pull`);
+  function isCrossOriginUrl(url) {
+    try {
+      return new URL(url, location.href).origin !== location.origin;
+    } catch (_) {
+      return false;
     }
+  }
+
+  function withTenantParam(url) {
+    try {
+      const u = new URL(url, location.href);
+      if (!u.searchParams.get('tenant')) u.searchParams.set('tenant', TENANT);
+      return u.toString();
+    } catch (_) {
+      return url;
+    }
+  }
+
+  function buildSnapshotRequestOptions(url, headers = {}) {
+    const crossOrigin = isCrossOriginUrl(url);
+    const baseHeaders = { Accept: 'application/json', ...headers };
+    if (crossOrigin) {
+      // Evita preflight desnecessário em pull público cross-origin.
+      delete baseHeaders['If-None-Match'];
+      delete baseHeaders['X-VSC-Tenant'];
+      delete baseHeaders['X-VSC-Token'];
+      delete baseHeaders['X-VSC-Client-Session'];
+      return {
+        method: 'GET',
+        headers: baseHeaders,
+        cache: 'no-store',
+        credentials: 'omit',
+      };
+    }
+    return {
+      method: 'GET',
+      headers: baseHeaders,
+      cache: 'no-store',
+      credentials: 'include',
+    };
+  }
+
+  function apiCandidates() {
+    const base = resolveRemoteBase();
+    const urls = [];
+    const preferLocalOnly = isLocalDev() && getSyncTargetMode() === 'local';
+
+    if (base) {
+      urls.push(withTenantParam(`${base}/api/sync/pull`));
+      urls.push(withTenantParam(`${base}/api/state?action=pull`));
+    }
+
+    if (!preferLocalOnly && location.origin && base !== location.origin && !isLocalDev()) {
+      urls.push(withTenantParam(`${location.origin}/api/sync/pull`));
+      urls.push(withTenantParam(`${location.origin}/api/state?action=pull`));
+    }
+
+    if (preferLocalOnly || !isLocalDev()) {
+      urls.push(withTenantParam('/api/sync/pull'));
+      urls.push(withTenantParam('/api/state?action=pull'));
+    }
+
     return Array.from(new Set(urls));
   }
 
@@ -148,7 +194,8 @@
   async function fetchWithTimeout(url, options, timeoutMs, label) {
     const wrapped = makeTimeoutController(timeoutMs);
     try {
-      return await fetch(url, { ...options, credentials: 'include', signal: wrapped.controller.signal });
+      const credentials = options && Object.prototype.hasOwnProperty.call(options, 'credentials') ? options.credentials : 'include';
+      return await fetch(url, { ...options, credentials, signal: wrapped.controller.signal });
     } catch (err) {
       const name = err && err.name ? String(err.name) : '';
       if (name === 'AbortError' || String(err || '').includes('timeout_')) {
@@ -199,18 +246,15 @@
   }
 
   async function fetchCandidate(url) {
-    const headers = buildCommonHeaders();
     const cacheMeta = readSnapshotCacheMeta();
     const knownEtag = cacheMeta[url] && cacheMeta[url].etag ? String(cacheMeta[url].etag) : '';
+    const headers = buildCommonHeaders();
     if (knownEtag) headers['If-None-Match'] = knownEtag;
+    const requestOptions = buildSnapshotRequestOptions(url, headers);
 
     const response = await fetchWithTimeout(
       url,
-      {
-        method: 'GET',
-        headers,
-        cache: 'no-store',
-      },
+      requestOptions,
       SNAPSHOT_TIMEOUT_MS,
       `snapshot_timeout_${SNAPSHOT_TIMEOUT_MS}ms`
     );
@@ -260,7 +304,6 @@
 
   async function fetchSnapshot() {
     const urls = apiCandidates();
-    resolvedApiBase = null;
     let lastErr = null;
     let best = null;
     let saw304 = false;
@@ -293,13 +336,7 @@
         if (!best || candidate.metrics.score > best.metrics.score) best = candidate;
 
         if (!isLocalDev()) {
-          try {
-            const parsed = new URL(candidate.url, location.origin);
-            resolvedApiBase = parsed.origin === location.origin ? '' : parsed.origin;
-          } catch (_) {
-            resolvedApiBase = candidate.url.startsWith('http') ? candidate.url.split('/').slice(0, 3).join('/') : '';
-          }
-          return { ok: true, payload: candidate.body, source: candidate.url, not_modified: false, api_base: resolvedApiBase };
+          return { ok: true, payload: candidate.body, source: candidate.url, not_modified: false };
         }
       } catch (err) {
         lastErr = err;
@@ -318,24 +355,11 @@
           revision: best.metrics.revision,
         });
       } catch (_) {}
-      try {
-        const parsed = new URL(best.url, location.origin);
-        resolvedApiBase = parsed.origin === location.origin ? '' : parsed.origin;
-      } catch (_) {
-        resolvedApiBase = best.url.startsWith('http') ? best.url.split('/').slice(0, 3).join('/') : '';
-      }
-      return { ok: true, payload: best.body, source: best.url, not_modified: false, api_base: resolvedApiBase };
+      return { ok: true, payload: best.body, source: best.url, not_modified: false };
     }
 
     if ((best && best.not_modified) || saw304) {
-      try {
-        const sourceUrl = best && best.url ? best.url : '';
-        const parsed = sourceUrl ? new URL(sourceUrl, location.origin) : null;
-        resolvedApiBase = parsed && parsed.origin === location.origin ? '' : (parsed ? parsed.origin : '');
-      } catch (_) {
-        resolvedApiBase = '';
-      }
-      return { ok: true, payload: null, source: best && best.url || null, not_modified: true, api_base: resolvedApiBase };
+      return { ok: true, payload: null, source: best && best.url || null, not_modified: true };
     }
 
     throw lastErr || new Error('pull_failed');
@@ -409,14 +433,14 @@
       const result = await fetchSnapshot();
       if (result.not_modified) {
         localStorage.setItem(SYNC_KEY, nowIso());
-        notifyUI('success', '', { phase: 'pull', not_modified: true, api_base: result.api_base || resolveRemoteBase() });
-        return { ok: true, pulled: false, not_modified: true, api_base: result.api_base || resolveRemoteBase() };
+        notifyUI('success', '', { phase: 'pull', not_modified: true });
+        return { ok: true, pulled: false, not_modified: true };
       }
 
       const applied = await applySnapshot(result.payload.snapshot);
       localStorage.setItem(SYNC_KEY, nowIso());
-      notifyUI('success', '', { phase: 'pull', applied, source: result.source, api_base: result.api_base || resolveRemoteBase() });
-      return { ok: true, pulled: true, applied, source: result.source, api_base: result.api_base || resolveRemoteBase() };
+      notifyUI('success', '', { phase: 'pull', applied, source: result.source });
+      return { ok: true, pulled: true, applied, source: result.source };
     } catch (err) {
       notifyUI('error', String(err && (err.message || err) || 'pull_failed'));
       throw err;

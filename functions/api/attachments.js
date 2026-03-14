@@ -138,7 +138,7 @@ async function handleDownload(request, env, url) {
   const headers = new Headers({
     ...corsHeaders(request),
     'content-type': meta.mime_type || 'application/octet-stream',
-    'content-disposition': `${disposition}; filename=\"${rawName}\"; filename*=UTF-8''${encodeURIComponent(rawName)}`,
+    'content-disposition': `${disposition}; filename="${rawName}"`,
     'cache-control': disposition === 'inline' ? 'private, no-store' : 'private, max-age=3600',
     'x-content-type-options': 'nosniff',
   });
@@ -187,10 +187,10 @@ export async function onRequest(context) {
 
   try {
     const action = url.searchParams.get('action') || (method === 'GET' ? 'list' : 'upload');
-    if (method === 'GET' || method === 'HEAD') {
+    if (method === 'GET') {
+      if (action === 'ping') return json({ ok: true, service: 'attachments', time: new Date().toISOString() }, 200, request);
       if (action === 'download') return await handleDownload(request, env, url);
       if (action === 'list') return await handleList(request, env, url);
-      if (action === 'ping') return json({ ok: true }, 200, request);
       return json({ ok: false, error: 'unknown_action' }, 400, request);
     }
     if (method === 'POST') {
