@@ -296,6 +296,35 @@ empresa: [
     };
   }
 
+  function attachSyncMetadata(recordLike, meta, action){
+    if(!recordLike || typeof recordLike !== "object") return recordLike;
+    const normalizedAction = String(action || "upsert").toLowerCase();
+    const next = { ...recordLike };
+    next.base_revision = Number(meta && meta.base_revision) || 0;
+    next.entity_revision = Math.max(1, Number(meta && meta.entity_revision) || 1);
+    next.sync_rev = next.entity_revision;
+    next.last_synced_op_id = String(meta && meta.op_id || "");
+    next.sync_device_id = String(meta && meta.device_id || "");
+    next.updated_at = String(next.updated_at || nowISO());
+    if(normalizedAction === "delete"){
+      next.deleted_at = String(next.deleted_at || next.updated_at || nowISO());
+    }
+    return next;
+  }
+
+  function compareSyncPriority(currentRecord, incomingRecord){
+    const curRev = Number(currentRecord && (currentRecord.sync_rev ?? currentRecord.entity_revision ?? currentRecord.base_revision ?? currentRecord.revision)) || 0;
+    const incRev = Number(incomingRecord && (incomingRecord.sync_rev ?? incomingRecord.entity_revision ?? incomingRecord.base_revision ?? incomingRecord.revision)) || 0;
+    if(incRev !== curRev) return incRev > curRev ? 1 : -1;
+
+    const curAt = Date.parse(_pickUpdatedAt(currentRecord) || '');
+    const incAt = Date.parse(_pickUpdatedAt(incomingRecord) || '');
+    if(Number.isFinite(incAt) && Number.isFinite(curAt) && incAt !== curAt) return incAt > curAt ? 1 : -1;
+    if(Number.isFinite(incAt) && !Number.isFinite(curAt)) return 1;
+    if(!Number.isFinite(incAt) && Number.isFinite(curAt)) return -1;
+    return 0;
+  }
+
 // ============================================================
   // OUTBOX REPAIR (compat/anti-regressão)
   // - Normaliza registros antigos/incompletos em sync_queue.
@@ -902,8 +931,9 @@ req.onupgradeneeded = (e) => {
   }
 
   function makeOutboxEvent(storeName, entity, action, entity_id, payload){
-    const ts = nowISO();
     const meta = buildOutboxMetadata(entity, action, entity_id, payload);
+    const payloadWithSync = attachSyncMetadata(payload && typeof payload === "object" ? payload : null, meta, action);
+    const ts = String(payloadWithSync && payloadWithSync.updated_at || nowISO());
     return {
       id: uuidv4(),
       status: "PENDING",
@@ -911,7 +941,7 @@ req.onupgradeneeded = (e) => {
       entity,
       action,
       entity_id,
-      payload: payload || null,
+      payload: payloadWithSync || payload || null,
       created_at: ts,
       updated_at: ts,
       op_id: meta.op_id,
@@ -967,7 +997,26 @@ req.onupgradeneeded = (e) => {
     if (!entity) throw new Error("upsertWithOutbox: entity obrigatório");
     if (!entity_id) throw new Error("upsertWithOutbox: entity_id obrigatório");
 
-    const evt = makeOutboxEvent(storeName, entity, "upsert", entity_id, payload);
+    const syncMeta = buildOutboxMetadata(entity, "upsert", entity_id, payload);
+    const objWithSync = attachSyncMetadata(obj, syncMeta, "upsert");
+    const payloadBase = payload && typeof payload === "object" ? payload : objWithSync;
+    const payloadWithSync = attachSyncMetadata(payloadBase, syncMeta, "upsert");
+    const evt = {
+      id: uuidv4(),
+      status: "PENDING",
+      store: String(storeName || entity || "UNKNOWN"),
+      entity,
+      action: "upsert",
+      entity_id,
+      payload: payloadWithSync || null,
+      created_at: objWithSync.updated_at || nowISO(),
+      updated_at: objWithSync.updated_at || nowISO(),
+      op_id: syncMeta.op_id,
+      device_id: syncMeta.device_id,
+      base_revision: syncMeta.base_revision,
+      entity_revision: syncMeta.entity_revision,
+      dedupe_key: syncMeta.dedupe_key
+    };
 
     await tx([storeName, STORE_OUTBOX, STORE_SYS_META, STORE_BACKUP_EVENTS, STORE_BUSINESS_AUDIT], "readwrite", (s) => {
       const main = s[storeName];
@@ -990,7 +1039,7 @@ req.onupgradeneeded = (e) => {
               entity,
               entity_id,
               beforeObj || null,
-              obj
+              objWithSync
             );
 
             if(audits && audits.length){
@@ -1006,7 +1055,7 @@ req.onupgradeneeded = (e) => {
           // fail-closed: auditoria nunca deve quebrar fluxo
         }
 
-        main.put(obj);
+        main.put(objWithSync);
         s[STORE_OUTBOX].add(evt);
 
 
@@ -1350,20 +1399,19 @@ async function listRecentChanges(entity, opts){
                 try{ softFail(st0.put(r)); }catch(_){ }
                 return;
               }
-              const a = _pickUpdatedAt(cur);
-              const b = _pickUpdatedAt(r);
-
-              // se não dá pra comparar, mantém o mais “completo” (preferir incoming)
-              if(!a || !b){
+              const precedence = compareSyncPriority(cur, r);
+              if(precedence > 0){
                 try{ softFail(st0.put(r)); }catch(_){ }
                 return;
               }
-
-              // compara ISO/date
-              const da = Date.parse(a);
-              const dbb = Date.parse(b);
-              if(isFinite(dbb) && (!isFinite(da) || dbb >= da)){
-                try{ softFail(st0.put(r)); }catch(_){ }
+              if(precedence === 0){
+                const a = _pickUpdatedAt(cur);
+                const b = _pickUpdatedAt(r);
+                const da = Date.parse(a || '');
+                const dbb = Date.parse(b || '');
+                if(Number.isFinite(dbb) && (!Number.isFinite(da) || dbb >= da)){
+                  try{ softFail(st0.put(r)); }catch(_){ }
+                }
               }
             };
           }

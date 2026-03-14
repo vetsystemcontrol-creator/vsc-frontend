@@ -28,7 +28,6 @@
     } catch (_) {}
   }
 
-  function getHost() {
   function normalizeTenantId(raw) {
     try {
       const value = String(raw || 'tenant-default')
@@ -43,6 +42,7 @@
     }
   }
 
+  function getHost() {
     try {
       return String(location.hostname || '').toLowerCase();
     } catch (_) {

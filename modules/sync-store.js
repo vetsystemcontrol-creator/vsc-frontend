@@ -69,93 +69,16 @@ const SNAPSHOT_IMPORT_ALLOWED_STORES = Array.from(new Set(Object.values(STORE_NA
   .filter((store) => !SNAPSHOT_IMPORT_EXCLUDED_STORES.has(store));
 
 
-function normalizeRequestedStoreToken(rawStore) {
-  const token = normStr(rawStore, 120).toLowerCase();
-  if (!token) return '';
-  return STORE_NAME_MAP[token] || '';
+function corsHeaders(request) {
+  const origin = request?.headers?.get('Origin') || '';
+  if (!origin) return { 'Access-Control-Allow-Origin': '*' };
+  if (/^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin)) return { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin' };
+  if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) return { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin' };
+  return { 'Access-Control-Allow-Origin': '*' };
 }
 
-function parseRequestedStoreNames(rawValues) {
-  const values = Array.isArray(rawValues) ? rawValues : [rawValues];
-  const out = [];
-  const seen = new Set();
-
-  for (const raw of values) {
-    if (raw == null) continue;
-    const parts = Array.isArray(raw) ? raw : String(raw).split(',');
-    for (const part of parts) {
-      const normalized = normalizeRequestedStoreToken(part);
-      if (!normalized) continue;
-      if (seen.has(normalized)) continue;
-      seen.add(normalized);
-      out.push(normalized);
-    }
-  }
-
-  return out;
-}
-
-function inspectRequestedStoreScope(rawValues) {
-  const values = Array.isArray(rawValues) ? rawValues : [rawValues];
-  const rawTokens = [];
-  const requestedStores = [];
-  const seenStores = new Set();
-  const invalidTokens = [];
-  let scopeRequested = false;
-
-  for (const raw of values) {
-    if (raw == null) continue;
-    scopeRequested = true;
-    const parts = Array.isArray(raw) ? raw : String(raw).split(',');
-    for (const part of parts) {
-      const token = normStr(part, 120);
-      if (!token) continue;
-      rawTokens.push(token);
-      const normalized = normalizeRequestedStoreToken(token);
-      if (!normalized) {
-        invalidTokens.push(token);
-        continue;
-      }
-      if (seenStores.has(normalized)) continue;
-      seenStores.add(normalized);
-      requestedStores.push(normalized);
-    }
-  }
-
-  if (scopeRequested && rawTokens.length === 0) {
-    invalidTokens.push('');
-  }
-
-  return {
-    scopeRequested,
-    rawTokens,
-    requestedStores,
-    invalidTokens,
-    hasInvalidScope: invalidTokens.length > 0,
-  };
-}
-
-
-function corsHeaders(request, methods = 'GET, POST, PUT, PATCH, DELETE, OPTIONS') {
-  const origin = String(request?.headers?.get('Origin') || '').trim();
-  const allowed = /^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin) || /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin);
-  const headers = {
-    'Access-Control-Allow-Origin': allowed && origin ? origin : 'https://app.vetsystemcontrol.com.br',
-    'Access-Control-Allow-Methods': methods,
-    'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization, If-None-Match, If-Match, Origin, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token, X-VSC-Client-Session',
-    'Access-Control-Expose-Headers': 'Content-Type, Content-Length, ETag, X-VSC-State-Revision',
-    'Access-Control-Max-Age': '86400',
-    Vary: 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',
-  };
-  if (allowed && origin) headers['Access-Control-Allow-Credentials'] = 'true';
-  return headers;
-}
-
-function json(data, status = 200, request = null, extraHeaders = {}) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { ...JSON_HEADERS, ...corsHeaders(request), ...extraHeaders },
-  });
+function json(data, status = 200, request = null) {
+  return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...corsHeaders(request) } });
 }
 
 function isD1Like(db) {
@@ -167,23 +90,9 @@ function getDB(env) {
   return isD1Like(db) ? db : null;
 }
 
-function normalizeTenant(raw) {
-  const value = String(raw || 'tenant-default')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._:-]+/g, '-')
-    .replace(/-+/g, '-')
-    .slice(0, 120);
-  return value || 'tenant-default';
-}
-
 function getTenant(request) {
-  let raw = '';
-  try { raw = request?.headers?.get('X-VSC-Tenant') || ''; } catch (_) {}
-  if (!raw) {
-    try { raw = new URL(request.url).searchParams.get('tenant') || ''; } catch (_) {}
-  }
-  return normalizeTenant(raw || 'tenant-default');
+  const raw = request.headers.get('X-VSC-Tenant') || 'tenant-default';
+  return String(raw).trim().slice(0, 120) || 'tenant-default';
 }
 
 function getUserLabel(request) {
@@ -210,12 +119,10 @@ function resolveStoreName(rawStore, rawEntity) {
 }
 
 function normalizeOperation(op = {}) {
-  const actionRaw = normStr(op.action || op.op || 'upsert', 40).toLowerCase() || 'upsert';
-  const action = ({ create: 'upsert', insert: 'upsert', update: 'upsert', put: 'upsert', upsert: 'upsert', delete: 'delete', remove: 'delete' }[actionRaw] || actionRaw || 'upsert');
+  const action = normStr(op.action || op.op || 'upsert', 40).toLowerCase() || 'upsert';
   const entity = normStr(op.entity || op.store || op.store_name || 'UNKNOWN', 120) || 'UNKNOWN';
   const storeName = resolveStoreName(op.store || op.store_name, entity);
-  const payloadObj = op.payload && typeof op.payload === 'object' && !Array.isArray(op.payload) ? op.payload : null;
-  const entityId = normStr(op.entity_id || op.record_id || op.target_id || op.ref_id || op.id || payloadObj?.id || payloadObj?.produto_id || payloadObj?.uuid || payloadObj?.key || '', 160);
+  const entityId = normStr(op.entity_id || op.record_id || op.target_id || op.ref_id || op.id || '', 160);
   const opId = normStr(op.op_id || op.id || '', 160);
   const deviceId = normStr(op.device_id || '', 160);
   const baseRevision = normNum(op.base_revision, 0);
@@ -289,66 +196,6 @@ function clonePayloadRecord(op) {
   base.base_revision = op.base_revision;
   base.last_synced_op_id = op.op_id;
   return base;
-}
-
-function parseIsoMs(value) {
-  const ts = Date.parse(String(value || ''));
-  return Number.isFinite(ts) ? ts : null;
-}
-
-function compareCanonicalVersions(currentRow, incoming) {
-  const currentRevision = normNum(currentRow?.entity_revision || currentRow?.sync_rev || 0, 0);
-  const incomingRevision = normNum(incoming?.entity_revision || incoming?.sync_rev || 0, 0);
-  if (incomingRevision !== currentRevision) return incomingRevision > currentRevision ? 1 : -1;
-
-  const currentMs = parseIsoMs(currentRow?.updated_at);
-  const incomingMs = parseIsoMs(incoming?.updated_at);
-  if (incomingMs != null && currentMs != null && incomingMs !== currentMs) return incomingMs > currentMs ? 1 : -1;
-  if (incomingMs != null && currentMs == null) return 1;
-  if (incomingMs == null && currentMs != null) return -1;
-  return 0;
-}
-
-async function loadCanonicalRecordMeta(db, tenant, storeName, recordId) {
-  return await db.prepare(`
-    SELECT tenant, store_name, record_id, deleted, updated_at, entity_revision, source_op_id
-    FROM canonical_records
-    WHERE tenant = ?1 AND store_name = ?2 AND record_id = ?3
-    LIMIT 1
-  `).bind(tenant, storeName, recordId).first();
-}
-
-async function validateIncomingOperation(db, tenant, op) {
-  const current = await loadCanonicalRecordMeta(db, tenant, op.store_name, op.entity_id);
-  const currentRevision = normNum(current?.entity_revision || 0, 0);
-  const expectedBaseRevision = current ? currentRevision : 0;
-
-  if (normNum(op.base_revision, 0) !== expectedBaseRevision) {
-    return {
-      ok: false,
-      code: 'conflict_base_revision',
-      current_revision: currentRevision,
-      expected_base_revision: expectedBaseRevision,
-      deleted: current ? Number(current.deleted || 0) === 1 : false,
-    };
-  }
-
-  const cmp = compareCanonicalVersions(current, op);
-  if (current && cmp < 0) {
-    return {
-      ok: false,
-      code: 'conflict_stale_entity_revision',
-      current_revision: currentRevision,
-      incoming_revision: normNum(op.entity_revision, 0),
-      deleted: Number(current.deleted || 0) === 1,
-    };
-  }
-
-  return {
-    ok: true,
-    current,
-    current_revision: currentRevision,
-  };
 }
 
 async function applyOperationToCanonical(db, tenant, op) {
@@ -428,28 +275,6 @@ async function applyOperationToCanonical(db, tenant, op) {
   };
 }
 
-
-async function verifyCanonicalWrite(db, tenant, op) {
-  const row = await db.prepare(`
-    SELECT record_id, deleted, source_op_id, entity_revision
-    FROM canonical_records
-    WHERE tenant = ?1 AND store_name = ?2 AND record_id = ?3
-    LIMIT 1
-  `).bind(tenant, op.store_name, op.entity_id).first();
-
-  if (String(op.action).toLowerCase() === 'delete') {
-    if (!row || Number(row.deleted || 0) !== 1) {
-      throw new Error('canonical_delete_verification_failed');
-    }
-    return row;
-  }
-
-  if (!row || Number(row.deleted || 0) === 1) {
-    throw new Error('canonical_upsert_verification_failed');
-  }
-  return row;
-}
-
 async function ingestOperation(db, tenant, userLabel, rawOp) {
   const op = normalizeOperation(rawOp);
   if (!op.op_id) {
@@ -472,17 +297,6 @@ async function ingestOperation(db, tenant, userLabel, rawOp) {
       received_at: existing.received_at,
       state_revision: null,
       store_name: op.store_name,
-    };
-  }
-
-  const validation = await validateIncomingOperation(db, tenant, op);
-  if (!validation.ok) {
-    return {
-      ok: false,
-      code: validation.code,
-      operation: op,
-      current_revision: validation.current_revision,
-      expected_base_revision: validation.expected_base_revision,
     };
   }
 
@@ -512,7 +326,6 @@ async function ingestOperation(db, tenant, userLabel, rawOp) {
   ).run();
 
   const apply = await applyOperationToCanonical(db, tenant, op);
-  await verifyCanonicalWrite(db, tenant, op);
 
   return {
     ok: true,
@@ -525,24 +338,14 @@ async function ingestOperation(db, tenant, userLabel, rawOp) {
   };
 }
 
-async function loadCanonicalSnapshot(db, tenant, options = {}) {
+async function loadCanonicalSnapshot(db, tenant) {
   await ensureSchema(db);
-  const requestedStores = parseRequestedStoreNames(options?.storeNames || []);
-  const hasRequestedScope = requestedStores.length > 0;
-  const rowsStmt = hasRequestedScope
-    ? db.prepare(`
-        SELECT store_name, record_id, payload_json, deleted, updated_at, entity_revision
-        FROM canonical_records
-        WHERE tenant = ?1 AND deleted = 0 AND store_name IN (${requestedStores.map((_, idx) => `?${idx + 2}`).join(', ')})
-        ORDER BY store_name, updated_at, record_id
-      `).bind(tenant, ...requestedStores)
-    : db.prepare(`
-        SELECT store_name, record_id, payload_json, deleted, updated_at, entity_revision
-        FROM canonical_records
-        WHERE tenant = ?1 AND deleted = 0
-        ORDER BY store_name, updated_at, record_id
-      `).bind(tenant);
-  const rows = await rowsStmt.all();
+  const rows = await db.prepare(`
+    SELECT store_name, record_id, payload_json, deleted, updated_at, entity_revision
+    FROM canonical_records
+    WHERE tenant = ?1 AND deleted = 0
+    ORDER BY store_name, updated_at, record_id
+  `).bind(tenant).all();
 
   const metaRow = await db.prepare(`
     SELECT tenant, state_revision, updated_at, last_op_id, last_store_name, last_record_id
@@ -551,19 +354,12 @@ async function loadCanonicalSnapshot(db, tenant, options = {}) {
     LIMIT 1
   `).bind(tenant).first();
 
-  const allowedStores = hasRequestedScope
-    ? requestedStores.slice()
-    : Array.from(new Set(Object.values(STORE_NAME_MAP)));
-  const allowedStoreSet = new Set(allowedStores);
-
   const data = {};
-  for (const storeName of allowedStores) {
+  for (const storeName of Array.from(new Set(Object.values(STORE_NAME_MAP)))) {
     data[storeName] = [];
   }
   for (const row of (rows?.results || rows || [])) {
-    const rowStoreName = String(row.store_name || '').trim();
-    if (hasRequestedScope && !allowedStoreSet.has(rowStoreName)) continue;
-    const storeName = rowStoreName;
+    const storeName = String(row.store_name || '').trim();
     if (!storeName) continue;
     if (!data[storeName]) data[storeName] = [];
     let payload = null;
@@ -601,7 +397,7 @@ async function loadCanonicalSnapshot(db, tenant, options = {}) {
       schema: {
         db_name: 'vsc_db',
         exported_at: nowIso(),
-        stores: allowedStores.slice(),
+        stores: Object.keys(data),
       },
       data,
     },
@@ -671,14 +467,6 @@ async function importCanonicalSnapshot(db, tenant, snapshot, options = {}) {
       const payload = normalized.payload;
       const entityRevision = Math.max(1, normNum(payload.entity_revision || payload.sync_rev || 1, 1));
       const sourceOpId = `${source}:${storeName}:${normalized.recordId}:${payload.updated_at || importedAt}`.slice(0, 160);
-      const currentRow = await loadCanonicalRecordMeta(db, tenant, storeName, normalized.recordId);
-      const cmp = compareCanonicalVersions(currentRow, {
-        entity_revision: entityRevision,
-        updated_at: payload.updated_at || importedAt,
-      });
-      if (!replace && currentRow && cmp < 0) {
-        continue;
-      }
 
       await db.prepare(`
         INSERT INTO canonical_records (
@@ -768,79 +556,17 @@ function getSyncSecret(env) {
 }
 
 function getRequestToken(request) {
-  const bearer = normStr(request?.headers?.get('Authorization') || request?.headers?.get('authorization') || '', 1024);
-  const bearerToken = /^Bearer\s+(.+)$/i.test(bearer) ? bearer.replace(/^Bearer\s+/i, '').trim() : '';
   return normStr(
-    bearerToken || request?.headers?.get('X-VSC-Token') || request?.headers?.get('x-vsc-token') || '',
+    request?.headers?.get('X-VSC-Token') || request?.headers?.get('x-vsc-token') || '',
     512
   );
 }
 
-function getClientSessionId(request) {
-  return normStr(
-    request?.headers?.get('X-VSC-Client-Session') ||
-    request?.headers?.get('x-vsc-client-session') ||
-    '',
-    160
-  );
-}
-
-async function findActiveSessionAuth(db, sessionId) {
-  if (!isD1Like(db) || !sessionId) return null;
-  try {
-    const row = await db.prepare(`
-      SELECT
-        s.id,
-        s.user_id,
-        s.status AS session_status,
-        s.expires_at,
-        u.status AS user_status
-      FROM auth_sessions s
-      LEFT JOIN auth_users u ON u.id = s.user_id
-      WHERE s.id = ?1
-      LIMIT 1
-    `).bind(sessionId).first();
-
-    if (!row) return null;
-    const sessionStatus = normStr(row.session_status || row.status || 'INACTIVE', 40).toUpperCase();
-    if (sessionStatus !== 'ACTIVE') return null;
-
-    const userStatus = normStr(row.user_status || 'ACTIVE', 40).toUpperCase();
-    if (row.user_id && userStatus !== 'ACTIVE') return null;
-
-    const expiresAt = normStr(row.expires_at || '', 64);
-    if (expiresAt) {
-      const expiresMs = Date.parse(expiresAt);
-      if (Number.isFinite(expiresMs) && Date.now() > expiresMs) return null;
-    }
-
-    return row;
-  } catch (_) {
-    return null;
-  }
-}
-
-async function isSyncAuthorized(request, env) {
+function isSyncAuthorized(request, env) {
   const secret = getSyncSecret(env);
+  if (!secret) return { ok: true, enforced: false };
   const token = getRequestToken(request);
-  if (secret && token && token === secret) {
-    return { ok: true, enforced: true, mode: 'token' };
-  }
-
-  const db = getDB(env);
-  const clientSessionId = getClientSessionId(request);
-  if (clientSessionId && db) {
-    const session = await findActiveSessionAuth(db, clientSessionId);
-    if (session) {
-      return { ok: true, enforced: true, mode: 'session', session_id: clientSessionId, user_id: session.user_id || null };
-    }
-  }
-
-  if (!secret) {
-    // Dev/local fallback when no secret is configured in the environment.
-    return { ok: true, enforced: false, mode: 'open' };
-  }
-
+  if (token && token === secret) return { ok: true, enforced: true };
   return { ok: false, enforced: true, error: 'unauthorized' };
 }
 
@@ -860,13 +586,8 @@ export {
   ingestOperation,
   loadCanonicalSnapshot,
   importCanonicalSnapshot,
-  parseRequestedStoreNames,
-  inspectRequestedStoreScope,
   getSyncSecret,
   getRequestToken,
-  getClientSessionId,
-  findActiveSessionAuth,
   isSyncAuthorized,
   buildUnauthorizedResponse,
-  normalizeTenant,
 };

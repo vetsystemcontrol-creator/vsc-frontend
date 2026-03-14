@@ -216,10 +216,10 @@
     if (_capabilities && (now - _capabilitiesCheckedAt) < 15000) return _capabilities;
 
     try {
-      const capabilitiesUrl = _withTenantParam(_apiUrl(API_CAPABILITIES_URL), tenant);
-      const crossOrigin = _isCrossOriginUrl(capabilitiesUrl);
       const ctx = await _getRuntimeContext();
       const tenant = normalizeTenantId(ctx.tenant || 'tenant-default');
+      const capabilitiesUrl = _withTenantParam(_apiUrl(API_CAPABILITIES_URL), tenant);
+      const crossOrigin = _isCrossOriginUrl(capabilitiesUrl);
       const userLabel = ctx.userLabel || 'anonymous';
       const clientSession = ctx.sessionId || '';
       const syncToken = ctx.token || '';
