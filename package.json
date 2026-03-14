@@ -1,9 +1,0 @@
-{
-  "name": "vsc-frontend",
-  "private": true,
-  "version": "1.0.0",
-  "description": "Vet System Control Frontend",
-  "scripts": {
-    "build": "exit 0"
-  }
-}
