@@ -746,52 +746,41 @@
 
   window.VSC_RELAY = VSC_RELAY;
 
-  function _safeStart(reason = 'boot') {
+  
+  function _autoStartRelay() {
     try {
-      if (!_enabled || _running) return false;
+      if (!_enabled) _enabled = true;
       VSC_RELAY.start();
-      try { console.info('[VSC_RELAY] iniciado', { reason }); } catch (_) {}
-      return true;
-    } catch (err) {
-      _lastError = err;
-      try { console.warn('[VSC_RELAY] falha ao iniciar', { reason, error: String(err && err.message || err || 'relay_start_failed') }); } catch (_) {}
-      return false;
-    }
+    } catch (_) {}
   }
 
-  function _installAutoStart() {
-    const boot = () => {
-      _refreshPendingStats().catch(() => {});
-      _safeStart('boot');
-    };
-
+  try {
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', boot, { once: true });
+      document.addEventListener('DOMContentLoaded', _autoStartRelay, { once: true });
     } else {
-      boot();
+      _autoStartRelay();
     }
-
-    window.addEventListener('online', () => {
-      _capabilities = null;
-      _capabilitiesCheckedAt = 0;
-      _safeStart('online');
-    });
-
-    window.addEventListener('focus', () => {
-      _safeStart('focus');
-    });
-
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) _safeStart('visibility');
-    });
-
-    setInterval(() => {
-      if (!_enabled) return;
-      if (_running) return;
-      _safeStart('watchdog');
-    }, Math.max(IDLE_TICK_MS, 30000));
+  } catch (_) {
+    _autoStartRelay();
   }
 
-  _installAutoStart();
+  try {
+    window.addEventListener('online', _autoStartRelay);
+    window.addEventListener('focus', _autoStartRelay);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') _autoStartRelay();
+    });
+  } catch (_) {}
+
+  try {
+    setInterval(() => {
+      try {
+        const st = VSC_RELAY.status();
+        if (st && st.enabled && !st.running) {
+          VSC_RELAY.start();
+        }
+      } catch (_) {}
+    }, 30000);
+  } catch (_) {}
 
 })();

@@ -69,6 +69,27 @@ const SNAPSHOT_IMPORT_ALLOWED_STORES = Array.from(new Set(Object.values(STORE_NA
   .filter((store) => !SNAPSHOT_IMPORT_EXCLUDED_STORES.has(store));
 
 
+function parseRequestedStoreNames(rawValues) {
+  const values = Array.isArray(rawValues) ? rawValues : [rawValues];
+  const out = [];
+  const seen = new Set();
+
+  for (const raw of values) {
+    if (raw == null) continue;
+    const parts = Array.isArray(raw) ? raw : String(raw).split(',');
+    for (const part of parts) {
+      const normalized = resolveStoreName(part, part);
+      if (!normalized || normalized === 'UNKNOWN') continue;
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      out.push(normalized);
+    }
+  }
+
+  return out;
+}
+
+
 function corsHeaders(request, methods = 'GET, POST, PUT, PATCH, DELETE, OPTIONS') {
   const origin = String(request?.headers?.get('Origin') || '').trim();
   const allowed = /^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin) || /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin);
@@ -130,18 +151,6 @@ function nowIso() {
 function resolveStoreName(rawStore, rawEntity) {
   const raw = normStr(rawStore || rawEntity || 'UNKNOWN', 120).toLowerCase();
   return STORE_NAME_MAP[raw] || raw || 'UNKNOWN';
-}
-
-function parseRequestedStoreNames(rawValue) {
-  const parts = Array.isArray(rawValue) ? rawValue : String(rawValue || '').split(',');
-  const allowed = new Set(Object.values(STORE_NAME_MAP));
-  const normalized = [];
-  for (const part of parts) {
-    const storeName = resolveStoreName(part, part);
-    if (!storeName || !allowed.has(storeName)) continue;
-    if (!normalized.includes(storeName)) normalized.push(storeName);
-  }
-  return normalized;
 }
 
 function normalizeOperation(op = {}) {
@@ -693,11 +702,11 @@ export {
   getDB,
   getTenant,
   getUserLabel,
-  parseRequestedStoreNames,
   ensureSchema,
   ingestOperation,
   loadCanonicalSnapshot,
   importCanonicalSnapshot,
+  parseRequestedStoreNames,
   getSyncSecret,
   getRequestToken,
   getClientSessionId,

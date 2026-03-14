@@ -34,6 +34,7 @@ export async function onRequestGet(context) {
     service: 'Vet System Control – Equine',
     bindings: {
       d1: !!(env?.DB || env?.D1 || env?.VSC_DB),
+      r2: !!(env?.R2 || env?.BACKUPS_BUCKET || env?.ATTACHMENTS_BUCKET),
     },
   }, request);
 }

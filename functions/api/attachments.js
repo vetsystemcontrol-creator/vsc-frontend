@@ -10,7 +10,7 @@ function corsHeaders(request) {
   const origin = request?.headers?.get('Origin') || '';
   if (/^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin)) return { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
   if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) return { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
-  return { 'Access-Control-Allow-Origin': 'https://app.vetsystemcontrol.com.br', 'Access-Control-Allow-Credentials': 'false', Vary: 'Origin' };
+  return { 'Access-Control-Allow-Origin': 'https://app.vetsystemcontrol.com.br', Vary: 'Origin' };
 }
 
 function json(data, status = 200, request = null) {
@@ -21,7 +21,7 @@ function json(data, status = 200, request = null) {
 }
 
 function getBucket(env) {
-  return env?.R2 || env?.BACKUPS_BUCKET || null;
+  return env?.R2 || env?.BACKUPS_BUCKET || env?.ATTACHMENTS_BUCKET || null;
 }
 
 function getTenantCandidates(request) {
@@ -152,7 +152,20 @@ async function handleList(request, env, url) {
   const tenant = getTenantCandidates(request)[0] || 'tenant-default';
   const prefix = atendimento_id ? `attachments/${tenant}/${atendimento_id}/` : `attachments/${tenant}/`;
   const listed = await bucket.list({ prefix, limit: 1000 });
-  const items = (listed.objects || []).map(obj => ({ key: obj.key, size: obj.size, uploaded_at: obj.uploaded || null, meta: obj.customMetadata || {} }));
+  const items = (listed.objects || []).map(obj => {
+    const parts = String(obj.key || '').split('/');
+    return {
+      key: obj.key,
+      size: obj.size,
+      uploaded_at: obj.uploaded || null,
+      meta: {
+        tenant: parts[1] || tenant,
+        atendimento_id: parts[2] || atendimento_id || '',
+        attachment_id: parts[3] || '',
+        filename: parts[3] || '',
+      },
+    };
+  });
   return json({ ok: true, tenant, atendimento_id, items, total: items.length }, 200, request);
 }
 
@@ -178,7 +191,7 @@ export async function onRequest(context) {
       headers: {
         ...corsHeaders(request),
         'access-control-allow-methods': 'GET, POST, OPTIONS',
-        'access-control-allow-headers': 'Content-Type, Accept, Authorization, Origin, X-Requested-With, X-VSC-Tenant, X-VSC-User, X-VSC-Token, X-VSC-Client-Session, X-Tenant',
+        'access-control-allow-headers': 'Content-Type, Accept, Authorization, X-VSC-Tenant, X-VSC-User, X-VSC-Token, X-VSC-Client-Session, X-Tenant',
         'access-control-max-age': '86400',
         'cache-control': 'no-store',
       },

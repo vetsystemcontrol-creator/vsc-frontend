@@ -743,34 +743,16 @@ async function loadEmpresaSnapshot(db){
 
 
   function getAttachmentPrintBaseUrls(){
-    const bases = [];
     const isLocalHost = location.hostname === "127.0.0.1" || location.hostname === "localhost";
-    if(!isLocalHost) bases.push("");
-    bases.push("https://app.vetsystemcontrol.com.br");
-    bases.push("https://api.vetsystemcontrol.com.br");
-    return Array.from(new Set(bases.filter(v => typeof v === 'string')));
-  }
-
-  function getAttachmentRequestHeaders(tenant){
-    const headers = { "X-VSC-Tenant": String(tenant || "tenant-default") };
-    try{
-      const rawUser = localStorage.getItem('vsc_user') || sessionStorage.getItem('vsc_user') || '';
-      let userLabel = '';
-      if(rawUser){
-        try{
-          const parsed = JSON.parse(rawUser);
-          userLabel = String((parsed && (parsed.username || parsed.nome || parsed.name || parsed.id || parsed.email)) || '').trim();
-        }catch(_){
-          userLabel = String(rawUser || '').trim();
-        }
-      }
-      const sessionId = String(localStorage.getItem('vsc_session_id') || sessionStorage.getItem('vsc_session_id') || '').trim();
-      const syncToken = String(localStorage.getItem('vsc_local_token') || sessionStorage.getItem('vsc_local_token') || localStorage.getItem('vsc_token') || sessionStorage.getItem('vsc_token') || '').trim();
-      if(userLabel) headers["X-VSC-User"] = userLabel;
-      if(sessionId) headers["X-VSC-Client-Session"] = sessionId;
-      if(syncToken) headers["X-VSC-Token"] = syncToken;
-    }catch(_){ }
-    return headers;
+    const bases = [];
+    if(isLocalHost){
+      bases.push("https://app.vetsystemcontrol.com.br");
+      bases.push("https://api.vetsystemcontrol.com.br");
+    } else {
+      bases.push("");
+      bases.push("https://api.vetsystemcontrol.com.br");
+    }
+    return Array.from(new Set(bases.filter(Boolean).concat(isLocalHost ? [] : [""])));
   }
 
   async function blobToDataUrl(blob){
@@ -922,7 +904,7 @@ async function loadEmpresaSnapshot(db){
           try{
             const currentBase = url.startsWith('https://') ? new URL(url).origin : '';
             const res = await fetch(url, {
-              headers: getAttachmentRequestHeaders(tenant),
+              headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
               credentials: currentBase ? "omit" : "include"
             });
             if(!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -937,9 +919,9 @@ async function loadEmpresaSnapshot(db){
         if(!done){
           for(const currentBase of bases){
             try{
-              const listUrl = `${currentBase}/api/attachments?action=list&atendimento_id=${encodeURIComponent(atendimentoId)}`;
+              const listUrl = `${currentBase}/api/attachments?action=list&tenant=${encodeURIComponent(tenant || "tenant-default")}&atendimento_id=${encodeURIComponent(atendimentoId)}`;
               const listRes = await fetch(listUrl, {
-                headers: getAttachmentRequestHeaders(tenant),
+                headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
                 credentials: currentBase ? "omit" : "include"
               });
               if(!listRes.ok) continue;
@@ -948,9 +930,9 @@ async function loadEmpresaSnapshot(db){
               const matched = items.find(item => String(item && item.meta && item.meta.attachment_id || '').trim() === attId)
                 || items.find(item => String(item && item.meta && item.meta.filename || '').trim() === getAttachmentName(att));
               if(!matched) continue;
-              const dl = `${currentBase}/api/attachments?action=download&disposition=inline&attachment_id=${encodeURIComponent(attId)}`;
+              const dl = `${currentBase}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant || "tenant-default")}&attachment_id=${encodeURIComponent(attId)}`;
               const res = await fetch(dl, {
-                headers: getAttachmentRequestHeaders(tenant),
+                headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
                 credentials: currentBase ? "omit" : "include"
               });
               if(!res.ok) continue;
