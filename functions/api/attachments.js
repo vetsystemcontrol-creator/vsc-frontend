@@ -333,7 +333,7 @@ async function handleDownload(request, env, url) {
   const bucket = getBucket(env);
   if (!bucket) return json({ ok: false, error: 'r2_not_configured' }, 501, request);
 
-  const ctx = await requireAttachmentContext(request, env, { requireExistingAttachment: true });
+  const ctx = await requireAttachmentContext(request, env, { requireExistingAttachment: false });
   if (!ctx.ok) return ctx.response;
 
   const found = await loadAttachmentObject(bucket, ctx.tenant, ctx.atendimento_id, ctx.attachment_id);
@@ -350,6 +350,10 @@ async function handleDownload(request, env, url) {
     });
     return safeDeny(404, request);
   }
+
+  const canonicalReason = ctx.canonical_attachment_known
+    ? 'canonical_match'
+    : (ctx.canonical ? 'object_match_without_canonical_link' : 'object_match_without_canonical_record');
 
   const disposition = String(url.searchParams.get('disposition') || 'attachment').toLowerCase() === 'inline' ? 'inline' : 'attachment';
   const rawName = sanitizeFileName(found.meta.filename || ctx.attachment_id, 'arquivo');
@@ -369,7 +373,7 @@ async function handleDownload(request, env, url) {
     session_id: ctx.auth.session_id,
     mode: ctx.auth.mode,
     allowed: true,
-    reason: 'authorized',
+    reason: canonicalReason,
   });
 
   return new Response(found.obj.body, { status: 200, headers });

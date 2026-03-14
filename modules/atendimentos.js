@@ -541,14 +541,6 @@ function wireAttachListInteractions(db){
     ).trim();
   }
 
-  function resolvePreferredCompanyPrintLogo(src){
-    const logoA = resolveEmpresaLogoA(src);
-    if(logoA) return logoA;
-    const logoB = resolveEmpresaLogoB(src);
-    if(logoB) return logoB;
-    return "";
-  }
-
   function getAttachmentId(att){
     if(!att || typeof att !== "object") return "";
     return String(att.id || att.attachment_id || att.uuid || att.key || att.file_id || "").trim();
@@ -748,14 +740,34 @@ async function loadEmpresaSnapshot(db){
   function getAttachmentPrintBaseUrls(){
     const isLocalHost = location.hostname === "127.0.0.1" || location.hostname === "localhost";
     const bases = [];
+    const currentOrigin = (!isLocalHost && location.origin && /^https?:/i.test(location.origin)) ? location.origin : "";
+    if(currentOrigin) bases.push(currentOrigin);
     if(isLocalHost){
       bases.push("https://app.vetsystemcontrol.com.br");
-      bases.push("https://api.vetsystemcontrol.com.br");
     } else {
       bases.push("");
-      bases.push("https://api.vetsystemcontrol.com.br");
     }
-    return Array.from(new Set(bases.filter(Boolean).concat(isLocalHost ? [] : [""])));
+    return Array.from(new Set(bases.filter(base => base === "" || /^https?:\/\//i.test(base))));
+  }
+
+  async function flushRemoteAttachmentStateForPrint(){
+    if(typeof navigator !== 'undefined' && navigator && navigator.onLine === false) return;
+
+    try{
+      if(window.VSC_OUTBOX_RELAY && typeof window.VSC_OUTBOX_RELAY.syncNow === 'function'){
+        await window.VSC_OUTBOX_RELAY.syncNow({ budgetMs: 6000, keepAliveOnBudget: true });
+      }
+    }catch(err){
+      console.warn('[PRINT][SYNC] falha ao sincronizar metadados antes da impressão:', err);
+    }
+
+    try{
+      if(window.VSC_ATTACHMENTS_RELAY && typeof window.VSC_ATTACHMENTS_RELAY.syncNow === 'function'){
+        await window.VSC_ATTACHMENTS_RELAY.syncNow();
+      }
+    }catch(err){
+      console.warn('[PRINT][SYNC] falha ao sincronizar anexos antes da impressão:', err);
+    }
   }
 
   async function blobToDataUrl(blob){
@@ -958,6 +970,7 @@ async function loadEmpresaSnapshot(db){
   async function buildPrintData(db){
     // garantir persistência
     await salvar(db, false);
+    await flushRemoteAttachmentStateForPrint();
     const rec = await idbGet(db,"atendimentos_master", ATD.atendimento_id);
     if(!rec) throw new Error("Atendimento não encontrado para impressão.");
 
@@ -1226,7 +1239,6 @@ function openPrintWindowClient(payload, docType, opts){
   const empresa = R.empresa || {};
   const logoA = resolveEmpresaLogoA(empresa) || "";
   const logoB = resolveEmpresaLogoB(empresa) || "";
-  const companyPrintLogo = resolvePreferredCompanyPrintLogo(empresa) || "";
   const empresaNome = resolveEmpresaNome(empresa) || "Empresa";
   const pixKey = empresa.pix_chave || empresa.chave_pix || empresa.pixKey || empresa.pix || empresa.pix_chave_copia_cola || "";
   const atd = R.atendimento || {};
@@ -1306,8 +1318,7 @@ th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08
 img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid var(--bd);border-radius:10px;}
 .pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
 .muted{color:var(--muted);}
-.att{margin:12px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:12px;break-inside:auto;page-break-inside:auto;}
-.att + .att{margin-top:14px;}
+.att{margin:12px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:12px;break-inside:avoid;page-break-inside:avoid;}
 .att-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:8px;}
 .att-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:#334155;}
 .att-kind{font-size:11px;color:var(--muted);font-weight:800;white-space:nowrap;}
@@ -1319,20 +1330,16 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 .wmLocal img{width:62%;max-width:560px;border:none !important;border-radius:0 !important;margin:0 !important;opacity:.06;filter:grayscale(1);object-fit:contain;}
 .sheetContent{position:relative; z-index:1;}
 .footer{display:none;}
-.page-break{height:0;break-before:page;page-break-before:always;}
-.pdf-page{margin:0 0 10px;break-inside:avoid;page-break-inside:avoid;}
-.pdf-page img{margin:0 auto;border:1px solid var(--bd);border-radius:8px;}
-.att-inline-image{max-width:100%;height:auto;display:block;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;break-inside:avoid;page-break-inside:avoid;}
 @media print{
   @page{ size:A4; margin:10mm 10mm 22mm 10mm; }
   .no-print{display:none !important;}
   body{margin:0;}
   .page{max-width:none;padding:0;}
-  .box,tr,canvas{break-inside:avoid;page-break-inside:avoid;}
+  .box,.att,.pdf-block,.att-media,tr,img,canvas{break-inside:avoid;page-break-inside:avoid;}
+  .pdf-pages img{break-inside:avoid;page-break-inside:avoid;break-after:page;page-break-after:always;}
+  .pdf-pages img:last-child{break-after:auto;page-break-after:auto;}
   .sheet{padding:0;}
   .sheet + .sheet{break-before:page;page-break-before:always;margin-top:0;}
-  .attachments .att{break-inside:auto;page-break-inside:auto;}
-  .att-head,.att-desc-wrap,.att-inline-image,.pdf-block,.pdf-page,.pdf-page img{break-inside:avoid;page-break-inside:avoid;}
   .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.5mm 10mm;font-size:9px;color:var(--muted);background:#fff;}
   .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:center;}
 }
@@ -1418,7 +1425,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
             <div class="att-kind">Imagem${sizeKb ? ` • ${sizeKb}` : ""}</div>
           </div>
           <div class="att-media">
-            <img class="att-inline-image" data-anexo="1" src="${normalizeInlineAttachmentData(a)}" alt="${name}" />
+            <img class="att-inline-image" data-anexo="1" src="${normalizeInlineAttachmentData(a)}" alt="${name}" style="max-width:100%;display:block;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;" />
           </div>
           <div class="att-desc-wrap">
             <div class="att-desc-label">Descrição clínica do anexo</div>
@@ -1444,8 +1451,8 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     ? window.VSCPrintTemplate.renderInstitutionalHeader({
         systemLogoSrc: location.origin + '/assets/brand/vsc-logo-horizontal.png',
         systemLogoFallback: '<div class="kado-fallback-system">Vet System Control</div>',
-        companyLogoHtml: companyPrintLogo
-          ? `<img class="kado-company-logo" src="${companyPrintLogo}" alt="Logo institucional da empresa"/>`
+        companyLogoHtml: (logoB || logoA)
+          ? `<img class="kado-company-logo" src="${logoB || logoA}" alt="Logo institucional da empresa"/>`
           : `<div class="kado-company-logo-fallback"></div>`,
         companyName: esc(empresaNome),
         companyMetaHtml: [
@@ -1603,7 +1610,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       </div>
 
       <div class="sheet sheet--main">
-        ${(docType === "clinico" && companyPrintLogo) ? `<div class="wmLocal"><img src="${companyPrintLogo}" alt="Marca d'água"/></div>` : ``}
+        ${(docType === "clinico" && logoB) ? `<div class="wmLocal"><img src="${logoB}" alt="Marca d'água"/></div>` : ``}
         <div class="sheetContent">
           ${headerHtml}
 
@@ -1662,13 +1669,10 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
             canvas.height = Math.floor(viewport.height);
             var ctx = canvas.getContext('2d', { alpha: false });
             await page.render({ canvasContext: ctx, viewport: viewport }).promise;
-            var wrap = document.createElement('div');
-            wrap.className = 'pdf-page';
             var img = document.createElement('img');
             img.alt = 'PDF página ' + p;
             img.src = canvas.toDataURL('image/png');
-            wrap.appendChild(img);
-            frag.appendChild(wrap);
+            frag.appendChild(img);
           }
           container.innerHTML = '';
           container.appendChild(frag);
