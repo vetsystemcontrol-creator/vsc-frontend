@@ -132,6 +132,18 @@ function resolveStoreName(rawStore, rawEntity) {
   return STORE_NAME_MAP[raw] || raw || 'UNKNOWN';
 }
 
+function parseRequestedStoreNames(rawValue) {
+  const parts = Array.isArray(rawValue) ? rawValue : String(rawValue || '').split(',');
+  const allowed = new Set(Object.values(STORE_NAME_MAP));
+  const normalized = [];
+  for (const part of parts) {
+    const storeName = resolveStoreName(part, part);
+    if (!storeName || !allowed.has(storeName)) continue;
+    if (!normalized.includes(storeName)) normalized.push(storeName);
+  }
+  return normalized;
+}
+
 function normalizeOperation(op = {}) {
   const actionRaw = normStr(op.action || op.op || 'upsert', 40).toLowerCase() || 'upsert';
   const action = ({ create: 'upsert', insert: 'upsert', update: 'upsert', put: 'upsert', upsert: 'upsert', delete: 'delete', remove: 'delete' }[actionRaw] || actionRaw || 'upsert');
@@ -681,6 +693,7 @@ export {
   getDB,
   getTenant,
   getUserLabel,
+  parseRequestedStoreNames,
   ensureSchema,
   ingestOperation,
   loadCanonicalSnapshot,
