@@ -364,6 +364,12 @@
       const sync = _getVSC_CLOUD_SYNC();
       if (!sync) throw new Error('VSC_CLOUD_SYNC não disponível');
       const result = await sync.manualSync();
+      if (result && result.partial) {
+        const msg = 'Push parcial · pendentes: ' + String(result.pending || 0);
+        _addHistory({ ok: true, msg });
+        _render({ syncing: false, error: null });
+        return;
+      }
       if (!result || result.ok === false) {
         throw new Error((result && result.error) || 'sync_failed');
       }

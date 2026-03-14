@@ -44,12 +44,23 @@ const VSC_TOPBAR = (() => {
 
     try {
       // ✅ Sync manual correto: push local -> cloud e depois pull cloud -> local
+      let result = null;
       if (window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.manualSync === "function") {
-        await window.VSC_CLOUD_SYNC.manualSync();
+        result = await window.VSC_CLOUD_SYNC.manualSync();
       } else if (window.VSC_CLOUD_SYNC && typeof window.VSC_CLOUD_SYNC.pullNow === "function") {
-        await window.VSC_CLOUD_SYNC.pullNow();
+        result = await window.VSC_CLOUD_SYNC.pullNow();
       } else {
         throw new Error("manual_sync_unavailable");
+      }
+
+      if (result && result.partial) {
+        showToast('⚠️ ' + (result.pending || 0) + ' item(ns) continuam sincronizando em segundo plano.', 'warning');
+        setButtonState('idle');
+        return;
+      }
+
+      if (result && result.ok === false) {
+        throw new Error(result.error || 'sync_failed');
       }
 
     } catch (err) {
@@ -76,6 +87,10 @@ const VSC_TOPBAR = (() => {
         setButtonState('error');
         showToast('❌ Erro: ' + message, 'error');
         setTimeout(() => setButtonState('idle'), 5000);
+        break;
+      case 'partial':
+        setButtonState('idle');
+        showToast('⚠️ ' + (message || 'Sincronização parcial em segundo plano.'), 'warning');
         break;
       case 'offline':
         updateOnlineIndicator(false);

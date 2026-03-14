@@ -175,8 +175,34 @@
     } catch (_) {}
   }
 
+  let _sleepWake = null;
+
   function _sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    const waitMs = Math.max(0, Number(ms) || 0);
+    return new Promise((resolve) => {
+      let done = false;
+      let timer = null;
+
+      const finish = () => {
+        if (done) return;
+        done = true;
+        if (timer) clearTimeout(timer);
+        if (_sleepWake === wake) _sleepWake = null;
+        resolve();
+      };
+
+      const wake = () => finish();
+      _sleepWake = wake;
+      timer = setTimeout(finish, waitMs);
+    });
+  }
+
+  function _wakeLoop() {
+    try {
+      const wake = _sleepWake;
+      _sleepWake = null;
+      if (typeof wake === 'function') wake();
+    } catch (_) {}
   }
 
   function _isLocalStaticMode() {
@@ -325,6 +351,7 @@
       }
       const pending = await _countPending(handle);
       _stats.pending = pending;
+      _stats.totalOpen = pending;
       return pending;
     } finally {
       if (shouldClose && handle) {
@@ -532,6 +559,29 @@
     }
   }
 
+  async function _waitForDrain({ budgetMs = 0 } = {}) {
+    const safeBudget = Math.max(0, Number(budgetMs) || 0);
+    const deadline = safeBudget > 0 ? (_now() + safeBudget) : 0;
+
+    while (true) {
+      const pending = await _refreshPendingStats().catch(() => Number(_stats.pending || 0) || 0);
+      if (pending <= 0) return { pending: 0, timedOut: false };
+      if (_lastError) return { pending, timedOut: false, error: _lastError };
+
+      if (!_inFlight) {
+        _drainLoop({ force: false }).catch(() => {});
+      }
+      _wakeLoop();
+
+      if (safeBudget > 0 && _now() >= deadline) {
+        return { pending, timedOut: true };
+      }
+
+      const remaining = safeBudget > 0 ? Math.max(25, deadline - _now()) : 250;
+      await _sleep(Math.min(250, remaining));
+    }
+  }
+
   // ──────────────────────────────────────────────────────────
   // Core loop
   // ──────────────────────────────────────────────────────────
@@ -555,6 +605,7 @@
           try {
             const pending = await _countPending(db);
             _stats.pending = pending;
+            _stats.totalOpen = pending;
 
             if (pending <= 0) {
               _stats.lastBatchSize = 0;
@@ -592,6 +643,7 @@
             // Mark SENDING (opcional, mas bom para auditoria)
             if (ids.length) {
               await _markBatch(db, ids, { status: 'SENDING', sending_at: _now() });
+              _stats.totalOpen = Math.max(Number(_stats.pending || pending || 0), ids.length);
             }
 
             const resp = await _pushBatch(batch);
@@ -605,6 +657,7 @@
             _stats.lastRateOps = dt > 0 ? Math.round((batch.length * 1000) / dt) : batch.length;
 
             backoffMs = 0;
+            await _refreshPendingStats(db).catch(() => {});
             _emitProgress({ pushed: batch.length });
 
             // Tick ativo pequeno para não travar UI
@@ -683,11 +736,25 @@
       _enabled = true;
       const budgetMs = Math.max(0, Number(options && options.budgetMs) || 0);
       const startedAt = _now();
+      const ackedBefore = Number(_stats.acked || 0) || 0;
+
       await _refreshPendingStats().catch(() => {});
-      await _drainLoop({ force: true });
+      if (!_inFlight) {
+        _drainLoop({ force: false }).catch(() => {});
+      }
+      _wakeLoop();
+
+      const waitResult = await _waitForDrain({ budgetMs });
       const pending = await _refreshPendingStats().catch(() => Number(_stats.pending || 0) || 0);
       const status = this.status();
       const elapsedMs = _now() - startedAt;
+      const ackedAfter = Number(status.acked || 0) || 0;
+      const keepAliveOnBudget = !(options && options.keepAliveOnBudget === false);
+
+      if (!keepAliveOnBudget && waitResult.timedOut) {
+        this.stop();
+      }
+
       return {
         ...status,
         ok: !status.lastError && pending === 0,
@@ -695,8 +762,8 @@
         total_open: pending,
         elapsedMs,
         budgetMs,
-        budgetExceeded: budgetMs > 0 && elapsedMs > budgetMs,
-        ackedDelta: Number(status.last_sent || status.acked || 0) || 0,
+        budgetExceeded: !!waitResult.timedOut,
+        ackedDelta: Math.max(0, ackedAfter - ackedBefore),
       };
     },
 
@@ -716,7 +783,7 @@
         last_run: _lastCycleAt,
         last_sent: Number(_stats.acked || _stats.sent || 0) || 0,
         pending: Number(_stats.pending || 0) || 0,
-        total_open: Number(_stats.pending || 0) || 0,
+        total_open: Number(_stats.totalOpen || _stats.pending || 0) || 0,
         api_base: _apiBase(),
         sent: Number(_stats.sent || 0) || 0,
         acked: Number(_stats.acked || 0) || 0,
