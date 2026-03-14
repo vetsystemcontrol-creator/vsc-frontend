@@ -68,7 +68,7 @@
       const proto = String(location.protocol || '').toLowerCase();
       if (proto === 'file:') return REMOTE_BASE;
       if (proto === 'http:' && isLocalDev()) {
-        return getSyncTargetMode() === 'local' ? location.origin : REMOTE_BASE;
+        return getSyncTargetMode() === 'remote' ? REMOTE_BASE : location.origin;
       }
     } catch (_) {}
     return location.origin;
@@ -99,7 +99,7 @@
       syncing: !!isSyncing,
       last_sync: localStorage.getItem(SYNC_KEY) || null,
       api_base: resolveRemoteBase(),
-      target_mode: getSyncTargetMode() || (isLocalDev() ? 'remote' : 'same-origin'),
+      target_mode: getSyncTargetMode() || (isLocalDev() ? 'local' : 'same-origin'),
       authorized: !!(ctx.token || ctx.sessionId),
     };
   }

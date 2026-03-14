@@ -69,6 +69,58 @@
     return { line1:nome, line2:line2 };
   }
 
+  function resolveEmpresaNome(src){
+    if(!src || typeof src !== 'object') return '';
+    return String(src.nome || src.razao_social || src.nome_fantasia || src.fantasia || src.empresa_nome || '').trim();
+  }
+
+  function resolveEmpresaLogoA(src){
+    if(!src || typeof src !== 'object') return '';
+    return String(src.__logoA || src.logoA || src.logo_a || src.logoADataUrl || src.logo || '').trim();
+  }
+
+  function resolveEmpresaLogoB(src){
+    if(!src || typeof src !== 'object') return '';
+    return String(src.__logoB || src.logoB || src.logo_b || src.logoBDataUrl || '').trim();
+  }
+
+  function resolvePreferredCompanyPrintLogo(src){
+    return resolveEmpresaLogoA(src) || resolveEmpresaLogoB(src) || '';
+  }
+
+  function ensureCanonicalPrintHeaderCss(){
+    if(document.getElementById('vscCanonicalPrintHeaderCss')) return;
+    if(!window.VSCPrintTemplate || typeof window.VSCPrintTemplate.getInstitutionalCss !== 'function') return;
+    var style = document.createElement('style');
+    style.id = 'vscCanonicalPrintHeaderCss';
+    style.textContent = window.VSCPrintTemplate.getInstitutionalCss() + `
+#vscPrintHeader .kado-hdr{margin-bottom:14px;}
+#vscPrintHeader .vsc-print-issuer{display:grid;gap:4px;margin-top:10px;padding:10px 14px;border:1px solid #d8e1ec;border-radius:14px;background:#fff;}
+#vscPrintHeader .vsc-print-issuer__title{font-size:11px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#64748b;}
+#vscPrintHeader .vsc-print-issuer__main{font-size:12px;font-weight:800;color:#0f172a;}
+#vscPrintHeader .vsc-print-issuer__meta{font-size:11px;color:#64748b;font-weight:700;}
+#vscPrintHeader .vsc-print-issuer__sig img{max-height:58px;border:1px solid rgba(15,23,42,.10);border-radius:10px;padding:6px;background:#fff;}`;
+    document.head.appendChild(style);
+  }
+
+  async function waitPrintAssets(root){
+    var scope = root || document;
+    var imgs = Array.from(scope.querySelectorAll('img'));
+    if(!imgs.length) return;
+    await Promise.all(imgs.map(function(img){
+      return new Promise(function(resolve){
+        if(img.complete && img.naturalWidth > 0) return resolve(true);
+        var done = false;
+        var to = setTimeout(function(){ if(done) return; done = true; resolve(false); }, 12000);
+        function ok(){ if(done) return; done = true; clearTimeout(to); resolve(true); }
+        function bad(){ if(done) return; done = true; clearTimeout(to); resolve(false); }
+        img.addEventListener('load', ok, { once:true });
+        img.addEventListener('error', bad, { once:true });
+        try{ if(typeof img.decode === 'function') img.decode().then(ok).catch(function(){}); }catch(_){ }
+      });
+    }));
+  }
+
   function pickIssuerFromRows(){
     try{
       if(STATE.fonteKey === "atendimentos_master" && STATE.itemsView && STATE.itemsView.length){
@@ -124,7 +176,10 @@
     var ph = document.getElementById("vscPrintHeader");
     if(!ph) return;
 
-    var empresa = fmtEmpresa(await readEmpresa());
+    ensureCanonicalPrintHeaderCss();
+
+    var empresaRaw = await readEmpresa();
+    var empresa = fmtEmpresa(empresaRaw);
     var issuer = await pickIssuer();
 
     var docId = uuidv4();
@@ -134,31 +189,35 @@
 
     var tRel = "Relatório (" + (STATE.fonteKey || "—") + ")";
     var meta = tRel + " • DOC " + docId;
-
-    (document.getElementById("phEmpresa")||{}).textContent = empresa.line1 || "—";
-    (document.getElementById("phEmpresa2")||{}).textContent = empresa.line2 || "—";
-    (document.getElementById("phDocMeta")||{}).textContent = meta;
-    (document.getElementById("phIssuedAt")||{}).textContent = "Emitido em " + nowBr;
+    var companyLogo = resolvePreferredCompanyPrintLogo(empresaRaw);
+    var issuerMain = "Emissor: —";
+    var issuerMeta = "";
+    var issuerSig = "";
 
     if(issuer){
       var crmv = (issuer.crmv_uf && issuer.crmv_num) ? ("CRMV-" + issuer.crmv_uf + " Nº " + issuer.crmv_num) : "";
-      (document.getElementById("phIssuer")||{}).textContent = (issuer.full_name || issuer.username || "—") + (crmv ? (" — " + crmv) : "");
-      var c2 = [issuer.phone ? ("Tel " + issuer.phone) : "", issuer.email ? ("Email " + issuer.email) : ""].filter(Boolean).join(" • ");
-      (document.getElementById("phIssuer2")||{}).textContent = c2 || "";
-      var sigBox = document.getElementById("phSig");
-      if(sigBox){
-        if(issuer.signature_image_dataurl){
-          sigBox.innerHTML = "<img alt='Assinatura' src='" + String(issuer.signature_image_dataurl).replace(/'/g,"%27") + "' />";
-        } else {
-          sigBox.innerHTML = "";
-        }
+      issuerMain = (issuer.full_name || issuer.username || "—") + (crmv ? (" — " + crmv) : "");
+      issuerMeta = [issuer.phone ? ("Tel " + issuer.phone) : "", issuer.email ? ("Email " + issuer.email) : ""].filter(Boolean).join(" • ");
+      if(issuer.signature_image_dataurl){
+        issuerSig = `<div class="vsc-print-issuer__sig"><img alt="Assinatura" src="${String(issuer.signature_image_dataurl).replace(/"/g,'&quot;')}" /></div>`;
       }
-    }else{
-      (document.getElementById("phIssuer")||{}).textContent = "Emissor: —";
-      (document.getElementById("phIssuer2")||{}).textContent = "";
-      var sigBox2 = document.getElementById("phSig");
-      if(sigBox2) sigBox2.innerHTML = "";
     }
+
+    if(window.VSCPrintTemplate && typeof window.VSCPrintTemplate.renderInstitutionalHeader === 'function'){
+      ph.innerHTML = window.VSCPrintTemplate.renderInstitutionalHeader({
+        systemLogoSrc: location.origin + '/assets/brand/vsc-logo-horizontal.png',
+        systemLogoFallback: '<div class="kado-fallback-system">Vet System Control</div>',
+        companyLogoHtml: companyLogo
+          ? '<img class="kado-company-logo" src="' + String(companyLogo).replace(/"/g,'&quot;') + '" alt="Logo institucional da empresa"/>'
+          : '<div class="kado-company-logo-fallback"></div>',
+        companyName: empresa.line1 || '—',
+        companyMetaHtml: empresa.line2 ? ('<div>' + empresa.line2 + '</div>') : '',
+        documentTitle: tRel,
+        documentMetaHtml: '<div><b>Documento:</b> ' + meta + '</div><div><b>Emitido em:</b> ' + nowBr + '</div>'
+      }) + '<div class="vsc-print-issuer"><div class="vsc-print-issuer__title">Emissor responsável</div><div class="vsc-print-issuer__main">' + issuerMain + '</div>' + (issuerMeta ? '<div class="vsc-print-issuer__meta">' + issuerMeta + '</div>' : '') + issuerSig + '</div>';
+    }
+
+    await waitPrintAssets(ph);
   }
 
 
@@ -668,7 +727,8 @@
       await ensurePrintHeader();
       showOk("Abrindo impressão…");
       console.log("[VSC_REL] print", { store: STATE.fonteKey, rows: STATE.itemsView.length });
-      setTimeout(function(){ window.print(); }, 50);
+      await new Promise(function(resolve){ requestAnimationFrame(function(){ requestAnimationFrame(resolve); }); });
+      window.print();
     });
 
     UI.btnLimpar.addEventListener("click", function(){
@@ -811,7 +871,9 @@ bind = function(){
     }
     showOk("Abrindo impressão…");
     console.log("[VSC_REL] print", { store: STATE.fonteKey, rows: STATE.itemsView.length });
-    setTimeout(function(){ window.print(); }, 50);
+    ensurePrintHeader().then(function(){
+      return new Promise(function(resolve){ requestAnimationFrame(function(){ requestAnimationFrame(resolve); }); });
+    }).then(function(){ window.print(); });
   });
 
   UI.btnLimpar.addEventListener("click", function(){

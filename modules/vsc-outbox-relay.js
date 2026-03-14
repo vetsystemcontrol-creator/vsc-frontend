@@ -201,8 +201,8 @@
     const mode = _getSyncTargetMode();
     if (_isLocalStaticMode()) return REMOTE_BASE;
     if (_isWranglerDev()) {
-      if (mode === 'local') return '';
-      return REMOTE_BASE;
+      if (mode === 'remote') return REMOTE_BASE;
+      return '';
     }
     return '';
   }
@@ -535,7 +535,7 @@
   // ──────────────────────────────────────────────────────────
   // Core loop
   // ──────────────────────────────────────────────────────────
-  async function _drainLoop({ force = false, budgetMs = 0 } = {}) {
+  async function _drainLoop({ force = false } = {}) {
     if (_inFlight) return _inFlight;
 
     _inFlight = (async () => {
@@ -545,16 +545,9 @@
       _emitProgress();
 
       let backoffMs = 0;
-      const startedAt = _now();
-      let budgetExceeded = false;
 
       try {
         while (_enabled && !_stopRequested) {
-          if (force && budgetMs > 0 && (_now() - startedAt) >= budgetMs) {
-            budgetExceeded = true;
-            break;
-          }
-
           _lastCycleAt = _now();
           const t0 = _now();
 
@@ -567,7 +560,7 @@
               _stats.lastBatchSize = 0;
               _stats.lastRateOps = 0;
               _stats.lastDurationMs = _now() - t0;
-              _emitProgress({ idle: true, budgetExceeded });
+              _emitProgress({ idle: true });
               if (force) break;
               await _sleep(IDLE_TICK_MS);
               continue;
@@ -583,19 +576,20 @@
                 capabilities: caps || null,
                 local_static_mode: !!(caps && caps.local_static_mode),
                 remote_sync_allowed: false,
-                budgetExceeded,
               });
               if (force) break;
               await _sleep(IDLE_TICK_MS);
               continue;
             }
 
+            // Se tiver pendência, drena rápido
             const batchSize = _computeBatchSize(pending);
             const batch = await _readPendingBatch(db, batchSize);
             const ids = batch.map(e => e.id).filter(Boolean);
 
             _stats.lastBatchSize = batch.length;
 
+            // Mark SENDING (opcional, mas bom para auditoria)
             if (ids.length) {
               await _markBatch(db, ids, { status: 'SENDING', sending_at: _now() });
             }
@@ -611,13 +605,9 @@
             _stats.lastRateOps = dt > 0 ? Math.round((batch.length * 1000) / dt) : batch.length;
 
             backoffMs = 0;
-            _emitProgress({ pushed: batch.length, budgetExceeded });
+            _emitProgress({ pushed: batch.length });
 
-            if (force && budgetMs > 0 && (_now() - startedAt) >= budgetMs) {
-              budgetExceeded = true;
-              break;
-            }
-
+            // Tick ativo pequeno para não travar UI
             await _sleep(ACTIVE_TICK_MS);
 
           } finally {
@@ -628,10 +618,12 @@
         _lastError = err;
         _stats.failedBatches += 1;
 
+        // Reverter status SENDING → PENDING com retry++ quando possível
         try {
           const db = await _openDB();
           try {
             const store = _tx(db, 'readwrite');
+            // scan small: convert any SENDING back to PENDING (best-effort)
             const all = await _reqToPromise(store.getAll());
             for (const rec of (all || [])) {
               if (!rec) continue;
@@ -650,17 +642,19 @@
             try { db.close(); } catch (_) {}
           }
         } catch (_) {
+          // ignore
         }
 
+        // Backoff only on errors
         backoffMs = Math.min(MAX_BACKOFF_MS, Math.max(BASE_BACKOFF_MS, (backoffMs || BASE_BACKOFF_MS) * 2));
-        _emitProgress({ error: String(err || ''), backoffMs, capabilities: _capabilities || null, local_static_mode: !!(_capabilities && _capabilities.local_static_mode), remote_sync_allowed: !!(_capabilities && _capabilities.remote_sync_allowed), budgetExceeded });
+        _emitProgress({ error: String(err || ''), backoffMs, capabilities: _capabilities || null, local_static_mode: !!(_capabilities && _capabilities.local_static_mode), remote_sync_allowed: !!(_capabilities && _capabilities.remote_sync_allowed) });
         await _sleep(backoffMs);
 
       } finally {
         _running = false;
         _stopRequested = false;
         _inFlight = null;
-        _emitProgress({ budgetExceeded });
+        _emitProgress();
       }
     })();
 
@@ -685,19 +679,15 @@
     },
 
     async syncNow(options = {}) {
+      // Forced drain until idle once (useful for manual button)
       _enabled = true;
       const budgetMs = Math.max(0, Number(options && options.budgetMs) || 0);
-      const keepAliveOnBudget = !(options && options.keepAliveOnBudget === false);
       const startedAt = _now();
       await _refreshPendingStats().catch(() => {});
-      await _drainLoop({ force: true, budgetMs });
+      await _drainLoop({ force: true });
       const pending = await _refreshPendingStats().catch(() => Number(_stats.pending || 0) || 0);
       const status = this.status();
       const elapsedMs = _now() - startedAt;
-      const budgetExceeded = budgetMs > 0 && elapsedMs >= budgetMs && pending > 0;
-      if (budgetExceeded && keepAliveOnBudget) {
-        this.start();
-      }
       return {
         ...status,
         ok: !status.lastError && pending === 0,
@@ -705,8 +695,7 @@
         total_open: pending,
         elapsedMs,
         budgetMs,
-        budgetExceeded,
-        continuedInBackground: budgetExceeded && keepAliveOnBudget,
+        budgetExceeded: budgetMs > 0 && elapsedMs > budgetMs,
         ackedDelta: Number(status.last_sent || status.acked || 0) || 0,
       };
     },
