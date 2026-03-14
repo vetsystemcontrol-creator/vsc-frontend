@@ -176,6 +176,48 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+
+  function _normalizeQueueStatus(value) {
+    const raw = String(value == null ? '' : value).trim().toUpperCase();
+    if (!raw) return 'PENDING';
+    if (raw === 'PENDENTE' || raw === 'QUEUED' || raw === 'OPEN') return 'PENDING';
+    if (raw === 'IN_FLIGHT' || raw === 'PROCESSING') return 'SENDING';
+    return raw;
+  }
+
+  function _isPendingStatus(value) {
+    const status = _normalizeQueueStatus(value);
+    return status === 'PENDING' || status === 'SENDING';
+  }
+
+  function _apiBases() {
+    const mode = _getSyncTargetMode();
+    const bases = [];
+    const add = (value) => {
+      const normalized = String(value || '').trim();
+      if (!bases.includes(normalized)) bases.push(normalized);
+    };
+
+    if (_isLocalStaticMode()) {
+      add(REMOTE_BASE);
+      return bases;
+    }
+
+    if (_isWranglerDev()) {
+      if (mode === 'remote') {
+        add(REMOTE_BASE);
+        add('');
+      } else {
+        add('');
+        add(REMOTE_BASE);
+      }
+      return bases;
+    }
+
+    add('');
+    return bases;
+  }
+
   function _isLocalStaticMode() {
     try {
       const proto = String(location.protocol || '').toLowerCase();
@@ -195,39 +237,38 @@
   }
 
   function _apiBase() {
-    const mode = _getSyncTargetMode();
-    if (_isLocalStaticMode()) return REMOTE_BASE;
-    if (_isWranglerDev()) {
-      if (mode === 'remote') return REMOTE_BASE;
-      return '';
-    }
-    return '';
+    return _apiBases()[0] || '';
   }
 
-  function _apiUrl(path) {
-    return `${_apiBase()}${path}`;
+  function _apiUrl(path, base = null) {
+    const root = base == null ? _apiBase() : String(base || '');
+    return `${root}${path}`;
   }
 
   async function _readCapabilities() {
     const now = _now();
     if (_capabilities && (now - _capabilitiesCheckedAt) < 15000) return _capabilities;
 
-    try {
-      const res = await _fetchWithTimeout(_apiUrl(API_CAPABILITIES_URL), {
-        method: 'GET',
-        headers: { 'Accept': 'application/json' },
-        cache: 'no-store',
-      }, NETWORK_TIMEOUT_MS);
-      if (!res.ok) {
-        _capabilities = {
-          ok: false,
-          available: false,
-          remote_sync_allowed: false,
-          local_static_mode: false,
-          reason: 'capabilities-http-' + res.status,
-          status: res.status,
-        };
-      } else {
+    let lastFailure = null;
+    for (const base of _apiBases()) {
+      try {
+        const res = await _fetchWithTimeout(_apiUrl(API_CAPABILITIES_URL, base), {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          cache: 'no-store',
+        }, NETWORK_TIMEOUT_MS);
+        if (!res.ok) {
+          lastFailure = {
+            ok: false,
+            available: false,
+            remote_sync_allowed: false,
+            local_static_mode: false,
+            reason: 'capabilities-http-' + res.status,
+            status: res.status,
+            api_base: base,
+          };
+          continue;
+        }
         const body = await res.json().catch(() => ({}));
         _capabilities = {
           ok: body.ok !== false,
@@ -236,18 +277,30 @@
           local_static_mode: !!body.local_static_mode,
           reason: body.reason || '',
           status: res.status,
+          api_base: base,
           body,
         };
+        _capabilitiesCheckedAt = now;
+        return _capabilities;
+      } catch (err) {
+        lastFailure = {
+          ok: false,
+          available: false,
+          remote_sync_allowed: false,
+          local_static_mode: false,
+          reason: String(err || 'capabilities-fetch-failed'),
+          api_base: base,
+        };
       }
-    } catch (err) {
-      _capabilities = {
-        ok: false,
-        available: false,
-        remote_sync_allowed: false,
-        local_static_mode: false,
-        reason: String(err || 'capabilities-fetch-failed'),
-      };
     }
+    _capabilities = lastFailure || {
+      ok: false,
+      available: false,
+      remote_sync_allowed: false,
+      local_static_mode: false,
+      reason: 'capabilities-fetch-failed',
+      api_base: _apiBase(),
+    };
     _capabilitiesCheckedAt = now;
     return _capabilities;
   }
@@ -280,15 +333,23 @@
 
   async function _countPending(db) {
     const store = _tx(db, 'readonly');
-    // Prefer index if exists
+    const scanAllStatuses = async () => {
+      const all = await _reqToPromise(store.getAll());
+      return (all || []).filter((e) => e && _isPendingStatus(e.status)).length;
+    };
+
     if (store.indexNames && store.indexNames.contains('status')) {
-      const idx = store.index('status');
-      const countReq = idx.count('PENDING');
-      return await _reqToPromise(countReq);
+      try {
+        const idx = store.index('status');
+        let total = 0;
+        for (const status of ['PENDING', 'PENDENTE', 'SENDING', 'OPEN', 'QUEUED', 'IN_FLIGHT', 'PROCESSING']) {
+          total += Number(await _reqToPromise(idx.count(status))) || 0;
+        }
+        if (total > 0) return total;
+      } catch (_) {}
     }
-    // Fallback: scan (slower but safe)
-    const all = await _reqToPromise(store.getAll());
-    return (all || []).filter(e => e && e.status === 'PENDING').length;
+
+    return scanAllStatuses();
   }
 
   async function _refreshPendingStats(db = null) {
@@ -316,16 +377,30 @@
     if (store.indexNames && store.indexNames.contains('status')) {
       const idx = store.index('status');
       const out = [];
-      return await new Promise((resolve, reject) => {
-        const req = idx.openCursor('PENDING');
-        req.onerror = () => reject(req.error || new Error('cursor failed'));
-        req.onsuccess = (ev) => {
-          const cursor = ev.target.result;
-          if (!cursor || out.length >= limit) return resolve(out);
-          out.push(cursor.value);
-          cursor.continue();
-        };
-      });
+      const appendStatus = async (status) => {
+        if (out.length >= limit) return;
+        await new Promise((resolve, reject) => {
+          const req = idx.openCursor(status);
+          req.onerror = () => reject(req.error || new Error('cursor failed'));
+          req.onsuccess = (ev) => {
+            const cursor = ev.target.result;
+            if (!cursor || out.length >= limit) return resolve();
+            out.push(cursor.value);
+            cursor.continue();
+          };
+        });
+      };
+
+      try {
+        for (const status of ['PENDING', 'PENDENTE', 'OPEN', 'QUEUED', 'SENDING', 'IN_FLIGHT', 'PROCESSING']) {
+          await appendStatus(status);
+          if (out.length >= limit) break;
+        }
+        if (out.length) {
+          out.sort((a, b) => String(a && a.created_at || '').localeCompare(String(b && b.created_at || '')) || String(a && a.id || '').localeCompare(String(b && b.id || '')));
+          return out.slice(0, limit);
+        }
+      } catch (_) {}
     }
 
     // Fallback: getAll + filter
@@ -434,18 +509,33 @@
     };
     if (syncToken) headers['X-VSC-Token'] = syncToken;
 
-    const res = await _fetchWithTimeout(_apiUrl('/api/sync/push'), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ operations: batch }),
-    }, NETWORK_TIMEOUT_MS);
+    let lastErr = null;
+    for (const base of _apiBases()) {
+      try {
+        const res = await _fetchWithTimeout(_apiUrl('/api/sync/push', base), {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ operations: batch }),
+        }, NETWORK_TIMEOUT_MS);
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`sync/push failed ${res.status} ${text}`);
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          const err = new Error(`sync/push failed ${res.status} ${text}`);
+          err.api_base = base;
+          throw err;
+        }
+
+        const json = await res.json().catch(() => ({ ok: true }));
+        if (_capabilities) _capabilities.api_base = base;
+        return json;
+      } catch (err) {
+        lastErr = err;
+        const msg = String(err && (err.message || err) || err);
+        const shouldTryNext = msg.includes('network_timeout_') || msg.includes('Failed to fetch') || msg.includes('fetch');
+        if (!shouldTryNext) break;
+      }
     }
-
-    return await res.json().catch(() => ({ ok: true }));
+    throw lastErr || new Error('sync/push failed');
   }
 
   async function _pushBatchLegacyOutbox(batch) {
@@ -462,21 +552,37 @@
         payload: ev.payload,
         op_id: ev.op_id,
       };
-      const res = await _fetchWithTimeout(_apiUrl('/api/outbox'), {
-        method: 'POST',
-        headers: (() => { const h = {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'X-VSC-Tenant': tenant,
-          'X-VSC-User': userLabel,
-          'X-VSC-Client-Session': clientSession,
-        }; if (syncToken) h['X-VSC-Token'] = syncToken; return h; })(),
-        body: JSON.stringify(body),
-      }, NETWORK_TIMEOUT_MS);
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`outbox failed ${res.status} ${text}`);
+
+      let delivered = false;
+      let lastErr = null;
+      for (const base of _apiBases()) {
+        try {
+          const res = await _fetchWithTimeout(_apiUrl('/api/outbox', base), {
+            method: 'POST',
+            headers: (() => { const h = {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'X-VSC-Tenant': tenant,
+              'X-VSC-User': userLabel,
+              'X-VSC-Client-Session': clientSession,
+            }; if (syncToken) h['X-VSC-Token'] = syncToken; return h; })(),
+            body: JSON.stringify(body),
+          }, NETWORK_TIMEOUT_MS);
+          if (!res.ok) {
+            const text = await res.text().catch(() => '');
+            throw new Error(`outbox failed ${res.status} ${text}`);
+          }
+          delivered = true;
+          if (_capabilities) _capabilities.api_base = base;
+          break;
+        } catch (err) {
+          lastErr = err;
+          const msg = String(err && (err.message || err) || err);
+          const shouldTryNext = msg.includes('network_timeout_') || msg.includes('Failed to fetch') || msg.includes('fetch');
+          if (!shouldTryNext) break;
+        }
       }
+      if (!delivered) throw lastErr || new Error('outbox failed');
     }
     return { ok: true };
   }

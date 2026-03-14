@@ -51,15 +51,39 @@
     }
   }
 
-  function resolveRemoteBase() {
+
+  function candidateBases() {
+    const mode = getSyncTargetMode();
+    const bases = [];
+    const add = (value) => {
+      const normalized = String(value || '').trim();
+      if (!bases.includes(normalized)) bases.push(normalized);
+    };
+
     try {
       const proto = String(location.protocol || '').toLowerCase();
-      if (proto === 'file:') return REMOTE_BASE;
+      if (proto === 'file:') {
+        add(REMOTE_BASE);
+        return bases;
+      }
       if (proto === 'http:' && isLocalDev()) {
-        return getSyncTargetMode() === 'remote' ? REMOTE_BASE : location.origin;
+        if (mode === 'remote') {
+          add(REMOTE_BASE);
+          add(location.origin);
+        } else {
+          add(location.origin);
+          add(REMOTE_BASE);
+        }
+        return bases;
       }
     } catch (_) {}
-    return location.origin;
+
+    add(location.origin);
+    return bases;
+  }
+
+  function resolveRemoteBase() {
+    return candidateBases()[0] || location.origin;
   }
 
   function status() {

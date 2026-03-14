@@ -6,6 +6,7 @@ import {
   ingestOperation,
   loadCanonicalSnapshot,
   importCanonicalSnapshot,
+  parseRequestedStoreNames,
   isSyncAuthorized,
   buildUnauthorizedResponse,
 } from './_lib/sync-store.js';
@@ -37,6 +38,36 @@ function responseHeadersMap(response) {
   return Object.fromEntries(response.headers.entries());
 }
 
+
+function filterSnapshotPayload(payload, requestedStoreNames = []) {
+  const stores = parseRequestedStoreNames(requestedStoreNames || []);
+  if (!stores.length) {
+    return {
+      payload,
+      requested_stores: [],
+    };
+  }
+
+  const snapshot = payload && typeof payload === 'object' ? payload : {};
+  const data = snapshot.data && typeof snapshot.data === 'object' ? snapshot.data : {};
+  const filteredData = {};
+  for (const storeName of stores) {
+    filteredData[storeName] = Array.isArray(data[storeName]) ? data[storeName] : [];
+  }
+
+  return {
+    requested_stores: stores,
+    payload: {
+      ...snapshot,
+      schema: {
+        ...(snapshot.schema || {}),
+        stores,
+      },
+      data: filteredData,
+    },
+  };
+}
+
 async function buildCapabilities(request, env) {
   const db = getDB(env);
   const legacy = await getLegacyCapabilities(env).catch(() => ({
@@ -63,12 +94,13 @@ async function buildCapabilities(request, env) {
   });
 }
 
-async function handlePull(request, env, tenant) {
+async function handlePull(request, env, tenant, requestedStoreNames = []) {
   const db = getDB(env);
+  const requestedStores = parseRequestedStoreNames(requestedStoreNames || []);
 
   if (db) {
     await ensureSchema(db);
-    const result = await loadCanonicalSnapshot(db, tenant);
+    const result = await loadCanonicalSnapshot(db, tenant, { storeNames: requestedStores });
     const revisionHeaders = buildRevisionHeaders(result.revision || 0);
 
     if (matchesIfNoneMatch(request, revisionHeaders.ETag)) {
@@ -90,6 +122,7 @@ async function handlePull(request, env, tenant) {
         revision: result.revision || 0,
         meta: result.meta || null,
         snapshot: result.snapshot || null,
+        requested_stores: requestedStores,
       },
       200,
       revisionHeaders,
@@ -119,6 +152,8 @@ async function handlePull(request, env, tenant) {
     });
   }
 
+  const filteredLegacy = filterSnapshotPayload(legacy.snapshot || null, requestedStores);
+
   return buildJsonResponse(
     request,
     {
@@ -126,6 +161,8 @@ async function handlePull(request, env, tenant) {
       action: 'pull',
       tenant,
       ...legacy,
+      snapshot: filteredLegacy.payload,
+      requested_stores: filteredLegacy.requested_stores,
     },
     200,
     metaHeaders,
@@ -295,7 +332,11 @@ export async function onRequestGet(context) {
 
     if (action === 'capabilities') return buildCapabilities(request, env);
     if (action === 'pull') {
-      return handlePull(request, env, tenant);
+      const requestedStores = parseRequestedStoreNames([
+        url.searchParams.get('store'),
+        url.searchParams.get('stores'),
+      ]);
+      return handlePull(request, env, tenant, requestedStores);
     }
 
     return buildJsonResponse(request, { ok: false, error: 'unsupported_action', action }, 400);

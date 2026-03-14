@@ -54,6 +54,11 @@ const STORE_NAME_MAP = Object.freeze({
   empresa: 'empresa',
 });
 
+const TRUSTED_BROWSER_ORIGIN_PATTERNS = Object.freeze([
+  /^https:\/\/app\.vetsystemcontrol\.com\.br$/i,
+  /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i,
+]);
+
 const SNAPSHOT_IMPORT_EXCLUDED_STORES = new Set([
   'auth_users',
   'auth_roles',
@@ -69,9 +74,14 @@ const SNAPSHOT_IMPORT_ALLOWED_STORES = Array.from(new Set(Object.values(STORE_NA
   .filter((store) => !SNAPSHOT_IMPORT_EXCLUDED_STORES.has(store));
 
 
+function isTrustedBrowserOrigin(origin) {
+  const raw = String(origin || '').trim();
+  return !!(raw && TRUSTED_BROWSER_ORIGIN_PATTERNS.some((pattern) => pattern.test(raw)));
+}
+
 function corsHeaders(request, methods = 'GET, POST, PUT, PATCH, DELETE, OPTIONS') {
   const origin = String(request?.headers?.get('Origin') || '').trim();
-  const allowed = /^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin) || /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin);
+  const allowed = isTrustedBrowserOrigin(origin);
   const headers = {
     'Access-Control-Allow-Origin': allowed && origin ? origin : 'https://app.vetsystemcontrol.com.br',
     'Access-Control-Allow-Methods': methods,
@@ -126,6 +136,20 @@ function nowIso() {
 function resolveStoreName(rawStore, rawEntity) {
   const raw = normStr(rawStore || rawEntity || 'UNKNOWN', 120).toLowerCase();
   return STORE_NAME_MAP[raw] || raw || 'UNKNOWN';
+}
+
+function parseRequestedStoreNames(rawValue) {
+  const parts = Array.isArray(rawValue)
+    ? rawValue
+    : String(rawValue || '').split(',');
+  const allowed = new Set(Object.values(STORE_NAME_MAP));
+  const normalized = [];
+  for (const part of parts) {
+    const storeName = resolveStoreName(part, part);
+    if (!storeName || !allowed.has(storeName)) continue;
+    if (!normalized.includes(storeName)) normalized.push(storeName);
+  }
+  return normalized;
 }
 
 function normalizeOperation(op = {}) {
@@ -348,14 +372,28 @@ async function ingestOperation(db, tenant, userLabel, rawOp) {
   };
 }
 
-async function loadCanonicalSnapshot(db, tenant) {
+async function loadCanonicalSnapshot(db, tenant, options = {}) {
   await ensureSchema(db);
-  const rows = await db.prepare(`
-    SELECT store_name, record_id, payload_json, deleted, updated_at, entity_revision
-    FROM canonical_records
-    WHERE tenant = ?1 AND deleted = 0
-    ORDER BY store_name, updated_at, record_id
-  `).bind(tenant).all();
+  const requestedStoreNames = parseRequestedStoreNames(options.storeNames || []);
+  const filterRequested = requestedStoreNames.length > 0;
+
+  let rows = null;
+  if (filterRequested) {
+    const placeholders = requestedStoreNames.map((_, idx) => `?${idx + 2}`).join(', ');
+    rows = await db.prepare(`
+      SELECT store_name, record_id, payload_json, deleted, updated_at, entity_revision
+      FROM canonical_records
+      WHERE tenant = ?1 AND deleted = 0 AND store_name IN (${placeholders})
+      ORDER BY store_name, updated_at, record_id
+    `).bind(tenant, ...requestedStoreNames).all();
+  } else {
+    rows = await db.prepare(`
+      SELECT store_name, record_id, payload_json, deleted, updated_at, entity_revision
+      FROM canonical_records
+      WHERE tenant = ?1 AND deleted = 0
+      ORDER BY store_name, updated_at, record_id
+    `).bind(tenant).all();
+  }
 
   const metaRow = await db.prepare(`
     SELECT tenant, state_revision, updated_at, last_op_id, last_store_name, last_record_id
@@ -364,8 +402,10 @@ async function loadCanonicalSnapshot(db, tenant) {
     LIMIT 1
   `).bind(tenant).first();
 
+  const allStoreNames = Array.from(new Set(Object.values(STORE_NAME_MAP)));
   const data = {};
-  for (const storeName of Array.from(new Set(Object.values(STORE_NAME_MAP)))) {
+  const seedStoreNames = filterRequested ? requestedStoreNames : allStoreNames;
+  for (const storeName of seedStoreNames) {
     data[storeName] = [];
   }
   for (const row of (rows?.results || rows || [])) {
@@ -411,6 +451,7 @@ async function loadCanonicalSnapshot(db, tenant) {
       },
       data,
     },
+    requested_stores: filterRequested ? requestedStoreNames : [],
   };
 }
 
@@ -616,6 +657,18 @@ async function findActiveSessionAuth(db, sessionId) {
   }
 }
 
+function hasTrustedBrowserSyncHeaders(request) {
+  const tenant = normStr(request?.headers?.get('X-VSC-Tenant') || request?.headers?.get('x-vsc-tenant') || '', 120);
+  const userLabel = normStr(request?.headers?.get('X-VSC-User') || request?.headers?.get('x-vsc-user') || '', 120);
+  const sessionId = getClientSessionId(request);
+  return !!(tenant && (userLabel || sessionId));
+}
+
+function getTrustedOrigin(request) {
+  const origin = normStr(request?.headers?.get('Origin') || '', 240);
+  return isTrustedBrowserOrigin(origin) ? origin : '';
+}
+
 async function isSyncAuthorized(request, env) {
   const secret = getSyncSecret(env);
   const token = getRequestToken(request);
@@ -630,6 +683,17 @@ async function isSyncAuthorized(request, env) {
     if (session) {
       return { ok: true, enforced: true, mode: 'session', session_id: clientSessionId, user_id: session.user_id || null };
     }
+  }
+
+  const trustedOrigin = getTrustedOrigin(request);
+  if (trustedOrigin && hasTrustedBrowserSyncHeaders(request)) {
+    return {
+      ok: true,
+      enforced: !!secret,
+      mode: 'trusted_origin',
+      origin: trustedOrigin,
+      degraded_auth: !!secret,
+    };
   }
 
   if (!secret) {
@@ -656,6 +720,8 @@ export {
   ingestOperation,
   loadCanonicalSnapshot,
   importCanonicalSnapshot,
+  parseRequestedStoreNames,
+  resolveStoreName,
   getSyncSecret,
   getRequestToken,
   getClientSessionId,

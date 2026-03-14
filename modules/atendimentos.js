@@ -513,22 +513,42 @@ function wireAttachListInteractions(db){
   }
 
 async function loadEmpresaSnapshot(db){
+    function normalizeEmpresaSnapshot(src){
+      const o = src && typeof src === "object" ? src : {};
+      return {
+        nome: o.nome || o.nome_fantasia || o.razao_social || o.fantasia || "",
+        nome_fantasia: o.nome_fantasia || o.fantasia || o.nome || "",
+        razao_social: o.razao_social || o.nome || o.nome_fantasia || o.fantasia || "",
+        cnpj: o.cnpj || o.doc || "",
+        endereco: o.endereco || o.endereco_completo || "",
+        cidade: o.cidade || "",
+        uf: o.uf || "",
+        cep: o.cep || "",
+        telefone: o.telefone || o.celular || o.fone || "",
+        email: o.email || "",
+        site: o.site || "",
+        crmv: o.crmv || "",
+        pix_tipo: o.pix_tipo || o.pixTipo || "",
+        pix_nome: o.pix_nome || o.pixNome || o.favorecido_pix || "",
+        pix_chave_norm: o.pix_chave_norm || "",
+        __logoA: o.__logoA || o.logoA || o.logo_a || o.logo_a_dataurl || o.logo_a_dataUrl || o.logo_a_dataURL || o.logo_data_url || o.logoDataUrl || o.logoCliente || o.logo_cliente || "",
+        __logoB: o.__logoB || o.logoB || o.logo_b || o.logo_b_dataurl || o.logo_b_dataUrl || o.logo_b_dataURL || "",
+        pix_chave: o.pix_chave || o.chave_pix || o.pixKey || o.pix || o.pix_chave_copia_cola || ""
+      };
+    }
+
     // tenta achar dados da empresa em stores comuns; fallback para vazio
     const candidates = ["empresa_master","empresa","empresa_config","config_empresa"];
     for(const st of candidates){
       if(hasStore(db, st)){
         const all = await idbGetAll(db, st);
         const r = (Array.isArray(all) ? all : [])[0];
-        if(r) return {
-          nome: r.nome || r.razao_social || r.fantasia || "",
-          cnpj: r.cnpj || r.doc || "",
-          endereco: r.endereco || r.endereco_completo || "",
-          telefone: r.telefone || r.fone || "",
-          email: r.email || "",
-          // Logos (enterprise): tenta vários campos + localStorage (fonte canônica offline-first)
-          __logoA: (r.__logoA || r.logoA || r.logo_a || r.logo_a_dataurl || r.logo_a_dataUrl || r.logo_a_dataURL || r.logo_data_url || r.logoDataUrl || r.logoCliente || r.logo_cliente || "") || (await getEmpresaLogoAFromLocalStorage()),
-          pix_chave: (r.pix_chave || r.chave_pix || r.pixKey || r.pix || r.pix_chave_copia_cola || "") || (await getEmpresaPixFromLocalStorage()),
-        };
+        if(r){
+          const snap = normalizeEmpresaSnapshot(r);
+          snap.__logoA = snap.__logoA || (await getEmpresaLogoAFromLocalStorage());
+          snap.pix_chave = snap.pix_chave || (await getEmpresaPixFromLocalStorage());
+          return snap;
+        }
       }
     }
     // Fallback canônico: config_params (empresa.js persiste aqui via IDB)
@@ -540,52 +560,45 @@ async function loadEmpresaSnapshot(db){
       const snapRaw = getKey("vsc_empresa_v1");
       if(snapRaw){
         try{
-          const snap = JSON.parse(snapRaw);
-          if(snap && snap.nome){
-            const logoAKey = getKey("vsc_empresa_logo_a") || snap.__logoA || "";
-            const logoBKey = getKey("vsc_empresa_logo_b") || snap.__logoB || "";
-            return {
-              nome:     snap.nome || snap.razao_social || snap.fantasia || "",
-              cnpj:     snap.cnpj || "",
-              endereco: snap.endereco || "",
-              cidade:   snap.cidade || "",
-              uf:       snap.uf || "",
-              cep:      snap.cep || "",
-              telefone: snap.telefone || snap.celular || "",
-              email:    snap.email || "",
-              site:     snap.site || "",
-              crmv:     snap.crmv || "",
-              __logoA:  logoAKey || (await getEmpresaLogoAFromLocalStorage()),
-              __logoB:  logoBKey || "",
-              pix_tipo:       snap.pix_tipo || "",
-              pix_chave:      snap.pix_chave || (await getEmpresaPixFromLocalStorage()),
-              pix_chave_norm: snap.pix_chave_norm || "",
-              pix_nome:       snap.pix_nome || "",
-            };
+          const snap = normalizeEmpresaSnapshot(JSON.parse(snapRaw));
+          if(snap && (snap.nome || snap.razao_social || snap.nome_fantasia)){
+            snap.__logoA = getKey("vsc_empresa_logo_a") || snap.__logoA || (await getEmpresaLogoAFromLocalStorage());
+            snap.__logoB = getKey("vsc_empresa_logo_b") || snap.__logoB || "";
+            snap.pix_chave = snap.pix_chave || (await getEmpresaPixFromLocalStorage());
+            return snap;
           }
         }catch(_){}
       }
 
       // Fallback por chaves individuais legacy
-      return {
-        nome:     getKey("empresa_nome") || getKey("razao_social") || "",
-        cnpj:     getKey("empresa_cnpj") || getKey("cnpj") || "",
+      const snap = normalizeEmpresaSnapshot({
+        nome: getKey("empresa_nome") || getKey("nome") || "",
+        razao_social: getKey("razao_social") || "",
+        nome_fantasia: getKey("nome_fantasia") || getKey("fantasia") || "",
+        cnpj: getKey("empresa_cnpj") || getKey("cnpj") || "",
         endereco: getKey("empresa_endereco") || getKey("endereco") || "",
         telefone: getKey("empresa_telefone") || getKey("telefone") || "",
-        email:    getKey("empresa_email") || getKey("email") || "",
-        __logoA:  getKey("empresa_logo_a") || getKey("logo_a") || (await getEmpresaLogoAFromLocalStorage()),
-        pix_chave: getKey("pix_chave") || getKey("chave_pix") || getKey("pix") || (await getEmpresaPixFromLocalStorage()),
-      };
+        email: getKey("empresa_email") || getKey("email") || "",
+        __logoA: getKey("empresa_logo_a") || getKey("logo_a") || "",
+        pix_chave: getKey("pix_chave") || getKey("chave_pix") || getKey("pix") || ""
+      });
+      snap.__logoA = snap.__logoA || (await getEmpresaLogoAFromLocalStorage());
+      snap.pix_chave = snap.pix_chave || (await getEmpresaPixFromLocalStorage());
+      return snap;
     }
     // Último recurso: só localStorage
     const lsRaw = localStorage.getItem("vsc_empresa_v1");
     if(lsRaw){
       try{
-        const ls = JSON.parse(lsRaw);
-        if(ls && ls.nome) return Object.assign({ __logoA:"", pix_chave:"" }, ls);
+        const ls = normalizeEmpresaSnapshot(JSON.parse(lsRaw));
+        if(ls && (ls.nome || ls.razao_social || ls.nome_fantasia)){
+          ls.__logoA = ls.__logoA || (await getEmpresaLogoAFromLocalStorage());
+          ls.pix_chave = ls.pix_chave || (await getEmpresaPixFromLocalStorage());
+          return ls;
+        }
       }catch(_){}
     }
-    return { nome:"", cnpj:"", endereco:"", telefone:"", email:"" };
+    return { nome:"", nome_fantasia:"", razao_social:"", cnpj:"", endereco:"", telefone:"", email:"", __logoA:"", pix_chave:"" };
   }
 
 
@@ -647,19 +660,31 @@ async function loadEmpresaSnapshot(db){
       if(!done && attId){
         const candidates = [];
         for(const base of bases){
-          candidates.push(`${base}/api/attachments?action=download&disposition=inline&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(attId)}`);
-          candidates.push(`${base}/api/attachments?action=download&disposition=inline&attachment_id=${encodeURIComponent(attId)}`);
-          const tenant = localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "";
-          if(tenant){
-            candidates.push(`${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(attId)}`);
-            candidates.push(`${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&attachment_id=${encodeURIComponent(attId)}`);
+          candidates.push({
+            base,
+            url: `${base}/api/attachments?action=download&disposition=inline&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(attId)}`
+          });
+          candidates.push({
+            base,
+            url: `${base}/api/attachments?action=download&disposition=inline&attachment_id=${encodeURIComponent(attId)}`
+          });
+          const tenantFromLs = localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "";
+          if(tenantFromLs){
+            candidates.push({
+              base,
+              url: `${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenantFromLs)}&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(attId)}`
+            });
+            candidates.push({
+              base,
+              url: `${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenantFromLs)}&attachment_id=${encodeURIComponent(attId)}`
+            });
           }
         }
-        for(const url of candidates){
+        for(const candidate of candidates){
           try{
-            const res = await fetch(url, {
+            const res = await fetch(candidate.url, {
               headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
-              credentials: base ? "omit" : "include"
+              credentials: candidate.base ? "omit" : "include"
             });
             if(!res.ok) throw new Error(`HTTP ${res.status}`);
             const blob = await res.blob();
@@ -1142,7 +1167,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         systemLogoFallback: '<div class="kado-fallback-system">Vet System Control</div>',
         companyLogoHtml: logoA
           ? `<img class="kado-company-logo" src="${logoA}" alt="Logo da empresa"/>`
-          : `<div class="kado-company-logo-fallback">${SYSTEM_LOGO_SVG}</div>`,
+          : `<div class="kado-company-logo-fallback" aria-hidden="true"></div>`,
         companyName: esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa"),
         companyMetaHtml: [
           empresa.cnpj ? `<div>CNPJ: ${esc(empresa.cnpj)}</div>` : "",
