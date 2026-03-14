@@ -1,20 +1,6 @@
 /**
  * /api/attachments — Upload e download de attachments binários no R2
- *
- * POST /api/attachments?action=upload
- *   Body: { tenant, atendimento_id, attachment_id, filename, mime_type, data_base64 }
- *   → salva no R2 em attachments/{tenant}/{atendimento_id}/{attachment_id}
- *
- * GET /api/attachments?action=download&atendimento_id=X&attachment_id=Y
- *   → retorna o arquivo do R2
- *
- * GET /api/attachments?action=list&atendimento_id=X
- *   → lista attachments de um atendimento
- *
- * POST /api/attachments?action=delete
- *   Body: { atendimento_id, attachment_id }
  */
-
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
@@ -22,10 +8,8 @@ const JSON_HEADERS = {
 
 function corsHeaders(request) {
   const origin = request?.headers?.get('Origin') || '';
-  if (/^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin))
-    return { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin' };
-  if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin))
-    return { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin' };
+  if (/^https:\/\/app\.vetsystemcontrol\.com\.br$/i.test(origin)) return { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
+  if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) return { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
   return { 'Access-Control-Allow-Origin': '*' };
 }
 
@@ -40,34 +24,14 @@ function getBucket(env) {
   return env?.BACKUPS_BUCKET || null;
 }
 
-function getTenant(request) {
-  return (
-    request.headers.get('X-VSC-Tenant') ||
-    new URL(request.url).searchParams.get('tenant') ||
-    'tenant-default'
-  ).slice(0, 64);
-}
-
-async function findObjectByAttachmentId(bucket, attachment_id, preferredTenant = '', preferredAtendimentoId = '') {
-  const candidates = [];
-  if (preferredTenant && preferredAtendimentoId) candidates.push(`attachments/${preferredTenant}/${preferredAtendimentoId}/${attachment_id}`);
-  if (preferredTenant) candidates.push(`attachments/${preferredTenant}/`);
-  candidates.push('attachments/');
-
-  for (const prefix of candidates) {
-    let cursor = undefined;
-    for (let guard = 0; guard < 20; guard++) {
-      const listed = await bucket.list({ prefix, cursor, limit: 1000 });
-      const found = (listed.objects || []).find(obj => String(obj.key || '').endsWith(`/${attachment_id}`));
-      if (found) {
-        const obj = await bucket.get(found.key);
-        return { key: found.key, obj };
-      }
-      if (!listed.truncated || !listed.cursor) break;
-      cursor = listed.cursor;
-    }
-  }
-  return null;
+function getTenantCandidates(request) {
+  const url = new URL(request.url);
+  const explicit = [
+    request.headers.get('X-VSC-Tenant'),
+    url.searchParams.get('tenant'),
+    request.headers.get('X-Tenant'),
+  ].filter(Boolean).map(v => String(v).slice(0, 64));
+  return Array.from(new Set([...explicit, 'tenant-default']));
 }
 
 function r2Key(tenant, atendimento_id, attachment_id) {
@@ -78,7 +42,7 @@ async function handleUpload(request, env) {
   const bucket = getBucket(env);
   if (!bucket) return json({ ok: false, error: 'r2_not_configured' }, 501, request);
 
-  const tenant = getTenant(request);
+  const tenant = getTenantCandidates(request)[0] || 'tenant-default';
   const body = await request.json().catch(() => ({}));
   const { atendimento_id, attachment_id, filename, mime_type, data_base64 } = body;
 
@@ -86,10 +50,9 @@ async function handleUpload(request, env) {
     return json({ ok: false, error: 'atendimento_id, attachment_id e data_base64 são obrigatórios' }, 400, request);
   }
 
-  // Decode base64
   let bytes;
   try {
-    const clean = data_base64.replace(/^data:[^;]+;base64,/, '');
+    const clean = String(data_base64).replace(/^data:[^;]+;base64,/, '');
     const binary = atob(clean);
     bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -116,80 +79,90 @@ async function handleUpload(request, env) {
   return json({ ok: true, key, bytes: bytes.length, meta }, 200, request);
 }
 
+async function findObject(bucket, request, url) {
+  const atendimento_id = url.searchParams.get('atendimento_id');
+  const attachment_id = url.searchParams.get('attachment_id');
+  if (!attachment_id) return { error: 'attachment_id obrigatório', status: 400 };
+
+  const tenants = getTenantCandidates(request);
+  const tried = [];
+
+  if (atendimento_id) {
+    for (const tenant of tenants) {
+      const key = r2Key(tenant, atendimento_id, attachment_id);
+      tried.push(key);
+      const obj = await bucket.get(key);
+      if (obj) return { obj, key, tenant, atendimento_id, attachment_id };
+    }
+  }
+
+  for (const tenant of tenants) {
+    const prefix = `attachments/${tenant}/`;
+    let cursor = undefined;
+    for (let i = 0; i < 50; i++) {
+      const listed = await bucket.list({ prefix, limit: 1000, cursor });
+      for (const item of listed.objects || []) {
+        if (String(item.key || '').endsWith(`/${attachment_id}`)) {
+          const obj = await bucket.get(item.key);
+          if (obj) {
+            const parts = String(item.key).split('/');
+            return {
+              obj,
+              key: item.key,
+              tenant: parts[1] || tenant,
+              atendimento_id: parts[2] || atendimento_id,
+              attachment_id,
+            };
+          }
+        }
+      }
+      if (!listed.truncated || !listed.cursor) break;
+      cursor = listed.cursor;
+    }
+  }
+
+  return { error: 'not_found', status: 404, tried };
+}
+
 async function handleDownload(request, env, url) {
   const bucket = getBucket(env);
   if (!bucket) return json({ ok: false, error: 'r2_not_configured' }, 501, request);
 
-  const tenant = getTenant(request);
-  const atendimento_id = url.searchParams.get('atendimento_id') || '';
-  const attachment_id = url.searchParams.get('attachment_id') || '';
-  const disposition = String(url.searchParams.get('disposition') || 'attachment').toLowerCase() === 'inline' ? 'inline' : 'attachment';
+  const found = await findObject(bucket, request, url);
+  if (found.error) return json({ ok: false, error: found.error, tried: found.tried || [] }, found.status || 404, request);
 
-  if (!attachment_id) {
-    return json({ ok: false, error: 'attachment_id obrigatório' }, 400, request);
-  }
-
-  let key = '';
-  let obj = null;
-  if (atendimento_id) {
-    key = r2Key(tenant, atendimento_id, attachment_id);
-    obj = await bucket.get(key);
-  }
-  if (!obj) {
-    const found = await findObjectByAttachmentId(bucket, attachment_id, tenant, atendimento_id);
-    if (found) {
-      key = found.key;
-      obj = found.obj;
-    }
-  }
-  if (!obj) return json({ ok: false, error: 'not_found' }, 404, request);
-
+  const { obj, attachment_id } = found;
   const meta = obj.customMetadata || {};
-  const safeName = String(meta.filename || attachment_id).replace(/[\r\n"]/g, '_');
+  const disposition = String(url.searchParams.get('disposition') || 'attachment').toLowerCase() === 'inline' ? 'inline' : 'attachment';
+  const rawName = String(meta.filename || attachment_id || 'arquivo').replace(/[\r\n"]/g, '_');
   const headers = new Headers({
     ...corsHeaders(request),
     'content-type': meta.mime_type || 'application/octet-stream',
-    'content-disposition': `${disposition}; filename="${safeName}"`,
+    'content-disposition': `${disposition}; filename="${rawName}"`,
     'cache-control': disposition === 'inline' ? 'private, no-store' : 'private, max-age=3600',
+    'x-content-type-options': 'nosniff',
   });
-
   return new Response(obj.body, { status: 200, headers });
 }
 
 async function handleList(request, env, url) {
   const bucket = getBucket(env);
   if (!bucket) return json({ ok: false, error: 'r2_not_configured' }, 501, request);
-
-  const tenant = getTenant(request);
   const atendimento_id = url.searchParams.get('atendimento_id');
-
-  const prefix = atendimento_id
-    ? `attachments/${tenant}/${atendimento_id}/`
-    : `attachments/${tenant}/`;
-
+  const tenant = getTenantCandidates(request)[0] || 'tenant-default';
+  const prefix = atendimento_id ? `attachments/${tenant}/${atendimento_id}/` : `attachments/${tenant}/`;
   const listed = await bucket.list({ prefix, limit: 1000 });
-  const items = (listed.objects || []).map(obj => ({
-    key: obj.key,
-    size: obj.size,
-    uploaded_at: obj.uploaded || null,
-    meta: obj.customMetadata || {},
-  }));
-
+  const items = (listed.objects || []).map(obj => ({ key: obj.key, size: obj.size, uploaded_at: obj.uploaded || null, meta: obj.customMetadata || {} }));
   return json({ ok: true, tenant, atendimento_id, items, total: items.length }, 200, request);
 }
 
 async function handleDelete(request, env) {
   const bucket = getBucket(env);
   if (!bucket) return json({ ok: false, error: 'r2_not_configured' }, 501, request);
-
-  const tenant = getTenant(request);
+  const tenant = getTenantCandidates(request)[0] || 'tenant-default';
   const body = await request.json().catch(() => ({}));
   const { atendimento_id, attachment_id } = body;
-
-  if (!atendimento_id || !attachment_id) {
-    return json({ ok: false, error: 'atendimento_id e attachment_id obrigatórios' }, 400, request);
-  }
-
+  if (!atendimento_id || !attachment_id) return json({ ok: false, error: 'atendimento_id e attachment_id obrigatórios' }, 400, request);
   const key = r2Key(tenant, atendimento_id, attachment_id);
   await bucket.delete(key);
   return json({ ok: true, key }, 200, request);
@@ -199,15 +172,13 @@ export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
-
-  // CORS preflight
   if (method === 'OPTIONS') {
     return new Response(null, {
       status: 204,
       headers: {
         ...corsHeaders(request),
         'access-control-allow-methods': 'GET, POST, OPTIONS',
-        'access-control-allow-headers': 'Content-Type, X-VSC-Tenant, X-VSC-User, X-VSC-Token',
+        'access-control-allow-headers': 'Content-Type, X-VSC-Tenant, X-VSC-User, X-VSC-Token, X-Tenant',
         'access-control-max-age': '86400',
         'cache-control': 'no-store',
       },
@@ -216,19 +187,16 @@ export async function onRequest(context) {
 
   try {
     const action = url.searchParams.get('action') || (method === 'GET' ? 'list' : 'upload');
-
     if (method === 'GET') {
       if (action === 'download') return await handleDownload(request, env, url);
       if (action === 'list') return await handleList(request, env, url);
       return json({ ok: false, error: 'unknown_action' }, 400, request);
     }
-
     if (method === 'POST') {
       if (action === 'upload') return await handleUpload(request, env);
       if (action === 'delete') return await handleDelete(request, env);
       return json({ ok: false, error: 'unknown_action' }, 400, request);
     }
-
     return json({ ok: false, error: 'method_not_allowed' }, 405, request);
   } catch (error) {
     return json({ ok: false, error: 'attachments_failed', detail: String(error?.message || error) }, 500, request);

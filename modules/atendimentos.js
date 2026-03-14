@@ -598,45 +598,6 @@ async function loadEmpresaSnapshot(db){
     return Array.from(new Set(bases));
   }
 
-  function getKnownPrintTenants(){
-    const out = [];
-    try{
-      const raw = [
-        localStorage.getItem("vsc_tenant"),
-        localStorage.getItem("VSC_TENANT"),
-        sessionStorage.getItem("vsc_tenant"),
-        sessionStorage.getItem("VSC_TENANT")
-      ].filter(Boolean);
-      raw.forEach(v => out.push(String(v).trim()));
-      const ej = localStorage.getItem("vsc_empresa_v1") || localStorage.getItem("VSC_EMPRESA_V1") || "";
-      if(ej){
-        const e = JSON.parse(ej);
-        [e.tenant, e.tenant_id, e.slug].filter(Boolean).forEach(v => out.push(String(v).trim()));
-      }
-    }catch(_){ }
-    out.push("tenant-default");
-    return Array.from(new Set(out.filter(Boolean)));
-  }
-
-  function buildAttachmentRequestCandidates(att, atendimentoId){
-    const attId = att && (att.id || att.attachment_id || att.uuid || att.key || att.file_id);
-    const ownerId = atendimentoId || att?.atendimento_id || att?.owner_id || "";
-    if(!attId) return [];
-    const paramsList = [];
-    if(ownerId) paramsList.push(`atendimento_id=${encodeURIComponent(String(ownerId))}&attachment_id=${encodeURIComponent(String(attId))}`);
-    paramsList.push(`attachment_id=${encodeURIComponent(String(attId))}`);
-    const urls = [];
-    for(const base of getAttachmentPrintBaseUrls()){
-      for(const qs of paramsList){
-        urls.push(`${base}/api/attachments?action=download&disposition=inline&${qs}`);
-        for(const tenant of getKnownPrintTenants()){
-          urls.push(`${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&${qs}`);
-        }
-      }
-    }
-    return Array.from(new Set(urls));
-  }
-
   async function blobToDataUrl(blob){
     return await new Promise((resolve, reject) => {
       const fr = new FileReader();
@@ -648,71 +609,75 @@ async function loadEmpresaSnapshot(db){
 
   async function hydrateAttachmentsForPrint(atendimento){
     if(!atendimento || !Array.isArray(atendimento.attachments) || !atendimento.attachments.length) return atendimento;
-
+    const tenant = localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "tenant-default";
     const atendimentoId = atendimento.atendimento_id || atendimento.id || "";
+    if(!atendimentoId) return atendimento;
+
     const bases = getAttachmentPrintBaseUrls();
-    const normalized = [];
-
-    async function tryReadLocalAttachment(att){
-      if(att.dataUrl) return att.dataUrl;
-      try{
-        const db = await openDb();
-        const stores = [];
-        if(db.objectStoreNames.contains("attachments_queue")) stores.push("attachments_queue");
-        if(db.objectStoreNames.contains("atendimentos_master")) stores.push("atendimentos_master");
-        for(const st of stores){
-          try{
-            if(st === "attachments_queue"){
-              const rows = await idbGetAll(db, st).catch(()=>[]);
-              const hit = (rows || []).find(r => String(r.attachment_id || r.id || "") === String(att.id || att.attachment_id || ""));
-              const raw = hit && (hit.data_base64 || hit.dataUrl || hit.blob_data_url || hit.file_data_url || "");
-              if(raw) return String(raw);
-            }
-            if(st === "atendimentos_master"){
-              const rows = await idbGetAll(db, st).catch(()=>[]);
-              const owner = (rows || []).find(r => String(r.id||r.atendimento_id||"") === String(atendimentoId||""));
-              const embedded = owner && Array.isArray(owner.attachments) ? owner.attachments.find(a => String(a.id||a.attachment_id||"") === String(att.id||att.attachment_id||"")) : null;
-              const raw = embedded && (embedded.dataUrl || embedded.data_base64 || "");
-              if(raw) return String(raw);
-            }
-          }catch(_){ }
-        }
-      }catch(_){ }
-      return "";
-    }
-
+    const hydrated = [];
     for(const src of atendimento.attachments){
       const att = src ? Object.assign({}, src) : src;
-      if(!att){ normalized.push(att); continue; }
-      if(att.dataUrl){ normalized.push(att); continue; }
+      if(!att){ hydrated.push(att); continue; }
+      if(att.dataUrl){ hydrated.push(att); continue; }
 
-      const localUrl = await tryReadLocalAttachment(att);
-      if(localUrl){
-        att.dataUrl = localUrl;
-        normalized.push(att);
-        continue;
-      }
+      const possibleUrls = [
+        att.url,
+        att.download_url,
+        att.downloadUrl,
+        att.r2_url,
+        att.file_url,
+        att.src
+      ].filter(Boolean);
 
       let done = false;
-      for(const rawUrl of buildAttachmentRequestCandidates(att, atendimentoId)){
+
+      for(const rawUrl of possibleUrls){
         try{
-          const res = await fetch(rawUrl, { credentials:"include", headers:getPrintAuthHeaders() });
+          const res = await fetch(String(rawUrl), { credentials:"include" });
           if(!res.ok) throw new Error(`HTTP ${res.status}`);
           const blob = await res.blob();
           att.dataUrl = await blobToDataUrl(blob);
-          att.mime = att.mime || att.mime_type || blob.type || "";
+          att.mime = att.mime || blob.type || "";
           done = true;
           break;
-        }catch(_err){ }
+        }catch(_err){}
+      }
+
+      const attId = att.id || att.attachment_id || att.uuid || att.key || "";
+      if(!done && attId){
+        const candidates = [];
+        for(const base of bases){
+          candidates.push(`${base}/api/attachments?action=download&disposition=inline&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(attId)}`);
+          candidates.push(`${base}/api/attachments?action=download&disposition=inline&attachment_id=${encodeURIComponent(attId)}`);
+          const tenant = localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "";
+          if(tenant){
+            candidates.push(`${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(attId)}`);
+            candidates.push(`${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&attachment_id=${encodeURIComponent(attId)}`);
+          }
+        }
+        for(const url of candidates){
+          try{
+            const res = await fetch(url, {
+              headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
+              credentials: base ? "omit" : "include"
+            });
+            if(!res.ok) throw new Error(`HTTP ${res.status}`);
+            const blob = await res.blob();
+            att.dataUrl = await blobToDataUrl(blob);
+            att.mime = att.mime || blob.type || "";
+            done = true;
+            break;
+          }catch(_err){}
+        }
       }
 
       if(!done){
-        console.warn("[PRINT][ATTACH] anexo não hidratado para impressão", att.name || att.id || att);
+        console.warn("[PRINT][ATTACH] anexo não hidratado para impressão:", att.name || att.id || att);
       }
-      normalized.push(att);
+      hydrated.push(att);
     }
 
-    atendimento.attachments = normalized;
+    atendimento.attachments = hydrated;
     return atendimento;
   }
 
@@ -827,16 +792,15 @@ function ensurePrintPreviewModal(){
   const loaderEl = m.querySelector("#vscPPLoader");
   const errEl = m.querySelector("#vscPPError");
   const btnClose = m.querySelector("#vscPPClose");
-  const btnDl = m.querySelector("#vscPPDownload");
   const btnPrint = m.querySelector("#vscPPPrint");
+  const btnDl = m.querySelector("#vscPPDownload");
 
   let currentUrl = "";
-  let currentName = "print-pack.pdf";
-  let currentMode = "pdf";
+  let currentName = "print-preview.html";
+  let currentMode = "html";
 
-  function open(){ try{ m.inert = false; }catch(_){ } m.style.display = "flex"; }
+  function open(){ m.style.display = "flex"; }
   function close(){
-    try{ m.inert = true; }catch(_){ }
     m.style.display = "none";
     // revoga URL anterior para não vazar memória
     try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
@@ -850,24 +814,6 @@ function ensurePrintPreviewModal(){
   btnClose.addEventListener("click", (e)=>{ e.preventDefault(); close(); });
   m.addEventListener("click", (e)=>{ if(e.target === m) close(); });
 
-  btnDl.addEventListener("click", async (e)=>{
-    e.preventDefault();
-    if(!currentUrl){
-      snack(currentMode === "html" ? "Pré-visualização ainda não está pronta." : "PDF ainda não está pronto.", "warn");
-      return;
-    }
-    if(currentMode === "html"){
-      snack("Use Imprimir e escolha 'Salvar como PDF'.", "warn");
-      return;
-    }
-    const a = document.createElement("a");
-    a.href = currentUrl;
-    a.download = currentName || "print-pack.pdf";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  });
-
   btnPrint.addEventListener("click", async (e)=>{
     e.preventDefault();
     if(!frame || !frame.contentWindow){
@@ -875,6 +821,7 @@ function ensurePrintPreviewModal(){
       return;
     }
     try{
+      statusEl.textContent = "Preparando impressão…";
       const w = frame.contentWindow;
       if(w.__VSC_PRINT_READY__ && typeof w.__VSC_PRINT_READY__.then === "function"){
         await w.__VSC_PRINT_READY__;
@@ -885,10 +832,29 @@ function ensurePrintPreviewModal(){
         w.focus();
         w.print();
       }
+      statusEl.textContent = currentMode === "html" ? "Pré-visualização local pronta." : "PDF pronto.";
     }catch(err){
-      console.error("[PRINT][BTN]", err);
-      snack("Falha ao abrir o diálogo de impressão.", "err");
+      console.error("[SGQT-PRINT][BTN] falha ao imprimir preview:", err);
+      snack("Falha ao abrir diálogo de impressão.", "err");
     }
+  });
+
+  btnDl.addEventListener("click", async (e)=>{
+    e.preventDefault();
+    if(!currentUrl){
+      snack("Arquivo ainda não está pronto.", "warn");
+      return;
+    }
+    if(currentMode === "html"){
+      snack("Use Imprimir e escolha 'Salvar como PDF' no navegador.", "warn");
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = currentUrl;
+    a.download = currentName || "print-pack.pdf";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   });
 
   const api = {
@@ -914,8 +880,6 @@ function ensurePrintPreviewModal(){
       currentUrl = url;
       currentName = filename || "print-pack.pdf";
       currentMode = "pdf";
-      btnDl.disabled = false;
-      btnDl.style.opacity = "1";
       frame.src = url;
       frame.style.display = "block";
       loaderEl.style.display = "none";
@@ -924,10 +888,9 @@ function ensurePrintPreviewModal(){
     setHtml(html, filename){
       try{ if(currentUrl) URL.revokeObjectURL(currentUrl); }catch(_){}
       currentMode = "html";
-      currentName = filename || "relatorio-impressao.html";
-      btnDl.disabled = true;
-      btnDl.style.opacity = ".55";
-      currentUrl = URL.createObjectURL(new Blob([String(html||"")], { type:"text/html;charset=utf-8" }));
+      currentName = filename || "print-preview.html";
+      const blob = new Blob([String(html || "")], { type: "text/html;charset=utf-8" });
+      currentUrl = URL.createObjectURL(blob);
       frame.src = currentUrl;
       frame.style.display = "block";
       loaderEl.style.display = "none";
@@ -942,9 +905,22 @@ function ensurePrintPreviewModal(){
 
 async function openPrintWindow(payload, docType){
   const doc = payload || {};
+  let html = openPrintWindowClient(payload, docType, { returnHtml: true });
+  try{
+    if(html && typeof html.then === "function") html = await html;
+  }catch(e){
+    console.error("[SGQT-PRINT][HTML] falha ao resolver html Promise:", e);
+  }
+  if(typeof html !== "string") html = (html==null ? "" : String(html));
+  if(!html || !html.trim()){
+    const ui = ensurePrintPreviewModal();
+    ui.setState("error", "HTML da impressão está vazio.");
+    throw new Error("PRINT_PACK_MISSING_HTML_LOCAL");
+  }
   const ui = ensurePrintPreviewModal();
   ui.setState("loading", "Gerando pré-visualização local...");
-  return openPrintWindowClient(doc, docType, { openPreview:true });
+  ui.setHtml(html, `relatorio-${String((doc.atendimento && (doc.atendimento.numero || doc.atendimento.id || doc.atendimento.atendimento_id)) || 'atendimento')}.html`);
+  ui.setState("ready", "Pré-visualização local pronta.");
 }
 
 // Fallback (modo offline / compatibilidade legada): impressão client-side (PDF.js + window.print())
@@ -1012,10 +988,9 @@ function openPrintWindowClient(payload, docType, opts){
 ${institutionalCss}
 :root{--text:#0f172a;--muted:#64748b;--bd:#d8e1ec;--soft:#f8fbfd;--brand:#0f766e;--brand2:#0ea5e9;}
 body{font-family:'DM Sans',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--text);margin:0;background:#fff;}
-.page{width:190mm;max-width:190mm;box-sizing:border-box;margin:0 auto;padding:8mm 6mm 12mm;}
-.sheet{width:100%;box-sizing:border-box;}
+.page{width:190mm;max-width:190mm;margin:0 auto;padding:8mm 8mm 12mm;box-sizing:border-box;}
 .sheet{position:relative;}
-.sheet + .sheet{margin-top:10px;}
+.sheet + .sheet{margin-top:14px;}
 .sheet--attachments{padding-top:4px;}
 .small{font-size:11px;color:var(--muted);line-height:1.45;}
 .box{border:1px solid var(--bd);border-radius:14px;padding:12px 14px;margin:10px 0;background:#fff;}
@@ -1035,7 +1010,6 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
 .pdf-loading{font-size:12px;color:var(--muted);padding:10px 0;}
 .muted{color:var(--muted);}
 .att{margin:12px 0;padding:12px 14px;border:1px solid var(--bd);border-radius:12px;break-inside:avoid;page-break-inside:avoid;}
-.attachments:empty{display:none;}
 .att-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:8px;}
 .att-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;color:#334155;}
 .att-kind{font-size:11px;color:var(--muted);font-weight:800;white-space:nowrap;}
@@ -1053,11 +1027,10 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
   body{margin:0;}
   .page{max-width:none;padding:0;}
   .box,.att,.pdf-block,.att-media,tr,img,canvas{break-inside:avoid;page-break-inside:avoid;}
-  .pdf-pages img{break-inside:avoid;page-break-inside:avoid;display:block;width:100%;height:auto;margin:0 auto 10px;}
-  .pdf-pages img:last-child{margin-bottom:0;}
+  .pdf-pages img{break-inside:avoid;page-break-inside:avoid;break-after:page;page-break-after:always;}
+  .pdf-pages img:last-child{break-after:auto;page-break-after:auto;}
   .sheet{padding:0;}
   .sheet + .sheet{break-before:page;page-break-before:always;margin-top:0;}
-  .page{width:190mm;max-width:190mm;padding:0;}
   .footer{display:block;position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--bd);padding:2.5mm 10mm;font-size:9px;color:var(--muted);background:#fff;}
   .footer .row{display:flex;justify-content:space-between;gap:10px;align-items:center;}
 }
@@ -1141,7 +1114,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
             <div class="att-kind">Imagem${sizeKb ? ` • ${sizeKb}` : ""}</div>
           </div>
           <div class="att-media">
-            <canvas class="att-img-canvas" data-src="${a.dataUrl}" style="max-width:100%;display:block;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;"></canvas>
+            <img class="att-inline-image" data-anexo="1" src="${a.dataUrl}" alt="${name}" style="max-width:100%;display:block;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;" />
           </div>
           <div class="att-desc-wrap">
             <div class="att-desc-label">Descrição clínica do anexo</div>
@@ -1174,7 +1147,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         companyMetaHtml: [
           empresa.cnpj ? `<div>CNPJ: ${esc(empresa.cnpj)}</div>` : "",
           empresa.email ? `<div>${esc(empresa.email)}</div>` : "",
-          pixKey ? `<div>PIX</div>` : ""
+          pixKey ? `<div>PIX: ${esc([empresa.pix_tipo || empresa.pixTipo || '', pixKey, empresa.pix_nome || empresa.pixNome || empresa.favorecido_pix || ''].filter(Boolean).join(' • '))}</div>` : ""
         ].filter(Boolean).join(""),
         documentTitle: esc(DOC_LABEL),
         documentMetaHtml: [
@@ -1483,14 +1456,9 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
           }catch(_){}
         }
 
-        async function preparePrintDocument(){
-          // 0) Renderizar imagens via canvas (redimensiona grandes)
+                async function preparePrintDocument(){
           try{ await renderCanvasImages(); } catch(e){}
-
-          // 1) Renderizar PDFs (se houver) e inserir como imagens (efeito "escaneado")
           try{ await renderAllPdfs(); } catch(e){}
-
-          // 1b) Renderizar QR PIX (se houver)
           try{ renderPixQr(); } catch(e){}
 
           async function waitForImages(timeoutMs){
@@ -1506,7 +1474,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
                 function bad(){ if(done) return; done=true; clearTimeout(to); resolve(false); }
                 img.addEventListener('load', ok, { once:true });
                 img.addEventListener('error', bad, { once:true });
-                try{ if(typeof img.decode === 'function'){ img.decode().then(ok).catch(function(){}); } }catch(_){ }
+                try{ if(typeof img.decode === 'function') img.decode().then(ok).catch(function(){}); }catch(_){ }
               });
             }
             try{ await Promise.all(imgs.map(one)); }catch(_){ }
@@ -1527,39 +1495,28 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
             var el = document.getElementById('docHash');
             if(el) el.textContent = h ? h : '(indisponível neste navegador)';
           }catch(_e){}
-
           try{ if(document.fonts && document.fonts.ready) { await document.fonts.ready; } }catch(_){ }
           try{ await waitForImages(12000); }catch(_){ }
           try{ fillPageNumbers(); }catch(_){ }
           await new Promise(function(r){ requestAnimationFrame(function(){ requestAnimationFrame(r); }); });
           return true;
         }
-
         window.__VSC_PRINT_READY__ = preparePrintDocument();
         window.__VSC_DO_PRINT__ = async function(){
           await window.__VSC_PRINT_READY__;
           window.focus();
           window.print();
-        };      })();
+        };
+      })();
     </script>
   </body></html>`;
 
   if(opts.returnHtml) return html;
-
-  if(opts.openPreview){
-    const ui = ensurePrintPreviewModal();
-    ui.setState("loading", "Gerando pré-visualização local...");
-    ui.setHtml(html, `relatorio-${String(atd.numero || atd.atendimento_id || "atendimento")}.html`);
-    ui.setState("ready", "Pré-visualização local pronta.");
-    return;
-  }
-
-  const w = window.open("", "_blank");
-  if(!w){ snack("Pop-up bloqueado. Libere pop-ups para imprimir.", "warn"); return; }
-
-  w.document.open();
-  w.document.write(html);
-  w.document.close();
+  const ui = ensurePrintPreviewModal();
+  ui.setState("loading", "Gerando pré-visualização local...");
+  ui.setHtml(html, `relatorio-${String(atd.numero || atd.id || 'atendimento')}.html`);
+  ui.setState("ready", "Pré-visualização local pronta.");
+  return;
 }
 
   async function imprimirAtendimento(db, docType){
