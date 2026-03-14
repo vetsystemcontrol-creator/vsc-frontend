@@ -513,94 +513,120 @@ function wireAttachListInteractions(db){
   }
 
 async function loadEmpresaSnapshot(db){
-    function normalizeEmpresaSnapshot(src){
-      const o = src && typeof src === "object" ? src : {};
+    const pickFirst = (...vals) => {
+      for(const v of vals){
+        if(v == null) continue;
+        const s = String(v).trim();
+        if(s) return s;
+      }
+      return "";
+    };
+    const shapeEmpresa = async (src) => {
+      const o = (src && typeof src === "object") ? src : {};
+      const endereco = [o.endereco, o.numero, o.complemento, o.bairro].filter(Boolean).join(", ") || o.endereco_completo || o.endereco || "";
       return {
-        nome: o.nome || o.nome_fantasia || o.razao_social || o.fantasia || "",
-        nome_fantasia: o.nome_fantasia || o.fantasia || o.nome || "",
-        razao_social: o.razao_social || o.nome || o.nome_fantasia || o.fantasia || "",
-        cnpj: o.cnpj || o.doc || "",
-        endereco: o.endereco || o.endereco_completo || "",
-        cidade: o.cidade || "",
-        uf: o.uf || "",
-        cep: o.cep || "",
-        telefone: o.telefone || o.celular || o.fone || "",
-        email: o.email || "",
-        site: o.site || "",
-        crmv: o.crmv || "",
-        pix_tipo: o.pix_tipo || o.pixTipo || "",
-        pix_nome: o.pix_nome || o.pixNome || o.favorecido_pix || "",
-        pix_chave_norm: o.pix_chave_norm || "",
-        __logoA: o.__logoA || o.logoA || o.logo_a || o.logo_a_dataurl || o.logo_a_dataUrl || o.logo_a_dataURL || o.logo_data_url || o.logoDataUrl || o.logoCliente || o.logo_cliente || "",
-        __logoB: o.__logoB || o.logoB || o.logo_b || o.logo_b_dataurl || o.logo_b_dataUrl || o.logo_b_dataURL || "",
-        pix_chave: o.pix_chave || o.chave_pix || o.pixKey || o.pix || o.pix_chave_copia_cola || ""
+        nome: pickFirst(o.nome, o.razao_social, o.nome_fantasia, o.fantasia),
+        razao_social: pickFirst(o.razao_social, o.nome, o.nome_fantasia, o.fantasia),
+        nome_fantasia: pickFirst(o.nome_fantasia, o.fantasia, o.nome, o.razao_social),
+        cnpj: pickFirst(o.cnpj, o.doc),
+        endereco: pickFirst(endereco),
+        cidade: pickFirst(o.cidade),
+        uf: pickFirst(o.uf),
+        cep: pickFirst(o.cep),
+        telefone: pickFirst(o.telefone, o.fone, o.celular, o.whatsapp),
+        email: pickFirst(o.email),
+        site: pickFirst(o.site),
+        crmv: pickFirst(o.crmv),
+        __logoA: pickFirst(o.__logoA, o.logoA, o.logo_a, o.logo_a_dataurl, o.logo_a_dataUrl, o.logo_a_dataURL, o.logo_data_url, o.logoDataUrl, o.logoCliente, o.logo_cliente, localStorage.getItem("vsc_empresa_logo_a"), localStorage.getItem("empresa_logo_a"), localStorage.getItem("logo_a"), await getEmpresaLogoAFromLocalStorage()),
+        __logoB: pickFirst(o.__logoB, o.logoB, o.logo_b, o.logo_b_dataurl, o.logo_b_dataUrl, o.logo_b_dataURL, localStorage.getItem("vsc_empresa_logo_b"), localStorage.getItem("empresa_logo_b"), localStorage.getItem("logo_b")),
+        pix_tipo: pickFirst(o.pix_tipo, o.pixTipo),
+        pix_chave: pickFirst(o.pix_chave, o.chave_pix, o.pixKey, o.pix, o.pix_chave_copia_cola, await getEmpresaPixFromLocalStorage()),
+        pix_chave_norm: pickFirst(o.pix_chave_norm),
+        pix_nome: pickFirst(o.pix_nome, o.pixNome, o.favorecido_pix),
       };
+    };
+
+    const stores = ["empresa_master","empresa","empresa_config","config_empresa"];
+    for(const st of stores){
+      if(!hasStore(db, st)) continue;
+      const all = await idbGetAll(db, st);
+      const r = (Array.isArray(all) ? all : [])[0];
+      const shaped = await shapeEmpresa(r);
+      if(shaped.nome || shaped.cnpj || shaped.__logoA || shaped.__logoB) return shaped;
     }
 
-    // tenta achar dados da empresa em stores comuns; fallback para vazio
-    const candidates = ["empresa_master","empresa","empresa_config","config_empresa"];
-    for(const st of candidates){
-      if(hasStore(db, st)){
-        const all = await idbGetAll(db, st);
-        const r = (Array.isArray(all) ? all : [])[0];
-        if(r){
-          const snap = normalizeEmpresaSnapshot(r);
-          snap.__logoA = snap.__logoA || (await getEmpresaLogoAFromLocalStorage());
-          snap.pix_chave = snap.pix_chave || (await getEmpresaPixFromLocalStorage());
-          return snap;
-        }
-      }
-    }
-    // Fallback canônico: config_params (empresa.js persiste aqui via IDB)
     if(hasStore(db,"config_params")){
       const rows = await idbGetAll(db,"config_params");
-      function getKey(k){ const r = rows.find(x=>String(x.key||x.nome||x.id||"")===k); return r ? String(r.value||"") : ""; }
+      const getKey = (k) => {
+        const r = rows.find(x => String(x.key || x.nome || x.id || "") === k);
+        return r ? String(r.value || "") : "";
+      };
 
-      // Tenta ler o snapshot completo (salvo pelo empresa.js como JSON)
       const snapRaw = getKey("vsc_empresa_v1");
       if(snapRaw){
         try{
-          const snap = normalizeEmpresaSnapshot(JSON.parse(snapRaw));
-          if(snap && (snap.nome || snap.razao_social || snap.nome_fantasia)){
-            snap.__logoA = getKey("vsc_empresa_logo_a") || snap.__logoA || (await getEmpresaLogoAFromLocalStorage());
-            snap.__logoB = getKey("vsc_empresa_logo_b") || snap.__logoB || "";
-            snap.pix_chave = snap.pix_chave || (await getEmpresaPixFromLocalStorage());
-            return snap;
-          }
-        }catch(_){}
+          const snap = JSON.parse(snapRaw);
+          const shaped = await shapeEmpresa(snap);
+          if(shaped.nome || shaped.cnpj || shaped.__logoA || shaped.__logoB) return shaped;
+        }catch(_){ }
       }
 
-      // Fallback por chaves individuais legacy
-      const snap = normalizeEmpresaSnapshot({
-        nome: getKey("empresa_nome") || getKey("nome") || "",
-        razao_social: getKey("razao_social") || "",
-        nome_fantasia: getKey("nome_fantasia") || getKey("fantasia") || "",
-        cnpj: getKey("empresa_cnpj") || getKey("cnpj") || "",
-        endereco: getKey("empresa_endereco") || getKey("endereco") || "",
-        telefone: getKey("empresa_telefone") || getKey("telefone") || "",
-        email: getKey("empresa_email") || getKey("email") || "",
-        __logoA: getKey("empresa_logo_a") || getKey("logo_a") || "",
-        pix_chave: getKey("pix_chave") || getKey("chave_pix") || getKey("pix") || ""
+      const legacy = await shapeEmpresa({
+        nome: getKey("empresa_nome") || getKey("razao_social") || getKey("nome_fantasia"),
+        razao_social: getKey("razao_social"),
+        nome_fantasia: getKey("nome_fantasia"),
+        cnpj: getKey("empresa_cnpj") || getKey("cnpj"),
+        endereco: getKey("empresa_endereco") || getKey("endereco"),
+        telefone: getKey("empresa_telefone") || getKey("telefone"),
+        email: getKey("empresa_email") || getKey("email"),
+        pix_chave: getKey("pix_chave") || getKey("chave_pix") || getKey("pix"),
+        __logoA: getKey("empresa_logo_a") || getKey("logo_a"),
+        __logoB: getKey("empresa_logo_b") || getKey("logo_b"),
       });
-      snap.__logoA = snap.__logoA || (await getEmpresaLogoAFromLocalStorage());
-      snap.pix_chave = snap.pix_chave || (await getEmpresaPixFromLocalStorage());
-      return snap;
+      if(legacy.nome || legacy.cnpj || legacy.__logoA || legacy.__logoB) return legacy;
     }
-    // Último recurso: só localStorage
+
     const lsRaw = localStorage.getItem("vsc_empresa_v1");
     if(lsRaw){
       try{
-        const ls = normalizeEmpresaSnapshot(JSON.parse(lsRaw));
-        if(ls && (ls.nome || ls.razao_social || ls.nome_fantasia)){
-          ls.__logoA = ls.__logoA || (await getEmpresaLogoAFromLocalStorage());
-          ls.pix_chave = ls.pix_chave || (await getEmpresaPixFromLocalStorage());
-          return ls;
-        }
-      }catch(_){}
+        const ls = JSON.parse(lsRaw);
+        const shaped = await shapeEmpresa(ls);
+        if(shaped.nome || shaped.cnpj || shaped.__logoA || shaped.__logoB) return shaped;
+      }catch(_){ }
     }
-    return { nome:"", nome_fantasia:"", razao_social:"", cnpj:"", endereco:"", telefone:"", email:"", __logoA:"", pix_chave:"" };
+    return { nome:"", razao_social:"", nome_fantasia:"", cnpj:"", endereco:"", telefone:"", email:"", __logoA:"", __logoB:"", pix_chave:"" };
   }
 
+
+  function isLikelyDataUrl(v){
+    return typeof v === "string" && /^data:[^;]+;base64,/i.test(v.trim());
+  }
+
+  function toDataUrlFromAttachment(att){
+    const mime = String(att?.mime || att?.mime_type || att?.contentType || att?.content_type || "application/octet-stream").trim() || "application/octet-stream";
+    const candidates = [
+      att?.dataUrl,
+      att?.data_url,
+      att?.dataURL,
+      att?.data_base64,
+      att?.base64,
+      att?.file_data_base64,
+      att?.fileBase64,
+      att?.content_base64,
+      att?.blob_base64,
+      att?.payload_base64
+    ];
+    for(const raw of candidates){
+      if(!raw) continue;
+      const s = String(raw).trim();
+      if(!s) continue;
+      if(isLikelyDataUrl(s)) return s;
+      if(/^[A-Za-z0-9+/=\s]+$/.test(s) && s.length > 32){
+        return `data:${mime};base64,${s.replace(/\s+/g, "")}`;
+      }
+    }
+    return "";
+  }
 
   function getAttachmentPrintBaseUrls(){
     const bases = [];
@@ -631,25 +657,30 @@ async function loadEmpresaSnapshot(db){
     for(const src of atendimento.attachments){
       const att = src ? Object.assign({}, src) : src;
       if(!att){ hydrated.push(att); continue; }
-      if(att.dataUrl){ hydrated.push(att); continue; }
 
-      const possibleUrls = [
-        att.url,
-        att.download_url,
-        att.downloadUrl,
-        att.r2_url,
-        att.file_url,
-        att.src
-      ].filter(Boolean);
+      const inlineDataUrl = toDataUrlFromAttachment(att);
+      if(inlineDataUrl){
+        att.dataUrl = inlineDataUrl;
+        if(!att.data_base64) att.data_base64 = inlineDataUrl;
+        hydrated.push(att);
+        continue;
+      }
 
+      const possibleUrls = [att.url, att.download_url, att.downloadUrl, att.r2_url, att.file_url, att.src].filter(Boolean);
       let done = false;
 
       for(const rawUrl of possibleUrls){
         try{
-          const res = await fetch(String(rawUrl), { credentials:"include" });
+          const urlObj = new URL(String(rawUrl), location.origin);
+          const sameOrigin = urlObj.origin === location.origin;
+          const res = await fetch(urlObj.toString(), {
+            headers: { "X-VSC-Tenant": String(tenant || "tenant-default") },
+            credentials: sameOrigin ? "include" : "omit"
+          });
           if(!res.ok) throw new Error(`HTTP ${res.status}`);
           const blob = await res.blob();
           att.dataUrl = await blobToDataUrl(blob);
+          att.data_base64 = att.dataUrl;
           att.mime = att.mime || blob.type || "";
           done = true;
           break;
@@ -660,24 +691,11 @@ async function loadEmpresaSnapshot(db){
       if(!done && attId){
         const candidates = [];
         for(const base of bases){
-          candidates.push({
-            base,
-            url: `${base}/api/attachments?action=download&disposition=inline&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(attId)}`
-          });
-          candidates.push({
-            base,
-            url: `${base}/api/attachments?action=download&disposition=inline&attachment_id=${encodeURIComponent(attId)}`
-          });
-          const tenantFromLs = localStorage.getItem("vsc_tenant") || localStorage.getItem("VSC_TENANT") || "";
-          if(tenantFromLs){
-            candidates.push({
-              base,
-              url: `${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenantFromLs)}&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(attId)}`
-            });
-            candidates.push({
-              base,
-              url: `${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenantFromLs)}&attachment_id=${encodeURIComponent(attId)}`
-            });
+          candidates.push({ base, url: `${base}/api/attachments?action=download&disposition=inline&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(attId)}` });
+          candidates.push({ base, url: `${base}/api/attachments?action=download&disposition=inline&attachment_id=${encodeURIComponent(attId)}` });
+          if(tenant){
+            candidates.push({ base, url: `${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&atendimento_id=${encodeURIComponent(atendimentoId)}&attachment_id=${encodeURIComponent(attId)}` });
+            candidates.push({ base, url: `${base}/api/attachments?action=download&disposition=inline&tenant=${encodeURIComponent(tenant)}&attachment_id=${encodeURIComponent(attId)}` });
           }
         }
         for(const candidate of candidates){
@@ -689,6 +707,7 @@ async function loadEmpresaSnapshot(db){
             if(!res.ok) throw new Error(`HTTP ${res.status}`);
             const blob = await res.blob();
             att.dataUrl = await blobToDataUrl(blob);
+            att.data_base64 = att.dataUrl;
             att.mime = att.mime || blob.type || "";
             done = true;
             break;
@@ -722,8 +741,25 @@ async function loadEmpresaSnapshot(db){
       ? (await Promise.all(rec.animal_ids.map(id => idbGet(db,"animais_master", id)))).filter(Boolean)
       : [];
 
+    const currentAttachments = Array.isArray(ATD.attachments) ? ATD.attachments : [];
+    const recordAttachments = Array.isArray(rec.attachments) ? rec.attachments : [];
+    const attachmentsById = new Map();
+    for(const raw of recordAttachments){
+      if(!raw) continue;
+      const key = String(raw.id || raw.attachment_id || raw.uuid || raw.key || "");
+      if(key) attachmentsById.set(key, Object.assign({}, raw));
+    }
+    for(const raw of currentAttachments){
+      if(!raw) continue;
+      const key = String(raw.id || raw.attachment_id || raw.uuid || raw.key || "");
+      if(!key) continue;
+      attachmentsById.set(key, Object.assign({}, attachmentsById.get(key) || {}, raw));
+    }
+
     const atendimentoPrint = await hydrateAttachmentsForPrint(Object.assign({}, rec, {
-      attachments: Array.isArray(rec.attachments) ? rec.attachments.map(a => a ? Object.assign({}, a) : a) : []
+      attachments: attachmentsById.size
+        ? Array.from(attachmentsById.values())
+        : recordAttachments.map(a => a ? Object.assign({}, a) : a)
     }));
 
     return { empresa, cliente, animais, atendimento: atendimentoPrint, gerado_em: isoNow() };
@@ -1161,14 +1197,16 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
     </div>`;
   }).join("");
 
+  const companyLogoSrc = logoB || logoA || "";
+  const companyName = empresa.nome || empresa.nome_fantasia || empresa.razao_social || "";
   const headerHtml = (window.VSCPrintTemplate && typeof window.VSCPrintTemplate.renderInstitutionalHeader === "function")
     ? window.VSCPrintTemplate.renderInstitutionalHeader({
         systemLogoSrc: location.origin + '/assets/brand/vsc-logo-horizontal.png',
         systemLogoFallback: '<div class="kado-fallback-system">Vet System Control</div>',
-        companyLogoHtml: logoA
-          ? `<img class="kado-company-logo" src="${logoA}" alt="Logo da empresa"/>`
-          : `<div class="kado-company-logo-fallback" aria-hidden="true"></div>`,
-        companyName: esc(empresa.nome||empresa.nome_fantasia||empresa.razao_social||"Empresa"),
+        companyLogoHtml: companyLogoSrc
+          ? `<img class="kado-company-logo" src="${companyLogoSrc}" alt="Logo da empresa"/>`
+          : `<div class="kado-company-logo-fallback"></div>`,
+        companyName: esc(companyName || "Empresa"),
         companyMetaHtml: [
           empresa.cnpj ? `<div>CNPJ: ${esc(empresa.cnpj)}</div>` : "",
           empresa.email ? `<div>${esc(empresa.email)}</div>` : "",
@@ -4222,7 +4260,16 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
       cli_diagnostico: String($("cli_diagnostico")?.value || ""),
       cli_evolucao: String($("cli_evolucao")?.value || ""),
       itens: ATD.itens || [],
-      attachments: ATD.attachments || [],
+      attachments: (ATD.attachments || []).map((a) => {
+        const att = a ? Object.assign({}, a) : a;
+        if(!att) return att;
+        const inlineData = toDataUrlFromAttachment(att);
+        if(inlineData){
+          att.dataUrl = inlineData;
+          att.data_base64 = inlineData;
+        }
+        return att;
+      }),
       vaccine_events: ATD.vaccine_events || [],
       totals: {
         total_itens: Math.max(0, base),
@@ -4277,7 +4324,7 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
               size: a.size || 0,
               descricao: a.descricao || "",
               created_at: a.created_at || "",
-              synced_to_r2: true
+              synced_to_r2: !!a.synced_to_r2,
               // dataUrl removido intencionalmente
             })),
             __origin: "UI_EDIT"
@@ -4295,8 +4342,35 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
         const BASE_R2 = (location.hostname === "127.0.0.1" || location.hostname === "localhost")
           ? "https://app.vetsystemcontrol.com.br" : "";
         const tenant = localStorage.getItem("vsc_tenant") || "tenant-default";
+        const markAttachmentSynced = async (attachmentId) => {
+          try {
+            const fresh = await idbGet(db, "atendimentos_master", payload.id);
+            if (!fresh || !Array.isArray(fresh.attachments)) return;
+            let changed = false;
+            fresh.attachments = fresh.attachments.map((item) => {
+              if (!item) return item;
+              const itemId = item.id || item.attachment_id || item.uuid || item.key;
+              if (String(itemId) !== String(attachmentId)) return item;
+              changed = true;
+              return Object.assign({}, item, { synced_to_r2: true });
+            });
+            if (changed) await idbPut(db, "atendimentos_master", fresh);
+          } catch (_e) {}
+        };
+
         for (const att of (payload.attachments || [])) {
-          if (!att || !att.id || !att.dataUrl) continue;
+          if (!att || !att.id) continue;
+          const inlineData = toDataUrlFromAttachment(att);
+          if (!inlineData) continue;
+
+          try {
+            if (window.VSC_ATTACHMENTS_RELAY && typeof window.VSC_ATTACHMENTS_RELAY.enqueue === "function") {
+              await window.VSC_ATTACHMENTS_RELAY.enqueue(payload.id, Object.assign({}, att, { dataUrl: inlineData }));
+            }
+          } catch (queueErr) {
+            console.warn("[ATD] fila de attachments falhou:", att.name, queueErr);
+          }
+
           fetch(`${BASE_R2}/api/attachments?action=upload`, {
             method: "POST",
             headers: { "Content-Type": "application/json", "X-VSC-Tenant": tenant },
@@ -4305,13 +4379,17 @@ img{max-width:100%;height:auto;display:block;margin:10px auto;border:1px solid v
               attachment_id: att.id,
               filename: att.name || att.id,
               mime_type: att.mime || "application/octet-stream",
-              data_base64: att.dataUrl,
+              data_base64: inlineData,
               descricao: att.descricao || "",
               created_at: att.created_at || isoNow()
             })
-          }).then(r => {
-            if (!r.ok) console.warn("[ATD] R2 upload falhou:", att.name, r.status);
-            else console.log("[ATD] R2 upload ok:", att.name);
+          }).then(async (r) => {
+            if (!r.ok) {
+              console.warn("[ATD] R2 upload falhou:", att.name, r.status);
+              return;
+            }
+            await markAttachmentSynced(att.id);
+            console.log("[ATD] R2 upload ok:", att.name);
           }).catch(e => console.warn("[ATD] R2 upload erro:", att.name, e));
         }
       } catch (_syncErr) {
