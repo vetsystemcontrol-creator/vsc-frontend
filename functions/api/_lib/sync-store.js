@@ -531,15 +531,15 @@ async function loadCanonicalSnapshot(db, tenant, options = {}) {
   const hasRequestedScope = requestedStores.length > 0;
   const rowsStmt = hasRequestedScope
     ? db.prepare(`
-        SELECT store_name, record_id, payload_json, deleted, updated_at, entity_revision
+        SELECT store_name, record_id, payload_json, deleted, deleted_at, updated_at, entity_revision, source_op_id
         FROM canonical_records
-        WHERE tenant = ?1 AND deleted = 0 AND store_name IN (${requestedStores.map((_, idx) => `?${idx + 2}`).join(', ')})
+        WHERE tenant = ?1 AND store_name IN (${requestedStores.map((_, idx) => `?${idx + 2}`).join(', ')})
         ORDER BY store_name, updated_at, record_id
       `).bind(tenant, ...requestedStores)
     : db.prepare(`
-        SELECT store_name, record_id, payload_json, deleted, updated_at, entity_revision
+        SELECT store_name, record_id, payload_json, deleted, deleted_at, updated_at, entity_revision, source_op_id
         FROM canonical_records
-        WHERE tenant = ?1 AND deleted = 0
+        WHERE tenant = ?1
         ORDER BY store_name, updated_at, record_id
       `).bind(tenant);
   const rows = await rowsStmt.all();
@@ -566,15 +566,41 @@ async function loadCanonicalSnapshot(db, tenant, options = {}) {
     const storeName = rowStoreName;
     if (!storeName) continue;
     if (!data[storeName]) data[storeName] = [];
+
+    const entityRevision = Number(row.entity_revision || 1) || 1;
+    const sourceOpId = normStr(row.source_op_id || '', 160) || null;
+    const updatedAt = row.updated_at || row.deleted_at || nowIso();
+    const isDeleted = Number(row.deleted || 0) === 1;
+
     let payload = null;
-    try {
-      payload = row.payload_json ? JSON.parse(row.payload_json) : null;
-    } catch (_) {
-      payload = null;
+    if (isDeleted) {
+      payload = {
+        __tombstone__: true,
+        __record_id__: row.record_id,
+        id: row.record_id,
+        updated_at: updatedAt,
+        deleted_at: row.deleted_at || updatedAt,
+        sync_rev: entityRevision,
+        entity_revision: entityRevision,
+      };
+      if (sourceOpId) payload.last_synced_op_id = sourceOpId;
+      if (storeName === 'produtos_master') payload.produto_id = row.record_id;
+      if (storeName === 'tenant_subscription') payload.tenant_id = row.record_id;
+      if (storeName === 'estoque_reasons') payload.code = row.record_id;
+    } else {
+      try {
+        payload = row.payload_json ? JSON.parse(row.payload_json) : null;
+      } catch (_) {
+        payload = null;
+      }
+      if (!payload || typeof payload !== 'object') continue;
+      if (!payload.updated_at) payload.updated_at = updatedAt;
+      if (!payload.sync_rev) payload.sync_rev = entityRevision;
+      if (!payload.entity_revision) payload.entity_revision = entityRevision;
+      if (!payload.__record_id__) payload.__record_id__ = row.record_id;
+      if (sourceOpId && !payload.last_synced_op_id) payload.last_synced_op_id = sourceOpId;
     }
-    if (!payload || typeof payload !== 'object') continue;
-    if (!payload.updated_at) payload.updated_at = row.updated_at || nowIso();
-    if (!payload.sync_rev) payload.sync_rev = Number(row.entity_revision || 1) || 1;
+
     data[storeName].push(payload);
   }
 

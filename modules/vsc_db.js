@@ -1314,6 +1314,110 @@ async function listRecentChanges(entity, opts){
     return o.updated_at || o.updatedAt || o.last_update || null;
   }
 
+  function _isTombstoneRecord(o){
+    return !!(o && typeof o === 'object' && (o.__tombstone__ === true || o.deleted === true || o.__deleted__ === true || o.deleted_at));
+  }
+
+  function _getStoreKeyValue(storeHandle, row){
+    if(!row || typeof row !== 'object') return null;
+    const keyPath = storeHandle && storeHandle.keyPath;
+    if(typeof keyPath === 'string' && keyPath){
+      const direct = row[keyPath];
+      if(direct != null && String(direct).trim()) return direct;
+      if(row.__record_id__ != null && String(row.__record_id__).trim()) return row.__record_id__;
+    }
+    if(Array.isArray(keyPath) && keyPath.length){
+      const values = keyPath.map((kp) => row[kp]);
+      if(values.every((value) => value != null && String(value).trim())) return values;
+      if(row.__record_id__ != null && String(row.__record_id__).trim()) return row.__record_id__;
+    }
+    const fallback = row.id ?? row.produto_id ?? row.uuid ?? row.key ?? row.code ?? row.tenant_id ?? row.lote_id ?? row.__record_id__ ?? null;
+    return (fallback != null && String(fallback).trim()) ? fallback : null;
+  }
+
+  function _normalizeRemoteAuthorityEntry(row){
+    if(!row || typeof row !== 'object') return null;
+    return {
+      entity_revision: Number(row.sync_rev ?? row.entity_revision ?? row.base_revision ?? row.revision) || 0,
+      updated_at: _pickUpdatedAt(row) || null,
+      deleted_at: row.deleted_at || null,
+      tombstone: _isTombstoneRecord(row),
+      op_id: String(row.last_synced_op_id || row.source_op_id || '').trim() || null,
+    };
+  }
+
+  function _compareAuthorityAgainstOutbox(authority, outboxRec){
+    const authorityRev = Number(authority && authority.entity_revision) || 0;
+    const outboxRev = Number(outboxRec && (outboxRec.entity_revision ?? outboxRec.sync_rev ?? outboxRec.base_revision ?? outboxRec.revision)) || 0;
+    if(authorityRev !== outboxRev) return authorityRev > outboxRev ? 1 : -1;
+
+    const authorityMs = Date.parse(String(authority && authority.updated_at || authority && authority.deleted_at || ''));
+    const outboxMs = Date.parse(String(outboxRec && (outboxRec.updated_at || outboxRec.created_at) || ''));
+    if(Number.isFinite(authorityMs) && Number.isFinite(outboxMs) && authorityMs !== outboxMs) return authorityMs > outboxMs ? 1 : -1;
+    if(Number.isFinite(authorityMs) && !Number.isFinite(outboxMs)) return 1;
+    if(!Number.isFinite(authorityMs) && Number.isFinite(outboxMs)) return -1;
+    return 0;
+  }
+
+  async function _reconcileOutboxWithImportedAuthorities(authorityByStore){
+    const storeNames = authorityByStore ? Object.keys(authorityByStore) : [];
+    if(!storeNames.length) return { done:0, dead:0, scanned:0 };
+
+    let done = 0;
+    let dead = 0;
+    let scanned = 0;
+
+    await tx([STORE_OUTBOX], 'readwrite', (stores) => {
+      const outbox = stores[STORE_OUTBOX];
+      const req = outbox.getAll();
+      req.onsuccess = () => {
+        const rows = Array.isArray(req.result) ? req.result : [];
+        for(const rec of rows){
+          if(!rec || !rec.id) continue;
+          const status = String(rec.status || '').toUpperCase();
+          if(status !== 'PENDING' && status !== 'SENDING') continue;
+          scanned++;
+
+          const storeName = String(rec.store || rec.store_name || rec.entity || '').trim();
+          const entityId = String(rec.entity_id || '').trim();
+          if(!storeName || !entityId) continue;
+          const authorityStore = authorityByStore[storeName];
+          const authority = authorityStore ? authorityStore[entityId] : null;
+          if(!authority) continue;
+
+          const authorityOpId = String(authority.op_id || '').trim();
+          const recOpId = String(rec.op_id || '').trim();
+          if(authorityOpId && recOpId && authorityOpId === recOpId){
+            rec.status = 'DONE';
+            rec.done_at = _safeIso(Date.now());
+            rec.last_error = null;
+            rec.last_ack = { ok:true, source:'snapshot_reconcile', op_id: recOpId };
+            try{ outbox.put(rec); }catch(_){ }
+            done++;
+            continue;
+          }
+
+          const cmp = _compareAuthorityAgainstOutbox(authority, rec);
+          if(cmp >= 0){
+            rec.status = 'DEAD';
+            rec.dead_at = _safeIso(Date.now());
+            rec.last_error = authority.tombstone ? 'remote_delete_superseded_local_op' : 'remote_newer_revision_superseded_local_op';
+            rec.remote_authority = {
+              entity_revision: authority.entity_revision || 0,
+              updated_at: authority.updated_at || authority.deleted_at || null,
+              tombstone: !!authority.tombstone,
+              op_id: authority.op_id || null,
+            };
+            try{ outbox.put(rec); }catch(_){ }
+            dead++;
+          }
+        }
+      };
+    });
+
+    return { done, dead, scanned };
+  }
+
   async function importDump(dump, opts){
     opts = opts || {};
     const mode = (opts.mode || "merge_newer"); // merge_newer | merge_keep_existing | replace_store
@@ -1323,29 +1427,28 @@ async function listRecentChanges(entity, opts){
 
     const db = await openDB();
     try{
-      // fail-closed: exige mesmo DB_NAME e versão compatível
       if(dump.schema.db_name && dump.schema.db_name !== DB_NAME){
         throw new Error("importDump: db_name divergente");
       }
 
       const storeNames = Array.from(db.objectStoreNames);
       const incomingStores = Object.keys(dump.data || {});
-      // fail-closed: só aceita stores que existam no DB atual
       for(const s of incomingStores){
         if(!storeNames.includes(s)){
           throw new Error("importDump: store inexistente no DB atual: " + s);
         }
       }
 
-      // Import por store (1 transação por store = mais seguro)
+      const authorityByStore = {};
+
       for(const s of incomingStores){
         const rows = _asArray(dump.data[s]);
+        authorityByStore[s] = authorityByStore[s] || {};
 
         await new Promise((resolve, reject) => {
           const tx0 = db.transaction([s], "readwrite");
           const st0 = tx0.objectStore(s);
 
-          // Importação robusta: evita que erro de item (put/get) aborte a transação.
           function softFail(req){
             if(!req) return;
             req.onerror = (ev) => {
@@ -1363,23 +1466,38 @@ async function listRecentChanges(entity, opts){
             clr.onerror = () => reject(clr.error);
             clr.onsuccess = () => {
               for(const r of rows){
+                const key = _getStoreKeyValue(st0, r);
+                if(key != null){
+                  const authority = _normalizeRemoteAuthorityEntry(r);
+                  if(authority) authorityByStore[s][String(key)] = authority;
+                }
+                if(_isTombstoneRecord(r)){
+                  if(key != null){
+                    try{ softFail(st0.delete(key)); }catch(_){ }
+                  }
+                  continue;
+                }
                 try{ softFail(st0.put(r)); }catch(_){ }
               }
             };
             return;
           }
 
-          // merge modes
           for(const r of rows){
-            // precisa de chave para merge; sem chave => put direto
-            const k = (r && typeof r === "object") ? (r.id || r.uuid || null) : null;
+            const key = _getStoreKeyValue(st0, r);
+            const tombstone = _isTombstoneRecord(r);
+            if(key != null){
+              const authority = _normalizeRemoteAuthorityEntry(r);
+              if(authority) authorityByStore[s][String(key)] = authority;
+            }
 
-            if(!k || mode === "merge_keep_existing"){
-              // merge_keep_existing: não tenta comparar, só insere se não existir (via get + put)
-              if(!k){
-                try{ softFail(st0.put(r)); }catch(_){ }
-              }else{
-                const g = st0.get(k);
+            if(!key || mode === "merge_keep_existing"){
+              if(!key){
+                if(!tombstone){
+                  try{ softFail(st0.put(r)); }catch(_){ }
+                }
+              }else if(!tombstone){
+                const g = st0.get(key);
                 softFail(g);
                 g.onsuccess = () => {
                   if(!g.result){
@@ -1390,21 +1508,29 @@ async function listRecentChanges(entity, opts){
               continue;
             }
 
-            // merge_newer (default): compara updated_at quando possível
-            const g = st0.get(k);
+            const g = st0.get(key);
             softFail(g);
             g.onsuccess = () => {
               const cur = g.result || null;
               if(!cur){
-                try{ softFail(st0.put(r)); }catch(_){ }
+                if(tombstone){
+                  try{ softFail(st0.delete(key)); }catch(_){ }
+                }else{
+                  try{ softFail(st0.put(r)); }catch(_){ }
+                }
                 return;
               }
+
               const precedence = compareSyncPriority(cur, r);
-              if(precedence > 0){
-                try{ softFail(st0.put(r)); }catch(_){ }
+              if(precedence > 0 || (precedence === 0 && tombstone)){
+                try{
+                  if(tombstone) softFail(st0.delete(key));
+                  else softFail(st0.put(r));
+                }catch(_){ }
                 return;
               }
-              if(precedence === 0){
+
+              if(precedence === 0 && !tombstone){
                 const a = _pickUpdatedAt(cur);
                 const b = _pickUpdatedAt(r);
                 const da = Date.parse(a || '');
@@ -1418,11 +1544,13 @@ async function listRecentChanges(entity, opts){
         });
       }
 
-      return { ok:true, mode, importedStores: incomingStores };
+      const outboxReconciliation = await _reconcileOutboxWithImportedAuthorities(authorityByStore).catch((err) => ({ ok:false, error:String(err && (err.message || err) || err) }));
+      return { ok:true, mode, importedStores: incomingStores, outboxReconciliation };
     } finally {
-      try{ db.close(); }catch(_){}
+      try{ db.close(); }catch(_){ }
     }
   }
+
 
   // ============================================================
   // AUTO-BACKUP FASE 1 (PROTEÇÃO IMEDIATA)
